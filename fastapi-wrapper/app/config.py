@@ -15,22 +15,22 @@ class Settings(BaseSettings):
     MOLTBOT_TIMEOUT: int = 60
     
     # Session Management (using Render disk)
-    SESSION_DIR: str = "/data/sessions/active"
-    SESSION_ARCHIVE_DIR: str = "/data/sessions/archived"
+    SESSION_DIR: str = "/tmp/sessions/active"
+    SESSION_ARCHIVE_DIR: str = "/tmp/sessions/archived"
     SESSION_TTL: int = 3600
     SESSION_CLEANUP_INTERVAL: int = 300
     
     # Credentials (using Render disk)
-    CREDENTIALS_DIR: str = "/data/credentials"
-    ENCRYPTION_KEY: str
+    CREDENTIALS_DIR: str = "/tmp/credentials"
+    ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
     
     # Security
-    API_SECRET_KEY: str
+    API_SECRET_KEY: str = os.getenv("API_SECRET_KEY", "")
     ALLOWED_ORIGINS: list = ["*"]
     
     # Logging
     LOG_LEVEL: str = "INFO"
-    LOG_DIR: str = "/data/logs"
+    LOG_DIR: str = "/tmp/logs"
     
     # Render specific
     PORT: int = int(os.getenv("PORT", "8000"))
