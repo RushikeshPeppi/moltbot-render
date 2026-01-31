@@ -1,0 +1,28 @@
+{
+  "llm": {
+    "provider": "google",
+    "model": "gemini-2.0-flash-exp",
+    "apiKey": "${GEMINI_API_KEY}",
+    "options": {
+      "temperature": 0.7,
+      "maxOutputTokens": 2048
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "host": "0.0.0.0",
+    "maxConcurrentSessions": 100
+  },
+  "skills": {
+    "enabled": [
+      "caldav-calendar",
+      "gmail",
+      "browser-use"
+    ]
+  },
+  "memory": {
+    "enabled": true,
+    "storageType": "file",
+    "storagePath": "/root/.moltbot/memory"
+  }
+}

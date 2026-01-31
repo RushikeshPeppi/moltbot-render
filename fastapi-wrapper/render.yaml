@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: moltbot-fastapi
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT
+    healthCheckPath: /health
+    disk:
+      name: moltbot-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: API_SECRET_KEY
+        generateValue: true
+      - key: MOLTBOT_GATEWAY_URL
+        value: http://moltbot-gateway:18789
