@@ -1,37 +1,257 @@
 const express = require('express');
-const { spawn } = require('child_process');
+const { spawn, exec } = require('child_process');
 const app = express();
 const PORT = process.env.PORT || 18789;
 
 app.use(express.json());
 
+// Store for active OpenClaw processes
+let isReady = false;
+
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'online', service: 'moltbot-gateway' });
+  res.json({
+    status: 'online',
+    service: 'openclaw-gateway',
+    openclaw_ready: isReady
+  });
 });
 
-// Start Moltbot gateway
-function startMoltbot() {
-  console.log('Starting Moltbot Gateway...');
+/**
+ * Execute action via OpenClaw
+ * 
+ * POST /execute
+ * Body: {
+ *   session_id: string,
+ *   message: string,
+ *   credentials: object,
+ *   history: array
+ * }
+ */
+app.post('/execute', async (req, res) => {
+  const { session_id, message, credentials, history } = req.body;
 
-  const moltbot = spawn('moltbot', ['gateway', '--daemon'], {
-    env: { ...process.env },
-    stdio: 'inherit'
+  if (!message) {
+    return res.status(400).json({ error: 'Message is required' });
+  }
+
+  try {
+    console.log(`[${session_id}] Processing: ${message.substring(0, 50)}...`);
+
+    // Build context from credentials and history
+    const context = buildContext(credentials, history);
+
+    // Execute OpenClaw command
+    const result = await executeOpenClaw(session_id, message, context);
+
+    console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
+
+    res.json({
+      success: true,
+      response: result.response,
+      action_type: result.action_type,
+      details: result.details,
+      tokens_used: result.tokens_used || 0
+    });
+
+  } catch (error) {
+    console.error(`[${session_id}] Error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      response: "I'm sorry, I encountered an error processing your request. Please try again."
+    });
+  }
+});
+
+/**
+ * Build context string for OpenClaw from credentials and history
+ */
+function buildContext(credentials, history) {
+  let context = '';
+
+  // Add credentials context
+  if (credentials) {
+    if (credentials.google_access_token) {
+      context += 'User has connected their Google account. You can access their calendar and email.\n';
+    }
+  }
+
+  // Add conversation history context
+  if (history && history.length > 0) {
+    const recentHistory = history.slice(-10); // Last 10 messages
+    context += '\nRecent conversation:\n';
+    recentHistory.forEach(msg => {
+      context += `${msg.role}: ${msg.content}\n`;
+    });
+  }
+
+  return context;
+}
+
+/**
+ * Execute OpenClaw command and return result
+ */
+function executeOpenClaw(sessionId, message, context) {
+  return new Promise((resolve, reject) => {
+    const timeout = 55000; // 55 second timeout
+
+    // Build the command
+    // OpenClaw CLI: openclaw agent --message "message" --thinking high
+    const args = ['agent', '--message', message];
+
+    if (context) {
+      args.push('--context', context);
+    }
+
+    // Use session for context isolation
+    args.push('--session', sessionId);
+
+    // Request JSON output for parsing
+    args.push('--output', 'json');
+
+    // Set thinking level
+    args.push('--thinking', 'medium');
+
+    console.log(`Executing: openclaw ${args.slice(0, 3).join(' ')}...`);
+
+    const openclaw = spawn('openclaw', args, {
+      env: { ...process.env },
+      timeout: timeout
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    openclaw.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    openclaw.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    const timer = setTimeout(() => {
+      openclaw.kill();
+      reject(new Error('Request timed out'));
+    }, timeout);
+
+    openclaw.on('close', (code) => {
+      clearTimeout(timer);
+
+      if (code !== 0 && !stdout) {
+        console.error('OpenClaw stderr:', stderr);
+        reject(new Error(stderr || 'OpenClaw execution failed'));
+        return;
+      }
+
+      try {
+        // Try to parse JSON response
+        const result = JSON.parse(stdout);
+        resolve({
+          response: result.response || result.message || stdout.trim(),
+          action_type: result.action_type || result.tool || 'chat',
+          details: result.details || result.metadata || null,
+          tokens_used: result.tokens_used || result.usage?.total_tokens || 0
+        });
+      } catch (e) {
+        // If not JSON, return as plain response
+        resolve({
+          response: stdout.trim() || 'Task completed.',
+          action_type: 'chat',
+          details: null,
+          tokens_used: 0
+        });
+      }
+    });
+
+    openclaw.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
+}
 
-  moltbot.on('error', (err) => {
-    console.error('Failed to start Moltbot:', err);
+/**
+ * Check job status (for async operations)
+ */
+app.get('/status/:jobId', (req, res) => {
+  const { jobId } = req.params;
+
+  // For now, return not found
+  // In future, implement async job tracking
+  res.status(404).json({
+    job_id: jobId,
+    status: 'not_found',
+    message: 'Async job tracking not yet implemented'
   });
+});
 
-  moltbot.on('exit', (code) => {
-    console.log(`Moltbot exited with code ${code}`);
-    // Restart after 5 seconds
-    setTimeout(startMoltbot, 5000);
+/**
+ * List available skills
+ */
+app.get('/skills', (req, res) => {
+  res.json({
+    skills: [
+      {
+        name: 'caldav-calendar',
+        description: 'Manage calendar events',
+        actions: ['create', 'read', 'update', 'delete']
+      },
+      {
+        name: 'gmail',
+        description: 'Read and send emails',
+        actions: ['read', 'send', 'draft', 'search']
+      },
+      {
+        name: 'reminders',
+        description: 'Set and manage reminders',
+        actions: ['create', 'list', 'delete']
+      },
+      {
+        name: 'web-search',
+        description: 'Search the web',
+        actions: ['search', 'lookup']
+      },
+      {
+        name: 'browser-use',
+        description: 'Automate browser actions',
+        actions: ['navigate', 'fill', 'click', 'screenshot']
+      }
+    ]
+  });
+});
+
+// Start OpenClaw gateway
+function startOpenClaw() {
+  console.log('Starting OpenClaw Gateway...');
+
+  // Check if openclaw is available
+  exec('openclaw --version', (error, stdout, stderr) => {
+    if (error) {
+      console.error('OpenClaw not found. Please ensure openclaw is installed.');
+      console.error('Run: npm install -g openclaw@latest');
+      return;
+    }
+
+    console.log(`OpenClaw version: ${stdout.trim()}`);
+    isReady = true;
+
+    // Initialize the gateway daemon
+    exec('openclaw gateway --port 18789 &', (err) => {
+      if (err) {
+        console.warn('Gateway daemon start warning:', err.message);
+      } else {
+        console.log('OpenClaw gateway daemon started');
+      }
+    });
   });
 }
 
 // Initialize
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server listening on port ${PORT}`);
-  startMoltbot();
+  console.log(`OpenClaw Gateway listening on port ${PORT}`);
+  console.log(`Health check: http://localhost:${PORT}/health`);
+  console.log(`Execute endpoint: http://localhost:${PORT}/execute`);
+  startOpenClaw();
 });

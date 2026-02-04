@@ -1,0 +1,42 @@
+{
+    "llm": {
+        "provider": "google",
+        "model": "gemini-2.0-flash-exp",
+        "apiKey": "${GEMINI_API_KEY}",
+        "options": {
+            "temperature": 0.7,
+            "maxOutputTokens": 2048
+        }
+    },
+    "gateway": {
+        "port": 18789,
+        "host": "0.0.0.0",
+        "maxConcurrentSessions": 100,
+        "auth": {
+            "mode": "open"
+        }
+    },
+    "skills": {
+        "enabled": [
+            "caldav-calendar",
+            "gmail",
+            "reminders",
+            "web-search",
+            "browser-use"
+        ]
+    },
+    "memory": {
+        "enabled": true,
+        "storageType": "file",
+        "storagePath": "/root/.openclaw/memory"
+    },
+    "browser": {
+        "headless": true,
+        "timeout": 30000,
+        "sandbox": false
+    },
+    "security": {
+        "sandboxEnabled": true,
+        "maxExecutionTime": 60
+    }
+}

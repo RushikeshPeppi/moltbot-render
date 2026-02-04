@@ -5,30 +5,28 @@ services:
     runtime: python
     region: oregon
     plan: starter
+    rootDir: fastapi-wrapper
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 120
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11.0"
+        value: "3.11"
       # Encryption key for credentials
       - key: ENCRYPTION_KEY
         generateValue: true
       # API secret for authentication
       - key: API_SECRET_KEY
         generateValue: true
-      # Moltbot Gateway URL (internal service)
+      # OpenClaw Gateway URL (internal service)
       - key: MOLTBOT_GATEWAY_URL
-        fromService:
-          name: moltbot-gateway
-          type: web
-          property: hostport
-      # Upstash Redis (set manually from Upstash dashboard)
+        value: http://openclaw-gateway.onrender.com:10000
+      # Upstash Redis
       - key: UPSTASH_REDIS_URL
         sync: false
       - key: UPSTASH_REDIS_TOKEN
         sync: false
-      # MySQL Database (your existing Peppi database)
+      # MySQL Database
       - key: MYSQL_HOST
         sync: false
       - key: MYSQL_PORT
@@ -47,21 +45,22 @@ services:
       - key: GOOGLE_REDIRECT_URI
         sync: false
 
-  # Moltbot Gateway - Runs the AI agent
+  # OpenClaw Gateway - Runs the AI agent
   - type: web
-    name: moltbot-gateway
+    name: openclaw-gateway
     runtime: node
     region: oregon
     plan: starter
-    buildCommand: npm install && npm install -g moltbot
+    rootDir: moltbot-gateway
+    buildCommand: npm install && npm install -g openclaw@latest
     startCommand: npm start
     healthCheckPath: /health
     disk:
-      name: moltbot-data
-      mountPath: /root/.moltbot
+      name: openclaw-data
+      mountPath: /root/.openclaw
       sizeGB: 1
     envVars:
       - key: NODE_VERSION
-        value: "20.10.0"
+        value: "22"
       - key: GEMINI_API_KEY
         sync: false
