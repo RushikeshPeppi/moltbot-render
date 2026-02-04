@@ -11,7 +11,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
-        value: "3.11"
+        value: "3.11.0"
       # Encryption key for credentials
       - key: ENCRYPTION_KEY
         generateValue: true
