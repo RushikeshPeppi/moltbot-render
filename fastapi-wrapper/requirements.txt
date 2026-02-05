@@ -8,7 +8,7 @@ pydantic==2.9.2
 pydantic-settings==2.6.1
 
 # HTTP Client
-httpx==0.27.2
+httpx==0.25.2
 
 # Multipart forms
 python-multipart==0.0.12
