@@ -4,7 +4,7 @@
   "description": "OpenClaw Gateway Service for Render",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "bash init-openclaw.sh",
     "setup": "npm install -g openclaw@latest && openclaw onboard --install-daemon"
   },
   "dependencies": {
