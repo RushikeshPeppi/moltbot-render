@@ -130,9 +130,6 @@ function executeOpenClaw(sessionId, message, context, credentials) {
 
     const args = ['agent', '--message', fullMessage];
 
-    // CRITICAL: Explicitly specify Google model to avoid Anthropic default
-    args.push('--model', 'google/gemini-2.0-flash-exp');
-
     // Use --session-id to avoid the --to requirement
     args.push('--session-id', sessionId || 'api-session');
 
@@ -330,33 +327,45 @@ async function startOpenClaw() {
       }
     });
 
-    // Create auth-profiles.json to configure Google/Gemini provider
-    // This is REQUIRED - OpenClaw defaults to Anthropic without this!
+    // Create OpenClaw configuration files per official docs
     if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
-      console.log('Creating auth-profiles.json for Google/Gemini provider...');
+      console.log('Creating OpenClaw configuration files...');
 
+      // 1. Create openclaw.json - sets default model
+      const openclawConfig = {
+        agents: {
+          defaults: {
+            model: {
+              primary: "google/gemini-2.0-flash-exp"
+            }
+          }
+        }
+      };
+      fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
+      console.log(`✓ Created openclaw.json at ${configPath}`);
+
+      // 2. Create auth-profiles.json - CORRECT FORMAT per docs
       const authProfilePath = path.join(agentDir, 'auth-profiles.json');
       const authConfig = {
-        profiles: [
-          {
-            id: "google-gemini",
+        profiles: {
+          "google:gemini": {
             provider: "google",
-            apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+            mode: "api_key"
           }
-        ],
-        default: "google-gemini"
+        },
+        order: {
+          google: ["google:gemini"]
+        }
       };
-
       fs.writeFileSync(authProfilePath, JSON.stringify(authConfig, null, 2));
       console.log(`✓ Created auth-profiles.json at ${authProfilePath}`);
 
       // Display configuration summary
       console.log('\nConfiguration Summary:');
-      console.log(`- Provider: Google/Gemini`);
-      console.log(`- Model: gemini-2.0-flash (default)`);
+      console.log(`- Provider: Google (via GEMINI_API_KEY env var)`);
+      console.log(`- Model: google/gemini-2.0-flash-exp`);
       console.log(`- Web Search: OpenClaw built-in`);
-      console.log(`- Skills Directory: ${skillsDir}`);
-      console.log(`- Memory Directory: ${memoryDir}`);
+      console.log(`- Config: ${configPath}`);
       console.log(`- Auth: ${authProfilePath}`);
 
     } else {
