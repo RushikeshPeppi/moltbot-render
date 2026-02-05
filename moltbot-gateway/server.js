@@ -27,13 +27,14 @@ app.get('/diagnose', (req, res) => {
     PATH: process.env.PATH
   };
 
-  exec('openclaw --version', (error, stdout, stderr) => {
+  exec('openclaw --version && openclaw configure --help', (error, stdout, stderr) => {
     res.json({
       status: 'diagnostic',
       env: envCheck,
       openclaw: {
         installed: !error,
-        version: stdout ? stdout.trim() : 'Unknown',
+        version: stdout ? stdout.split('\n')[0].trim() : 'Unknown',
+        help: stdout,
         error: error ? error.message : null,
         stderr: stderr
       }
