@@ -128,8 +128,14 @@ function executeOpenClaw(sessionId, message, context) {
 
     const args = ['agent', '--message', fullMessage];
 
-    // Note: Version 2026.2.3-1 has removedหลาย flags like --context and --session.
-    // We are using the bare minimum to ensure execution.
+    // Use session-id for context isolation (as per 2026.2.3-1 help)
+    args.push('--session-id', sessionId);
+
+    // Set thinking level
+    args.push('--thinking', 'medium');
+
+    // Request JSON output
+    args.push('--json');
 
     console.log(`Executing: openclaw ${args.join(' ')}`);
 
@@ -169,11 +175,12 @@ function executeOpenClaw(sessionId, message, context) {
 
       try {
         // Try to parse JSON response
+        // Note: New version with --json might wrap the response in a different structure
         const result = JSON.parse(stdout);
         resolve({
-          response: result.response || result.message || stdout.trim(),
-          action_type: result.action_type || result.tool || 'chat',
-          details: result.details || result.metadata || null,
+          response: result.response || result.message || result.text || stdout.trim(),
+          action_type: result.action_type || result.tool || result.agent || 'chat',
+          details: result.details || result.metadata || result.data || null,
           tokens_used: result.tokens_used || result.usage?.total_tokens || 0
         });
       } catch (e) {
