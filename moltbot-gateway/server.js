@@ -395,18 +395,6 @@ async function startOpenClaw() {
               }
             }
           }
-        },
-
-        // Memory configuration
-        memory: {
-          enabled: true,
-          backend: "file",
-          path: memoryDir
-        },
-
-        // Gateway configuration
-        gateway: {
-          mode: "local"
         }
       };
 
@@ -417,9 +405,9 @@ async function startOpenClaw() {
       // Display configuration summary
       console.log('\nConfiguration Summary:');
       console.log(`- Model: google/gemini-2.0-flash-exp`);
-      console.log(`- Memory: ${memoryDir}`);
       console.log(`- Web Search: Built-in (OpenClaw native search)`);
       console.log(`- Skills Directory: ${skillsDir}`);
+      console.log(`- Memory Directory: ${memoryDir} (auto-managed by OpenClaw)`);
 
     } else {
       console.warn('⚠ WARNING: GEMINI_API_KEY not set. OpenClaw will not work!');
