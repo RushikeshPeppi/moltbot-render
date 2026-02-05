@@ -178,8 +178,16 @@ async def google_oauth_callback(
         
         # Delete state (one-time use)
         await redis_client.delete_session(f"oauth_state:{state}")
-        
-        user_id = state_data["user_id"]
+
+        # Extract user_id and ensure it's an integer
+        try:
+            user_id = int(state_data["user_id"])
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error(f"Invalid user_id in state data: {state_data}")
+            return RedirectResponse(
+                url=f"{default_redirect}/clawdbot/oauth?status=error&error=INVALID_USER_ID"
+            )
+
         redirect_uri = state_data.get("redirect_uri", default_redirect)
         
         # Exchange code for tokens with retry logic
@@ -222,26 +230,41 @@ async def google_oauth_callback(
             )
         
         # Store tokens
-        await credential_manager.store_google_tokens(
-            user_id=user_id,
-            access_token=tokens['access_token'],
-            refresh_token=tokens.get('refresh_token', ''),
-            expires_in=tokens.get('expires_in', 3600),
-            token_type=tokens.get('token_type', 'Bearer'),
-            scope=tokens.get('scope', '')
-        )
-        
-        # Log the action
-        await db.log_action(
-            user_id=user_id,
-            session_id="oauth_flow",
-            action_type="google_oauth_connect",
-            request_summary="User connected Google account",
-            status="success"
-        )
-        
+        try:
+            stored = await credential_manager.store_google_tokens(
+                user_id=user_id,
+                access_token=tokens['access_token'],
+                refresh_token=tokens.get('refresh_token', ''),
+                expires_in=tokens.get('expires_in', 3600),
+                token_type=tokens.get('token_type', 'Bearer'),
+                scope=tokens.get('scope', '')
+            )
+
+            if not stored:
+                logger.error(f"Failed to store tokens for user {user_id}")
+                return RedirectResponse(
+                    url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_FAILED"
+                )
+        except Exception as e:
+            logger.error(f"Exception storing tokens for user {user_id}: {e}")
+            return RedirectResponse(
+                url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_ERROR&details={str(e)[:100]}"
+            )
+
+        # Log the action (non-critical, don't fail if this fails)
+        try:
+            await db.log_action(
+                user_id=user_id,
+                session_id="oauth_flow",
+                action_type="google_oauth_connect",
+                request_summary="User connected Google account",
+                status="success"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log OAuth action for user {user_id}: {e}")
+
         logger.info(f"OAuth completed for user {user_id}")
-        
+
         # Redirect to success page
         return RedirectResponse(
             url=f"{redirect_uri}/clawdbot/oauth?status=success&service=google"
