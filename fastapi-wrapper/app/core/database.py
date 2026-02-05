@@ -1,25 +1,24 @@
 """
-MySQL Database Client for credential storage, audit logging, and rate limit persistence.
-Uses aiomysql for async operations.
+Supabase Database Client for credential storage, audit logging, and rate limit persistence.
+Uses supabase-py for async operations.
 """
 
 import json
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
-from contextlib import asynccontextmanager
-import aiomysql
+from datetime import datetime
 from cryptography.fernet import Fernet
+from supabase import create_client, Client
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class Database:
-    """Async MySQL database client with connection pooling"""
+    """Supabase database client for credential storage and audit logging"""
     
     _instance: Optional["Database"] = None
-    _pool: Optional[aiomysql.Pool] = None
+    _client: Optional[Client] = None
     _cipher: Optional[Fernet] = None
     
     def __new__(cls):
@@ -28,24 +27,20 @@ class Database:
         return cls._instance
     
     async def initialize(self):
-        """Initialize connection pool and encryption"""
-        if self._pool is None:
+        """Initialize Supabase client and encryption"""
+        if self._client is None:
             try:
-                self._pool = await aiomysql.create_pool(
-                    host=settings.MYSQL_HOST,
-                    port=settings.MYSQL_PORT,
-                    user=settings.MYSQL_USERNAME,
-                    password=settings.MYSQL_PASSWORD,
-                    db=settings.MYSQL_DATABASE,
-                    minsize=1,
-                    maxsize=settings.MYSQL_POOL_SIZE,
-                    pool_recycle=settings.MYSQL_POOL_RECYCLE,
-                    autocommit=True,
-                    charset='utf8mb4'
+                if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+                    logger.warning("Supabase credentials not configured")
+                    return
+                
+                self._client = create_client(
+                    settings.SUPABASE_URL,
+                    settings.SUPABASE_KEY
                 )
-                logger.info("MySQL connection pool initialized")
+                logger.info("Supabase client initialized")
             except Exception as e:
-                logger.error(f"Failed to initialize MySQL pool: {e}")
+                logger.error(f"Failed to initialize Supabase client: {e}")
                 raise
         
         if self._cipher is None and settings.ENCRYPTION_KEY:
@@ -55,22 +50,9 @@ class Database:
                 logger.error(f"Failed to initialize encryption: {e}")
     
     async def close(self):
-        """Close connection pool"""
-        if self._pool:
-            self._pool.close()
-            await self._pool.wait_closed()
-            self._pool = None
-            logger.info("MySQL connection pool closed")
-    
-    @asynccontextmanager
-    async def get_connection(self):
-        """Get a connection from the pool"""
-        if not self._pool:
-            await self.initialize()
-        
-        async with self._pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cursor:
-                yield cursor
+        """Close Supabase client (no-op for supabase-py)"""
+        self._client = None
+        logger.info("Supabase client closed")
     
     def _encrypt(self, data: Dict[str, Any]) -> str:
         """Encrypt credentials data"""
@@ -95,18 +77,26 @@ class Database:
     ) -> bool:
         """Store encrypted credentials for a user"""
         try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
             encrypted = self._encrypt(credentials)
             
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    INSERT INTO tbl_clawdbot_credentials 
-                        (user_id, service, encrypted_credentials, expires_at)
-                    VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                        encrypted_credentials = VALUES(encrypted_credentials),
-                        expires_at = VALUES(expires_at),
-                        updated_at = CURRENT_TIMESTAMP
-                """, (user_id, service, encrypted, expires_at))
+            # Upsert: insert or update on conflict
+            data = {
+                "user_id": user_id,
+                "service": service,
+                "encrypted_credentials": encrypted,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            
+            self._client.table("tbl_clawdbot_credentials").upsert(
+                data,
+                on_conflict="user_id,service"
+            ).execute()
             
             logger.info(f"Stored credentials for user {user_id}, service: {service}")
             return True
@@ -117,22 +107,23 @@ class Database:
     async def get_credentials(self, user_id: int, service: str) -> Optional[Dict[str, Any]]:
         """Retrieve and decrypt credentials"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    SELECT encrypted_credentials, expires_at 
-                    FROM tbl_clawdbot_credentials
-                    WHERE user_id = %s AND service = %s
-                """, (user_id, service))
-                
-                row = await cursor.fetchone()
-                
-                if not row:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
                     return None
-                
-                creds = self._decrypt(row['encrypted_credentials'])
-                creds['expires_at'] = row['expires_at'].isoformat() if row['expires_at'] else None
-                
-                return creds
+            
+            response = self._client.table("tbl_clawdbot_credentials").select(
+                "encrypted_credentials, expires_at"
+            ).eq("user_id", user_id).eq("service", service).execute()
+            
+            if not response.data or len(response.data) == 0:
+                return None
+            
+            row = response.data[0]
+            creds = self._decrypt(row['encrypted_credentials'])
+            creds['expires_at'] = row['expires_at']
+            
+            return creds
         except Exception as e:
             logger.error(f"Error retrieving credentials: {e}")
             return None
@@ -140,11 +131,14 @@ class Database:
     async def delete_credentials(self, user_id: int, service: str) -> bool:
         """Delete credentials for a service"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    DELETE FROM tbl_clawdbot_credentials
-                    WHERE user_id = %s AND service = %s
-                """, (user_id, service))
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
+            self._client.table("tbl_clawdbot_credentials").delete().eq(
+                "user_id", user_id
+            ).eq("service", service).execute()
             
             logger.info(f"Deleted credentials for user {user_id}, service: {service}")
             return True
@@ -155,22 +149,22 @@ class Database:
     async def get_all_credentials(self, user_id: int) -> Dict[str, Dict[str, Any]]:
         """Get all credentials for a user"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    SELECT service, encrypted_credentials, expires_at
-                    FROM tbl_clawdbot_credentials
-                    WHERE user_id = %s
-                """, (user_id,))
-                
-                rows = await cursor.fetchall()
-                
-                result = {}
-                for row in rows:
-                    creds = self._decrypt(row['encrypted_credentials'])
-                    creds['expires_at'] = row['expires_at'].isoformat() if row['expires_at'] else None
-                    result[row['service']] = creds
-                
-                return result
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return {}
+            
+            response = self._client.table("tbl_clawdbot_credentials").select(
+                "service, encrypted_credentials, expires_at"
+            ).eq("user_id", user_id).execute()
+            
+            result = {}
+            for row in response.data or []:
+                creds = self._decrypt(row['encrypted_credentials'])
+                creds['expires_at'] = row['expires_at']
+                result[row['service']] = creds
+            
+            return result
         except Exception as e:
             logger.error(f"Error retrieving all credentials: {e}")
             return {}
@@ -178,13 +172,16 @@ class Database:
     async def check_credentials_exist(self, user_id: int, service: str) -> bool:
         """Check if credentials exist for a service"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    SELECT 1 FROM tbl_clawdbot_credentials
-                    WHERE user_id = %s AND service = %s
-                """, (user_id, service))
-                
-                return await cursor.fetchone() is not None
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
+            response = self._client.table("tbl_clawdbot_credentials").select(
+                "id"
+            ).eq("user_id", user_id).eq("service", service).execute()
+            
+            return len(response.data or []) > 0
         except Exception as e:
             logger.error(f"Error checking credentials: {e}")
             return False
@@ -204,20 +201,27 @@ class Database:
     ) -> Optional[int]:
         """Log an action to the audit table"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    INSERT INTO tbl_clawdbot_audit_log
-                        (user_id, session_id, action_type, request_summary, 
-                         response_summary, status, tokens_used, error_message)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    user_id, session_id, action_type, 
-                    request_summary[:500] if request_summary else None,  # Truncate
-                    response_summary[:500] if response_summary else None,
-                    status, tokens_used, error_message
-                ))
-                
-                return cursor.lastrowid
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return None
+            
+            data = {
+                "user_id": user_id,
+                "session_id": session_id,
+                "action_type": action_type,
+                "request_summary": request_summary[:500] if request_summary else None,
+                "response_summary": response_summary[:500] if response_summary else None,
+                "status": status,
+                "tokens_used": tokens_used,
+                "error_message": error_message
+            }
+            
+            response = self._client.table("tbl_clawdbot_audit_log").insert(data).execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0].get('id')
+            return None
         except Exception as e:
             logger.error(f"Error logging action: {e}")
             return None
@@ -232,27 +236,21 @@ class Database:
     ) -> bool:
         """Update an existing audit log entry"""
         try:
-            updates = ["status = %s"]
-            params = [status]
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
+            data = {"status": status}
             
             if response_summary:
-                updates.append("response_summary = %s")
-                params.append(response_summary[:500])
+                data["response_summary"] = response_summary[:500]
             if tokens_used is not None:
-                updates.append("tokens_used = %s")
-                params.append(tokens_used)
+                data["tokens_used"] = tokens_used
             if error_message:
-                updates.append("error_message = %s")
-                params.append(error_message)
+                data["error_message"] = error_message
             
-            params.append(log_id)
-            
-            async with self.get_connection() as cursor:
-                await cursor.execute(f"""
-                    UPDATE tbl_clawdbot_audit_log
-                    SET {', '.join(updates)}
-                    WHERE id = %s
-                """, tuple(params))
+            self._client.table("tbl_clawdbot_audit_log").update(data).eq("id", log_id).execute()
             
             return True
         except Exception as e:
@@ -267,18 +265,18 @@ class Database:
     ) -> List[Dict[str, Any]]:
         """Get action history for a user"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("""
-                    SELECT id, session_id, action_type, request_summary, 
-                           response_summary, status, tokens_used, created_at
-                    FROM tbl_clawdbot_audit_log
-                    WHERE user_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT %s OFFSET %s
-                """, (user_id, limit, offset))
-                
-                rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return []
+            
+            response = self._client.table("tbl_clawdbot_audit_log").select(
+                "id, session_id, action_type, request_summary, response_summary, status, tokens_used, created_at"
+            ).eq("user_id", user_id).order(
+                "created_at", desc=True
+            ).range(offset, offset + limit - 1).execute()
+            
+            return response.data or []
         except Exception as e:
             logger.error(f"Error getting action history: {e}")
             return []
@@ -308,9 +306,14 @@ class Database:
     async def health_check(self) -> bool:
         """Check database connectivity"""
         try:
-            async with self.get_connection() as cursor:
-                await cursor.execute("SELECT 1")
-                return True
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
+            # Simple query to check connectivity
+            response = self._client.table("tbl_clawdbot_credentials").select("id").limit(1).execute()
+            return True
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
             return False

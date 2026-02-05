@@ -94,7 +94,7 @@ async def health_check():
                 "status": "healthy" if all_ok else "degraded",
                 "openclaw_gateway": "online" if openclaw_ok else "offline",
                 "redis": redis_ok,
-                "mysql": db_ok,
+                "supabase": db_ok,
                 "active_sessions": active_sessions
             },
             "error": None,

@@ -3,7 +3,7 @@ from typing import Optional, List
 import os
 
 class Settings(BaseSettings):
-    """Application settings for Render with Upstash Redis and MySQL"""
+    """Application settings for Render with Upstash Redis and Supabase"""
     
     # API Settings
     APP_NAME: str = "Moltbot Wrapper API"
@@ -23,14 +23,9 @@ class Settings(BaseSettings):
     SESSION_CLEANUP_INTERVAL: int = 300  # 5 minutes
     MAX_CONVERSATION_HISTORY: int = 50  # Keep last N messages
     
-    # MySQL Database
-    MYSQL_HOST: str = os.getenv("MYSQL_HOST", "127.0.0.1")
-    MYSQL_PORT: int = int(os.getenv("MYSQL_PORT", "3306"))
-    MYSQL_DATABASE: str = os.getenv("MYSQL_DATABASE", "dashtech_peppi")
-    MYSQL_USERNAME: str = os.getenv("MYSQL_USERNAME", "dashtech_peppi")
-    MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "")
-    MYSQL_POOL_SIZE: int = 5
-    MYSQL_POOL_RECYCLE: int = 3600
+    # Supabase Database
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     
     # Encryption
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")

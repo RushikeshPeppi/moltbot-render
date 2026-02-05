@@ -25,9 +25,8 @@ aiofiles==24.1.0
 # Upstash Redis
 upstash-redis==1.1.0
 
-# MySQL Async
-aiomysql==0.2.0
-PyMySQL==1.1.1
+# Supabase
+supabase==2.4.0
 
 # Google OAuth
 google-auth==2.27.0

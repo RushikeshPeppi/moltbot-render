@@ -28,16 +28,10 @@ services:
         sync: false
       - key: UPSTASH_REDIS_TOKEN
         sync: false
-      # MySQL Database (your existing Peppi database)
-      - key: MYSQL_HOST
+      # Supabase Database
+      - key: SUPABASE_URL
         sync: false
-      - key: MYSQL_PORT
-        value: "3306"
-      - key: MYSQL_DATABASE
-        sync: false
-      - key: MYSQL_USERNAME
-        sync: false
-      - key: MYSQL_PASSWORD
+      - key: SUPABASE_KEY
         sync: false
       # Google OAuth
       - key: GOOGLE_CLIENT_ID

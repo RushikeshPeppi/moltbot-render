@@ -95,7 +95,7 @@ class HealthData(BaseModel):
     status: str = Field(..., description="Overall health status")
     openclaw_gateway: str = Field(..., description="OpenClaw gateway status")
     redis: bool = Field(..., description="Redis connection status")
-    mysql: bool = Field(..., description="MySQL connection status")
+    supabase: bool = Field(..., description="Supabase connection status")
     active_sessions: int = Field(..., description="Number of active sessions")
 
 
