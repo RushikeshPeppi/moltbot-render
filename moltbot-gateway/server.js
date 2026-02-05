@@ -128,7 +128,11 @@ function executeOpenClaw(sessionId, message, context) {
 
     const args = ['agent', '--message', fullMessage];
 
-    // Use session-id for context isolation (as per 2026.2.3-1 help)
+    // Use --local to run the embedded agent directly with shell env vars.
+    // This avoids the "gateway closed" errors seen with the background daemon.
+    args.push('--local');
+
+    // Use session-id for context isolation
     args.push('--session-id', sessionId);
 
     // Set thinking level
@@ -142,8 +146,9 @@ function executeOpenClaw(sessionId, message, context) {
     const openclaw = spawn('openclaw', args, {
       env: {
         ...process.env,
+        // OpenClaw often expects GOOGLE_API_KEY for the google provider
+        GOOGLE_API_KEY: process.env.GEMINI_API_KEY,
         // The process inherits NODE_OPTIONS from the environment (set in render.yaml).
-        // This ensures the agent has access to the full RAM of the Professional tier.
       },
       timeout: timeout
     });
@@ -264,7 +269,6 @@ function startOpenClaw() {
     }
 
     console.log(`OpenClaw version: ${stdout.trim()}`);
-    isReady = true;
 
     // Log help to see supported flags for this specific version
     exec('openclaw agent --help', (err, helpStdout) => {
@@ -273,14 +277,27 @@ function startOpenClaw() {
       console.log('---------------------------');
     });
 
-    // Initialize the gateway daemon
-    exec('openclaw gateway --port 18789 &', (err) => {
-      if (err) {
-        console.warn('Gateway daemon start warning:', err.message);
-      } else {
-        console.log('OpenClaw gateway daemon started');
+    // Seed the configuration to use Gemini if not already configured
+    const configPath = '/root/.openclaw/openclaw.json';
+    const defaultConfig = {
+      agents: {
+        defaults: {
+          model: 'google/gemini-1.5-flash'
+        }
       }
-    });
+    };
+
+    try {
+      if (!fs.existsSync('/root/.openclaw')) {
+        fs.mkdirSync('/root/.openclaw', { recursive: true });
+      }
+      fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
+      console.log('Seeded OpenClaw config for Gemini');
+    } catch (err) {
+      console.warn('Could not seed OpenClaw config:', err.message);
+    }
+
+    isReady = true;
   });
 }
 
