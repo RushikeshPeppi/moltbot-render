@@ -336,7 +336,7 @@ async function startOpenClaw() {
         agents: {
           defaults: {
             model: {
-              primary: "google/gemini-3-flash-preview"
+              primary: "google/gemini-2.5-flash"
             }
           }
         }
@@ -363,7 +363,7 @@ async function startOpenClaw() {
       // Display configuration summary
       console.log('\nConfiguration Summary:');
       console.log(`- Provider: Google (via GEMINI_API_KEY env var)`);
-      console.log(`- Model: google/gemini-3-flash-preview`);
+      console.log(`- Model: google/gemini-2.5-flash`);
       console.log(`- Web Search: OpenClaw built-in`);
       console.log(`- Config: ${configPath}`);
       console.log(`- Auth: ${authProfilePath}`);
