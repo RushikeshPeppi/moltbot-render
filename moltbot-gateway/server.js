@@ -130,6 +130,9 @@ function executeOpenClaw(sessionId, message, context, credentials) {
 
     const args = ['agent', '--message', fullMessage];
 
+    // Use --session-id to avoid the --to requirement (which expects messaging channels)
+    args.push('--session-id', sessionId || 'api-session');
+
     // Use --local to run the embedded agent directly with shell env vars.
     // This avoids the "gateway closed" errors seen with the background daemon.
     args.push('--local');
