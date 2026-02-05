@@ -326,30 +326,19 @@ async function startOpenClaw() {
       }
     });
 
-    // Create proper openclaw.json configuration for OpenClaw 2026
+    // DO NOT create openclaw.json - let OpenClaw use its defaults
+    // Model will be auto-detected from GOOGLE_API_KEY environment variable
     if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
-      console.log('Creating OpenClaw 2026 configuration...');
-
-      // Minimal valid configuration for OpenClaw 2026
-      // Let OpenClaw auto-detect and use built-in skills
-      const openclawConfig = {
-        agents: {
-          defaults: {
-            model: "google/gemini-2.0-flash-exp"
-          }
-        }
-      };
-
-      // Write configuration
-      fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
-      console.log(`✓ Created openclaw.json at ${configPath}`);
+      console.log('✓ GEMINI_API_KEY detected - OpenClaw will auto-detect Google/Gemini model');
+      console.log('✓ Using OpenClaw default configuration (no config file needed)');
 
       // Display configuration summary
       console.log('\nConfiguration Summary:');
-      console.log(`- Model: google/gemini-2.0-flash-exp`);
-      console.log(`- Web Search: Built-in (OpenClaw native search)`);
+      console.log(`- Model: Auto-detected from GOOGLE_API_KEY`);
+      console.log(`- Web Search: OpenClaw built-in`);
       console.log(`- Skills Directory: ${skillsDir}`);
-      console.log(`- Memory Directory: ${memoryDir} (auto-managed by OpenClaw)`);
+      console.log(`- Memory Directory: ${memoryDir}`);
+      console.log(`- Config: Using OpenClaw defaults (no openclaw.json)`);
 
     } else {
       console.warn('⚠ WARNING: GEMINI_API_KEY not set. OpenClaw will not work!');
