@@ -167,6 +167,20 @@ class RedisClient:
             logger.error(f"Error retrieving key: {e}")
             return None
 
+    async def delete(self, key: str) -> bool:
+        """Delete a key"""
+        if not self._redis:
+            logger.warning("Redis not connected, skipping deletion")
+            return False
+
+        try:
+            self._redis.delete(key)
+            logger.debug(f"Key deleted: {key}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting key: {e}")
+            return False
+
     # ==================== Rate Limiting ====================
 
     async def check_rate_limit(self, user_id: str, daily_limit: int = None) -> Dict[str, Any]:

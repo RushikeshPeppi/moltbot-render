@@ -177,7 +177,7 @@ async def google_oauth_callback(
             )
         
         # Delete state (one-time use)
-        await redis_client.delete_session(f"oauth_state:{state}")
+        await redis_client.delete(f"oauth_state:{state}")
 
         # Extract user_id and ensure it's an integer
         try:
