@@ -20,7 +20,7 @@ services:
         generateValue: true
       # OpenClaw Gateway URL (internal service)
       - key: MOLTBOT_GATEWAY_URL
-        value: http://openclaw-gateway.onrender.com:10000
+        value: https://openclaw-gateway-dg3y.onrender.com
       # Upstash Redis
       - key: UPSTASH_REDIS_URL
         sync: false
