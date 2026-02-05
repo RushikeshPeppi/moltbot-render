@@ -319,26 +319,42 @@ async function startOpenClaw() {
     const skillsDir = path.join(openClawDir, 'skills');
 
     // Ensure directories exist
-    [openClawDir, memoryDir, skillsDir].forEach(dir => {
+    const agentDir = path.join(openClawDir, 'agents', 'main', 'agent');
+    [openClawDir, memoryDir, skillsDir, agentDir].forEach(dir => {
       if (!fs.existsSync(dir)) {
         console.log(`Creating directory: ${dir}`);
         fs.mkdirSync(dir, { recursive: true });
       }
     });
 
-    // DO NOT create openclaw.json - let OpenClaw use its defaults
-    // Model will be auto-detected from GOOGLE_API_KEY environment variable
+    // Create auth-profiles.json to configure Google/Gemini provider
+    // This is REQUIRED - OpenClaw defaults to Anthropic without this!
     if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
-      console.log('✓ GEMINI_API_KEY detected - OpenClaw will auto-detect Google/Gemini model');
-      console.log('✓ Using OpenClaw default configuration (no config file needed)');
+      console.log('Creating auth-profiles.json for Google/Gemini provider...');
+
+      const authProfilePath = path.join(agentDir, 'auth-profiles.json');
+      const authConfig = {
+        profiles: [
+          {
+            id: "google-gemini",
+            provider: "google",
+            apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+          }
+        ],
+        default: "google-gemini"
+      };
+
+      fs.writeFileSync(authProfilePath, JSON.stringify(authConfig, null, 2));
+      console.log(`✓ Created auth-profiles.json at ${authProfilePath}`);
 
       // Display configuration summary
       console.log('\nConfiguration Summary:');
-      console.log(`- Model: Auto-detected from GOOGLE_API_KEY`);
+      console.log(`- Provider: Google/Gemini`);
+      console.log(`- Model: gemini-2.0-flash (default)`);
       console.log(`- Web Search: OpenClaw built-in`);
       console.log(`- Skills Directory: ${skillsDir}`);
       console.log(`- Memory Directory: ${memoryDir}`);
-      console.log(`- Config: Using OpenClaw defaults (no openclaw.json)`);
+      console.log(`- Auth: ${authProfilePath}`);
 
     } else {
       console.warn('⚠ WARNING: GEMINI_API_KEY not set. OpenClaw will not work!');
