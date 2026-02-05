@@ -1,5 +1,7 @@
 const express = require('express');
 const { spawn, exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 18789;
 
@@ -278,7 +280,10 @@ function startOpenClaw() {
     });
 
     // Seed the configuration to use Gemini if not already configured
-    const configPath = '/root/.openclaw/openclaw.json';
+    const os = require('os');
+    const openclawHome = path.join(os.homedir(), '.openclaw');
+    const configPath = path.join(openclawHome, 'openclaw.json');
+
     const defaultConfig = {
       agents: {
         defaults: {
@@ -288,11 +293,11 @@ function startOpenClaw() {
     };
 
     try {
-      if (!fs.existsSync('/root/.openclaw')) {
-        fs.mkdirSync('/root/.openclaw', { recursive: true });
+      if (!fs.existsSync(openclawHome)) {
+        fs.mkdirSync(openclawHome, { recursive: true });
       }
       fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
-      console.log('Seeded OpenClaw config for Gemini');
+      console.log(`Seeded OpenClaw config for Gemini at ${configPath}`);
     } catch (err) {
       console.warn('Could not seed OpenClaw config:', err.message);
     }
