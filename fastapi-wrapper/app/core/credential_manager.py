@@ -86,6 +86,9 @@ class CredentialManager:
         if expires_at:
             try:
                 exp_time = datetime.fromisoformat(expires_at)
+                # Remove timezone info if present to compare with utcnow()
+                if exp_time.tzinfo is not None:
+                    exp_time = exp_time.replace(tzinfo=None)
                 if datetime.utcnow() > exp_time - timedelta(minutes=5):
                     # Token expired or about to expire, refresh it
                     logger.info(f"Refreshing expired token for user {user_id}")
