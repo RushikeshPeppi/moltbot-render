@@ -130,6 +130,9 @@ function executeOpenClaw(sessionId, message, context, credentials) {
 
     const args = ['agent', '--message', fullMessage];
 
+    // CRITICAL: Explicitly specify Google model to avoid Anthropic default
+    args.push('--model', 'google/gemini-2.0-flash-exp');
+
     // Use --session-id to avoid the --to requirement
     args.push('--session-id', sessionId || 'api-session');
 
