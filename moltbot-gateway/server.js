@@ -290,20 +290,12 @@ function startOpenClaw() {
     const configPath = path.join(openclawHome, 'openclaw.json');
 
     const defaultConfig = {
-      agents: {
-        defaults: {
-          model: {
-            primary: 'google/gemini-2.0-flash'
-          }
-        }
-      },
-      skills: {
-        web: {
-          provider: 'duckduckgo'
-        }
+      model: "google/gemini-2.0-flash",
+      web: {
+        provider: "duckduckgo"
       },
       gateway: {
-        mode: 'local'
+        mode: "local"
       }
     };
 
