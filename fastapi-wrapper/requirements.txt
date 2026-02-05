@@ -26,7 +26,7 @@ aiofiles==24.1.0
 upstash-redis==1.1.0
 
 # Supabase
-supabase==2.12.1
+supabase==2.27.3
 
 # Google OAuth
 google-auth==2.27.0
