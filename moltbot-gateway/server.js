@@ -287,8 +287,13 @@ function startOpenClaw() {
     const defaultConfig = {
       agents: {
         defaults: {
-          model: 'google/gemini-1.5-flash'
+          model: {
+            primary: 'google/gemini-2.5-flash'
+          }
         }
+      },
+      gateway: {
+        mode: 'local'
       }
     };
 
