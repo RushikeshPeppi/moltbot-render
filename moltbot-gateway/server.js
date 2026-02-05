@@ -134,8 +134,13 @@ function executeOpenClaw(sessionId, message, context) {
     // This avoids the "gateway closed" errors seen with the background daemon.
     args.push('--local');
 
-    // Use session-id for context isolation
-    args.push('--session-id', sessionId);
+    // Pass Google Token if available
+    const extraEnv = {};
+    if (credentials && credentials.google_access_token) {
+      extraEnv.GOOGLE_ACCESS_TOKEN = credentials.google_access_token;
+      // Also potentially for specific skills
+      extraEnv.GOOGLE_TOKEN = credentials.google_access_token;
+    }
 
     // Set thinking level
     args.push('--thinking', 'medium');
@@ -150,7 +155,7 @@ function executeOpenClaw(sessionId, message, context) {
         ...process.env,
         // OpenClaw often expects GOOGLE_API_KEY for the google provider
         GOOGLE_API_KEY: process.env.GEMINI_API_KEY,
-        // The process inherits NODE_OPTIONS from the environment (set in render.yaml).
+        ...extraEnv
       },
       timeout: timeout
     });
@@ -279,7 +284,7 @@ function startOpenClaw() {
       console.log('---------------------------');
     });
 
-    // Seed the configuration to use Gemini if not already configured
+    // Seed the configuration to use Gemini and DuckDuckGo for search
     const os = require('os');
     const openclawHome = path.join(os.homedir(), '.openclaw');
     const configPath = path.join(openclawHome, 'openclaw.json');
@@ -288,8 +293,13 @@ function startOpenClaw() {
       agents: {
         defaults: {
           model: {
-            primary: 'google/gemini-2.5-flash'
+            primary: 'google/gemini-2.0-flash'
           }
+        }
+      },
+      skills: {
+        web: {
+          provider: 'duckduckgo'
         }
       },
       gateway: {
