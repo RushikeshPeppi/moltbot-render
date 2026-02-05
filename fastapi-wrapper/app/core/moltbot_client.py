@@ -131,11 +131,20 @@ class OpenClawClient:
                     await self._wait_before_retry(attempt)
                     
             except httpx.HTTPStatusError as e:
-                logger.error(f"[{session_id}] HTTP error on attempt {attempt}: {e}")
+                # Try to get more details from the response body
+                error_details = str(e)
+                try:
+                    error_body = e.response.text
+                    if error_body:
+                        error_details = f"{str(e)} - Server response: {error_body}"
+                except Exception:
+                    pass
+
+                logger.error(f"[{session_id}] HTTP error on attempt {attempt}: {error_details}")
                 last_exception = OpenClawClientError(
-                    message=str(e),
+                    message=error_details,
                     error_type="HTTP_ERROR",
-                    retryable=False
+                    retryable=False # 500s from gateway usually mean permanent config/code errors, not transient network issues
                 )
                 break  # Don't retry HTTP errors (already handled above)
                 

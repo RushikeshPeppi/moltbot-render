@@ -17,6 +17,28 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Diagnostic check
+app.get('/diagnose', (req, res) => {
+  const envCheck = {
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? 'Set (starts with ' + process.env.GEMINI_API_KEY.substring(0, 5) + '...)' : 'MISSING',
+    NODE_VERSION: process.version,
+    PATH: process.env.PATH
+  };
+
+  exec('openclaw --version', (error, stdout, stderr) => {
+    res.json({
+      status: 'diagnostic',
+      env: envCheck,
+      openclaw: {
+        installed: !error,
+        version: stdout ? stdout.trim() : 'Unknown',
+        error: error ? error.message : null,
+        stderr: stderr
+      }
+    });
+  });
+});
+
 /**
  * Execute action via OpenClaw
  * 
