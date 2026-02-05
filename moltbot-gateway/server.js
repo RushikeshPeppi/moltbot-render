@@ -189,19 +189,46 @@ function executeOpenClaw(sessionId, message, context, credentials) {
       }
 
       try {
-        // Try to parse JSON response
-        // Note: New version with --json might wrap the response in a different structure
-        const result = JSON.parse(stdout);
-        resolve({
-          response: result.response || result.message || result.text || stdout.trim(),
-          action_type: result.action_type || result.tool || result.agent || 'chat',
-          details: result.details || result.metadata || result.data || null,
-          tokens_used: result.tokens_used || result.usage?.total_tokens || 0
-        });
+        // Attempt to extract JSON from mixed output (CLI often prints logs + JSON)
+        let result = null;
+
+        // 1. Try parsing the whole thing first
+        try {
+          result = JSON.parse(stdout);
+        } catch (e) {
+          // 2. Try finding the JSON block
+          // Look for line starting with {
+          const jsonStart = stdout.indexOf('{');
+          const jsonEnd = stdout.lastIndexOf('}');
+
+          if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+            const jsonStr = stdout.substring(jsonStart, jsonEnd + 1);
+            try {
+              result = JSON.parse(jsonStr);
+            } catch (e2) {
+              console.warn('Failed to extract JSON from stdout substring');
+            }
+          }
+        }
+
+        if (result) {
+          resolve({
+            response: result.response || result.message || result.text || (typeof result === 'string' ? result : JSON.stringify(result)),
+            action_type: result.action_type || result.tool || result.agent || 'chat',
+            details: result.details || result.metadata || result.data || null,
+            tokens_used: result.tokens_used || result.usage?.total_tokens || 0
+          });
+        } else {
+          // Fallback if no JSON found
+          throw new Error('No valid JSON found');
+        }
       } catch (e) {
-        // If not JSON, return as plain response
+        // If not JSON, return as plain response but CLEAN UP the output
+        // Remove the ASCII config table if present
+        let cleanResponse = stdout.trim();
+
         resolve({
-          response: stdout.trim() || 'Task completed.',
+          response: cleanResponse,
           action_type: 'chat',
           details: null,
           tokens_used: 0
