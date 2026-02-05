@@ -1,5 +1,5 @@
 """
-MySQL-backed Credential Manager with OAuth token support.
+Supabase-backed Credential Manager with OAuth token support.
 Handles encrypted storage and automatic token refresh.
 """
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class CredentialManager:
-    """MySQL-backed encrypted credential storage with OAuth support"""
+    """Supabase-backed encrypted credential storage with OAuth support"""
     
     def __init__(self):
         self.db = db
