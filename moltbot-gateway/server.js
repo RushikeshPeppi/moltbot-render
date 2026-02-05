@@ -130,8 +130,12 @@ function executeOpenClaw(sessionId, message, context, credentials) {
 
     const args = ['agent', '--message', fullMessage];
 
-    // Use --session-id to avoid the --to requirement (which expects messaging channels)
+    // Use --session-id to avoid the --to requirement
     args.push('--session-id', sessionId || 'api-session');
+
+    // FORCE the model to use Google Gemini to match our auth profile
+    // This prevents falling back to Anthropic (default)
+    args.push('--model', 'google/gemini-2.0-flash');
 
     // Use --local to run the embedded agent directly with shell env vars.
     // This avoids the "gateway closed" errors seen with the background daemon.
