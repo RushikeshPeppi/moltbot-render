@@ -330,70 +330,12 @@ async function startOpenClaw() {
     if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
       console.log('Creating OpenClaw 2026 configuration...');
 
+      // Minimal valid configuration for OpenClaw 2026
+      // Let OpenClaw auto-detect and use built-in skills
       const openclawConfig = {
-        // Model configuration
         agents: {
           defaults: {
             model: "google/gemini-2.0-flash-exp"
-          }
-        },
-
-        // Skills configuration
-        skills: {
-          load: {
-            extraDirs: []  // Can add custom skill directories here
-          },
-          entries: {
-            // Web search skill (using OpenClaw built-in search)
-            "web_search": {
-              enabled: true,
-              config: {
-                provider: "builtin",
-                maxResults: 5
-              }
-            },
-
-            // Gmail skill (if available)
-            "gmail": {
-              enabled: true,
-              config: {
-                authMethod: "oauth",
-                tokenEnvVar: "GOOGLE_ACCESS_TOKEN"
-              }
-            },
-
-            // Calendar skill (if available)
-            "calendar": {
-              enabled: true,
-              config: {
-                authMethod: "oauth",
-                tokenEnvVar: "GOOGLE_ACCESS_TOKEN",
-                provider: "google"
-              }
-            },
-
-            // Google Calendar skill (alternative name)
-            "google-calendar": {
-              enabled: true,
-              config: {
-                authMethod: "oauth",
-                tokenEnvVar: "GOOGLE_ACCESS_TOKEN"
-              }
-            },
-
-            // Reminders (built-in memory-based)
-            "reminders": {
-              enabled: true
-            },
-
-            // Browser automation (if available)
-            "browser-use": {
-              enabled: true,
-              config: {
-                headless: true,
-                timeout: 30000
-              }
-            }
           }
         }
       };
