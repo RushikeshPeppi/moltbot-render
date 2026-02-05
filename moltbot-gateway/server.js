@@ -285,32 +285,19 @@ function startOpenClaw() {
       console.log('---------------------------');
     });
 
-    // Seed the configuration to use Gemini and DuckDuckGo for search
-    const os = require('os');
-    const openclawHome = path.join(os.homedir(), '.openclaw');
-    const configPath = path.join(openclawHome, 'openclaw.json');
-
-    const defaultConfig = {
-      model: "google/gemini-2.0-flash",
-      web: {
-        provider: "duckduckgo"
-      },
-      gateway: {
-        mode: "local"
-      }
+    // Use the CLI to configure OpenClaw - this ensures the correct schema for version 2026.2.3
+    const configure = () => {
+      exec('openclaw configure --section agents --key model --value google/gemini-2.0-flash && openclaw configure --section web --key provider --value duckduckgo', (err) => {
+        if (err) {
+          console.warn('Could not configure OpenClaw via CLI:', err.message);
+        } else {
+          console.log('OpenClaw configured via CLI successfully.');
+        }
+        isReady = true;
+      });
     };
 
-    try {
-      if (!fs.existsSync(openclawHome)) {
-        fs.mkdirSync(openclawHome, { recursive: true });
-      }
-      fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
-      console.log(`Seeded OpenClaw config for Gemini at ${configPath}`);
-    } catch (err) {
-      console.warn('Could not seed OpenClaw config:', err.message);
-    }
-
-    isReady = true;
+    configure();
   });
 }
 
