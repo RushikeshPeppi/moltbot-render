@@ -8,7 +8,7 @@ pydantic==2.9.2
 pydantic-settings==2.6.1
 
 # HTTP Client
-httpx==0.25.2
+httpx==0.28.1
 
 # Multipart forms
 python-multipart==0.0.12
@@ -26,7 +26,7 @@ aiofiles==24.1.0
 upstash-redis==1.1.0
 
 # Supabase
-supabase==2.4.0
+supabase==2.12.1
 
 # Google OAuth
 google-auth==2.27.0
