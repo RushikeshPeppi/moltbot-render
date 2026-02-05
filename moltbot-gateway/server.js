@@ -133,10 +133,6 @@ function executeOpenClaw(sessionId, message, context, credentials) {
     // Use --session-id to avoid the --to requirement
     args.push('--session-id', sessionId || 'api-session');
 
-    // FORCE the model to use Google Gemini to match our auth profile
-    // This prevents falling back to Anthropic (default)
-    args.push('--model', 'google/gemini-2.0-flash');
-
     // Use --local to run the embedded agent directly with shell env vars.
     // This avoids the "gateway closed" errors seen with the background daemon.
     args.push('--local');
@@ -285,6 +281,24 @@ async function startOpenClaw() {
     if (!fs.existsSync(agentDir)) {
       console.log(`Creating agent directory: ${agentDir}`);
       fs.mkdirSync(agentDir, { recursive: true });
+    }
+
+    // Create openclaw.json to set default model
+    const configPath = path.join(openClawDir, 'openclaw.json');
+    if (process.env.GEMINI_API_KEY) {
+      console.log('Setting default model to Google Gemini...');
+      const openclawConfig = {
+        agents: {
+          defaults: {
+            model: "google/gemini-2.0-flash"
+          }
+        }
+      };
+
+      // Only write if it doesn't exist or we want to overwrite
+      // For now, simple overwrite to ensure correctness
+      fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
+      console.log(`✓ Created openclaw.json at ${configPath}`);
     }
 
     // Create auth-profiles.json if using Google/Gemini
