@@ -267,8 +267,44 @@ app.get('/skills', (req, res) => {
 });
 
 // Start OpenClaw gateway
-function startOpenClaw() {
+async function startOpenClaw() {
   console.log('Starting OpenClaw Gateway...');
+
+  // Initialize configuration
+  try {
+    const homeDir = process.env.HOME || '/root'; // Default to /root if HOME not set
+    const openClawDir = path.join(homeDir, '.openclaw');
+    const agentDir = path.join(openClawDir, 'agents', 'main', 'agent');
+    const authProfilePath = path.join(agentDir, 'auth-profiles.json');
+
+    // Ensure directory exists
+    if (!fs.existsSync(agentDir)) {
+      console.log(`Creating agent directory: ${agentDir}`);
+      fs.mkdirSync(agentDir, { recursive: true });
+    }
+
+    // Create auth-profiles.json if using Google/Gemini
+    if (process.env.GEMINI_API_KEY) {
+      console.log('Configuring OpenClaw to use Google/Gemini provider...');
+      const authConfig = {
+        profiles: [
+          {
+            id: "google-gemini",
+            provider: "google",
+            apiKey: process.env.GEMINI_API_KEY
+          }
+        ],
+        default: "google-gemini"
+      };
+
+      fs.writeFileSync(authProfilePath, JSON.stringify(authConfig, null, 2));
+      console.log(`✓ Created auth-profiles.json at ${authProfilePath}`);
+    } else {
+      console.warn('⚠ GEMINI_API_KEY not set. Skipping auth profile creation.');
+    }
+  } catch (err) {
+    console.error('Error initializing OpenClaw configuration:', err);
+  }
 
   // Check if openclaw is available
   exec('openclaw --version', (error, stdout, stderr) => {
