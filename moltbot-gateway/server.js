@@ -23,20 +23,19 @@ app.get('/health', (req, res) => {
 app.get('/diagnose', (req, res) => {
   const envCheck = {
     GEMINI_API_KEY: process.env.GEMINI_API_KEY ? 'Set (starts with ' + process.env.GEMINI_API_KEY.substring(0, 5) + '...)' : 'MISSING',
+    BRAVE_API_KEY: process.env.BRAVE_API_KEY ? 'Set (starts with ' + process.env.BRAVE_API_KEY.substring(0, 5) + '...)' : 'Not set (using built-in search)',
     NODE_VERSION: process.version,
     PATH: process.env.PATH
   };
 
-  exec('openclaw --version && openclaw configure --section agents --help && openclaw configure --section web --help', (error, stdout, stderr) => {
+  exec('openclaw --version', (error, stdout, stderr) => {
     res.json({
       status: 'diagnostic',
       env: envCheck,
       openclaw: {
         installed: !error,
-        version: stdout ? stdout.split('\n')[0].trim() : 'Unknown',
-        details: stdout,
-        error: error ? error.message : null,
-        stderr: stderr
+        version: stdout ? stdout.trim() : 'Unknown',
+        error: error ? error.message : null
       }
     });
   });
@@ -278,26 +277,26 @@ function startOpenClaw() {
 
     console.log(`OpenClaw version: ${stdout.trim()}`);
 
-    // Log help to see supported flags for this specific version
-    exec('openclaw agent --help', (err, helpStdout) => {
-      console.log('--- OpenClaw Agent Help ---');
-      console.log(helpStdout || 'Could not get help output');
-      console.log('---------------------------');
-    });
+    // Verify environment variables
+    if (!process.env.GEMINI_API_KEY) {
+      console.warn('WARNING: GEMINI_API_KEY not set. OpenClaw may not work correctly.');
+    } else {
+      console.log('✓ GEMINI_API_KEY is configured');
+    }
 
-    // Use the CLI to configure OpenClaw - this ensures the correct schema for version 2026.2.3
-    const configure = () => {
-      exec('openclaw configure --section agents --key model --value google/gemini-2.0-flash && openclaw configure --section web --key provider --value duckduckgo', (err) => {
-        if (err) {
-          console.warn('Could not configure OpenClaw via CLI:', err.message);
-        } else {
-          console.log('OpenClaw configured via CLI successfully.');
-        }
-        isReady = true;
-      });
-    };
+    // Check if BRAVE_API_KEY is set (optional for enhanced web search)
+    if (process.env.BRAVE_API_KEY) {
+      console.log('✓ BRAVE_API_KEY is configured (enhanced web search enabled)');
+    } else {
+      console.log('ℹ BRAVE_API_KEY not set (using built-in web search)');
+    }
 
-    configure();
+    console.log('OpenClaw Gateway is ready!');
+    console.log('- web_search tool: enabled by default');
+    console.log('- Model: auto-detected from GOOGLE_API_KEY');
+    console.log('- Mode: local execution (--local flag)');
+
+    isReady = true;
   });
 }
 
