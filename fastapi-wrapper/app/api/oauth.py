@@ -92,8 +92,8 @@ async def google_oauth_init(
             "redirect_uri": redirect_uri or settings.PEPPI_WEBSITE_URL
         }
         
-        # Try Redis first, fallback to memory
-        stored = await redis_client.set_session(
+        # Store OAuth state in Redis
+        stored = await redis_client.set(
             f"oauth_state:{state}",
             state_data,
             ttl=600  # 10 minutes
@@ -168,7 +168,7 @@ async def google_oauth_callback(
     
     try:
         # Get state data from Redis
-        state_data = await redis_client.get_session(f"oauth_state:{state}")
+        state_data = await redis_client.get(f"oauth_state:{state}")
         
         if not state_data:
             logger.error(f"Invalid or expired state: {state}")

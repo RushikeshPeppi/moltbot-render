@@ -127,8 +127,48 @@ class RedisClient:
             logger.error(f"Error refreshing session TTL: {e}")
             return False
     
+    # ==================== Generic Operations ====================
+
+    async def set(self, key: str, value: Any, ttl: int = None) -> bool:
+        """Store arbitrary key-value with optional TTL"""
+        if not self._redis:
+            logger.warning("Redis not connected, skipping storage")
+            return False
+
+        try:
+            if isinstance(value, (dict, list)):
+                value = json.dumps(value)
+
+            if ttl:
+                self._redis.setex(key, ttl, value)
+            else:
+                self._redis.set(key, value)
+
+            logger.debug(f"Key stored: {key}")
+            return True
+        except Exception as e:
+            logger.error(f"Error storing key: {e}")
+            return False
+
+    async def get(self, key: str) -> Optional[Any]:
+        """Retrieve value by key"""
+        if not self._redis:
+            return None
+
+        try:
+            data = self._redis.get(key)
+            if data:
+                try:
+                    return json.loads(data)
+                except:
+                    return data
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving key: {e}")
+            return None
+
     # ==================== Rate Limiting ====================
-    
+
     async def check_rate_limit(self, user_id: str, daily_limit: int = None) -> Dict[str, Any]:
         """
         Check and increment rate limit for user.
