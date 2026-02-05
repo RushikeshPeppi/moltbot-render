@@ -120,11 +120,13 @@ function executeOpenClaw(sessionId, message, context) {
 
     // Build the command
     // OpenClaw CLI: openclaw agent --message "message" --thinking high
-    const args = ['agent', '--message', message];
-
+    // Note: --context is unknown in version 2026.2.3-1, so we prepend it to the message
+    let fullMessage = message;
     if (context) {
-      args.push('--context', context);
+      fullMessage = `${context}\n\nTask: ${message}`;
     }
+
+    const args = ['agent', '--message', fullMessage];
 
     // Use session for context isolation
     args.push('--session', sessionId);
