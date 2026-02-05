@@ -12,9 +12,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.0"
-      # Encryption key for credentials
+      # Encryption key for credentials (must be valid Fernet key - set in Render dashboard)
       - key: ENCRYPTION_KEY
-        generateValue: true
+        sync: false
       # API secret for authentication
       - key: API_SECRET_KEY
         generateValue: true
