@@ -128,16 +128,10 @@ function executeOpenClaw(sessionId, message, context) {
 
     const args = ['agent', '--message', fullMessage];
 
-    // Use session for context isolation
-    args.push('--session', sessionId);
+    // Note: Version 2026.2.3-1 has removedหลาย flags like --context and --session.
+    // We are using the bare minimum to ensure execution.
 
-    // Request JSON output for parsing
-    args.push('--output', 'json');
-
-    // Set thinking level
-    args.push('--thinking', 'medium');
-
-    console.log(`Executing: openclaw ${args.slice(0, 3).join(' ')}...`);
+    console.log(`Executing: openclaw ${args.join(' ')}`);
 
     const openclaw = spawn('openclaw', args, {
       env: {
@@ -264,6 +258,13 @@ function startOpenClaw() {
 
     console.log(`OpenClaw version: ${stdout.trim()}`);
     isReady = true;
+
+    // Log help to see supported flags for this specific version
+    exec('openclaw agent --help', (err, helpStdout) => {
+      console.log('--- OpenClaw Agent Help ---');
+      console.log(helpStdout || 'Could not get help output');
+      console.log('---------------------------');
+    });
 
     // Initialize the gateway daemon
     exec('openclaw gateway --port 18789 &', (err) => {
