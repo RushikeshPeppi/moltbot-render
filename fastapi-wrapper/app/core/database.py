@@ -34,9 +34,10 @@ class Database:
                     logger.warning("Supabase credentials not configured")
                     return
                 
+                # Create client without proxy (Render doesn't need it)
                 self._client = create_client(
-                    settings.SUPABASE_URL,
-                    settings.SUPABASE_KEY
+                    supabase_url=settings.SUPABASE_URL,
+                    supabase_key=settings.SUPABASE_KEY
                 )
                 logger.info("Supabase client initialized")
             except Exception as e:
