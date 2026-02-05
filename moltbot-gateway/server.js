@@ -66,7 +66,7 @@ app.post('/execute', async (req, res) => {
     const context = buildContext(credentials, history);
 
     // Execute OpenClaw command
-    const result = await executeOpenClaw(session_id, message, context);
+    const result = await executeOpenClaw(session_id, message, context, credentials);
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -116,7 +116,7 @@ function buildContext(credentials, history) {
 /**
  * Execute OpenClaw command and return result
  */
-function executeOpenClaw(sessionId, message, context) {
+function executeOpenClaw(sessionId, message, context, credentials) {
   return new Promise((resolve, reject) => {
     const timeout = 55000; // 55 second timeout
 
