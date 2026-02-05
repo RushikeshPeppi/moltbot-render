@@ -4,7 +4,7 @@ services:
     name: moltbot-fastapi
     runtime: python
     region: oregon
-    plan: starter
+    plan: pro
     rootDir: fastapi-wrapper
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -44,7 +44,7 @@ services:
     name: openclaw-gateway
     runtime: node
     region: oregon
-    plan: starter
+    plan: pro
     rootDir: moltbot-gateway
     buildCommand: npm install && npm install -g openclaw@latest
     startCommand: npm start
@@ -56,5 +56,7 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=2048"
       - key: GEMINI_API_KEY
         sync: false

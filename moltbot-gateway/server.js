@@ -138,7 +138,11 @@ function executeOpenClaw(sessionId, message, context) {
     console.log(`Executing: openclaw ${args.slice(0, 3).join(' ')}...`);
 
     const openclaw = spawn('openclaw', args, {
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        // The process inherits NODE_OPTIONS from the environment (set in render.yaml).
+        // This ensures the agent has access to the full RAM of the Professional tier.
+      },
       timeout: timeout
     });
 
