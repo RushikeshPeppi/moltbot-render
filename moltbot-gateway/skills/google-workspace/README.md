@@ -1,6 +1,6 @@
 # Google Workspace Skill
 
-Custom OpenClaw skill for Google Calendar and Gmail integration via direct API calls.
+**Production-grade OpenClaw skill** for Google Calendar and Gmail integration via direct API calls with dynamic parameter extraction.
 
 ## Features
 

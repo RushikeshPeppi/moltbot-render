@@ -5,161 +5,240 @@
 ## ⚡ When to Use This Skill
 
 Use this skill when the user asks about:
-- **Calendar**: meetings, appointments, schedule, calendar events, today's meetings, tomorrow's schedule, next week's calendar
-- **Gmail**: emails, messages, inbox, unread emails, important emails, send email, compose message
+- **Calendar**: meetings, appointments, schedule, calendar events, create/update/delete events
+- **Gmail**: emails, messages, inbox, send email, search messages, mark read/unread
 
 ## 🔑 Environment Variables
 
 The OAuth access token is automatically available:
-- `$GOOGLE_ACCESS_TOKEN` - OAuth 2.0 bearer token (auto-refreshed)
+- `$GOOGLE_ACCESS_TOKEN` - OAuth 2.0 bearer token (auto-refreshed by FastAPI backend)
 
 ## 📅 GOOGLE CALENDAR API
 
-All endpoints use: `https://www.googleapis.com/calendar/v3`
+Base URL: `https://www.googleapis.com/calendar/v3`
 
-### List Today's Events
+### CRITICAL: Date/Time Parsing Instructions
 
-When user asks: "What meetings do I have today?" or "What's on my schedule today?"
+**ALWAYS extract date and time from the user's actual request. NEVER use hardcoded values.**
+
+Parse user input to extract:
+- **Date**: "tomorrow", "today", "next Tuesday", "February 15", "in 3 days"
+- **Time**: "at 6pm", "at 14:00", "2 PM", "noon", "morning" (default 9am), "afternoon" (default 2pm)
+- **Duration**: Default 1 hour if not specified. "30 minute meeting" = 30min, "2 hour call" = 2hr
+
+Calculate dates dynamically using `date` command:
+- Today: `$(date -u +%Y-%m-%dT00:00:00Z)`
+- Tomorrow: `$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)`
+- Specific date: `$(date -u -d '2026-02-15' +%Y-%m-%dT00:00:00Z)`
+- Specific datetime: `$(date -u -d 'tomorrow 18:00' +%Y-%m-%dT%H:%M:%SZ)` (for 6 PM tomorrow)
+- Next week: `$(date -u -d '+1 week' +%Y-%m-%dT00:00:00Z)`
+- This week range: `$(date -u -d 'monday this week' +%Y-%m-%dT00:00:00Z)` to `$(date -u -d 'sunday this week' +%Y-%m-%dT23:59:59Z)`
+
+Time conversion rules:
+- "6pm" → 18:00
+- "2 PM" → 14:00
+- "noon" → 12:00
+- "midnight" → 00:00
+- No time specified → default to 9:00 for morning, 14:00 for afternoon
+
+### List Events (Today/Tomorrow/This Week/Range)
+
+When user asks: "What meetings do I have today?" or "What's on my schedule tomorrow?"
+
+**PARSE the user's request to determine which date range:**
+- "today" → use today's start/end
+- "tomorrow" → use tomorrow's start/end
+- "this week" → use Monday-Sunday of current week
+- "next week" → use Monday-Sunday of next week
+- Custom range → parse both dates from request
 
 ```bash
-# Calculate today's date range dynamically
-TODAY_START=$(date -u +%Y-%m-%dT00:00:00Z)
-TODAY_END=$(date -u +%Y-%m-%dT23:59:59Z)
+# DYNAMICALLY calculate based on user's request
+TIME_START=$(date -u -d '<USER_REQUESTED_DATE>' +%Y-%m-%dT00:00:00Z)
+TIME_END=$(date -u -d '<USER_REQUESTED_DATE>' +%Y-%m-%dT23:59:59Z)
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TODAY_START}&timeMax=${TODAY_END}&singleEvents=true&orderBy=startTime"
-```
-
-### List Tomorrow's Events
-
-When user asks: "What meetings do I have tomorrow?" or "What's my schedule tomorrow?"
-
-```bash
-# Calculate tomorrow's date range dynamically
-TOMORROW_START=$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)
-TOMORROW_END=$(date -u -d '+1 day' +%Y-%m-%dT23:59:59Z)
-
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TOMORROW_START}&timeMax=${TOMORROW_END}&singleEvents=true&orderBy=startTime"
-```
-
-### List This Week's Events
-
-When user asks: "What meetings do I have this week?" or "What's my schedule this week?"
-
-```bash
-# Calculate this week's date range (Monday to Sunday)
-WEEK_START=$(date -u -d 'monday this week' +%Y-%m-%dT00:00:00Z)
-WEEK_END=$(date -u -d 'sunday this week' +%Y-%m-%dT23:59:59Z)
-
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${WEEK_START}&timeMax=${WEEK_END}&singleEvents=true&orderBy=startTime"
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_START}&timeMax=${TIME_END}&singleEvents=true&orderBy=startTime"
 ```
 
 ### List Next N Events
 
-When user asks: "What are my next 5 meetings?" or "Show me upcoming appointments"
+When user asks: "What are my next 5 meetings?" or "Show upcoming appointments"
+
+**PARSE the number N from user's request.** Default to 10 if not specified.
 
 ```bash
+# Extract N from user request (e.g., "next 5 meetings" → N=5)
+N=<USER_REQUESTED_COUNT>
+
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=5&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=${N}&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 ### Search Events by Keyword
 
-When user asks: "Do I have any meetings with John?" or "Find meetings about project X"
+When user asks: "Do I have any meetings with Marvin?" or "Find meetings about project X"
+
+**EXTRACT the search keyword from user's request.**
+- "meetings with Marvin" → QUERY="Marvin"
+- "meetings about project X" → QUERY="project X"
+- "standup meetings" → QUERY="standup"
 
 ```bash
-QUERY="John"  # or "project X"
+# Extract keyword from user's actual request
+QUERY="<USER_SEARCH_TERM>"
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${QUERY}&singleEvents=true&orderBy=startTime"
 ```
 
-### Get Specific Event Details
-
-When you have an event ID and need full details:
-
-```bash
-EVENT_ID="eventid123"
-
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
-```
-
 ### Create New Event
 
-When user says: "Schedule a meeting with John tomorrow at 2 PM" or "Create a calendar event"
+When user says: "Schedule a meeting with Marvin tomorrow at 6 PM" or "Create event for project review next Tuesday at 2pm"
+
+**CRITICAL: Extract ALL parameters dynamically from user's request:**
+
+1. **Meeting title/summary**: Parse from context
+   - "meeting with Marvin" → summary = "Meeting with Marvin"
+   - "project review" → summary = "Project review"
+   - "standup call" → summary = "Standup call"
+   - Default format: Capitalize first letter of each word
+
+2. **Date**: Extract from user's request
+   - "tomorrow" → calculate tomorrow's date
+   - "next Tuesday" → calculate next Tuesday's date
+   - "February 15" → parse as 2026-02-15
+   - "in 3 days" → add 3 days to current date
+
+3. **Time**: Extract from user's request
+   - "at 6pm" → 18:00
+   - "at 2 PM" → 14:00
+   - "at 14:00" → 14:00
+   - No time specified → default 14:00 (2 PM)
+
+4. **Duration**: Extract or default to 1 hour
+   - "30 minute meeting" → 30 minutes
+   - "2 hour call" → 120 minutes
+   - Not specified → 60 minutes (1 hour)
+
+5. **Attendees**: Extract names/emails from request
+   - "with Marvin" → ask user for Marvin's email OR use name only
+   - "with john@example.com" → use email directly
+   - Multiple attendees: "with Marvin and Sarah" → parse both names
+
+6. **Description**: Optional, infer from context or leave empty
 
 ```bash
-# Calculate event time dynamically based on user's request
-# Example: tomorrow at 2 PM
-EVENT_START=$(date -u -d 'tomorrow 14:00' +%Y-%m-%dT%H:%M:%SZ)
-EVENT_END=$(date -u -d 'tomorrow 15:00' +%Y-%m-%dT%H:%M:%SZ)
+# PARSE all values from user's actual request - DO NOT use these placeholder values!
+MEETING_TITLE="<EXTRACTED_FROM_USER_REQUEST>"
+DATE_PART="<EXTRACTED_DATE>"  # e.g., "tomorrow", "next Tuesday", "2026-02-15"
+TIME_PART="<EXTRACTED_TIME>"  # e.g., "18:00", "14:00"
+DURATION_MINUTES=<EXTRACTED_OR_DEFAULT_60>
+ATTENDEE_EMAIL="<EXTRACTED_OR_ASK_USER>"
+
+# Calculate start time dynamically
+EVENT_START=$(date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
+
+# Calculate end time (start + duration)
+EVENT_END=$(date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+# Build JSON payload dynamically
+JSON_PAYLOAD=$(cat <<EOF
+{
+  "summary": "${MEETING_TITLE}",
+  "description": "<OPTIONAL_FROM_CONTEXT>",
+  "start": {
+    "dateTime": "${EVENT_START}",
+    "timeZone": "UTC"
+  },
+  "end": {
+    "dateTime": "${EVENT_END}",
+    "timeZone": "UTC"
+  }
+}
+EOF
+)
+
+# Add attendees ONLY if email is provided or extracted
+# If user says "meeting with Marvin" without email, you can either:
+# 1. Ask user: "What's Marvin's email address?"
+# 2. Create event without attendees and let user add later
+# DO NOT use fake/example emails like "john@example.com"
+
+if [ -n "$ATTENDEE_EMAIL" ]; then
+  JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg email "$ATTENDEE_EMAIL" '. + {attendees: [{email: $email}]}')
+fi
 
 curl -s -X POST \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"summary\": \"Meeting with John\",
-    \"description\": \"Discuss project updates\",
-    \"start\": {
-      \"dateTime\": \"${EVENT_START}\",
-      \"timeZone\": \"UTC\"
-    },
-    \"end\": {
-      \"dateTime\": \"${EVENT_END}\",
-      \"timeZone\": \"UTC\"
-    },
-    \"attendees\": [
-      {\"email\": \"john@example.com\"}
-    ],
-    \"reminders\": {
-      \"useDefault\": false,
-      \"overrides\": [
-        {\"method\": \"email\", \"minutes\": 30},
-        {\"method\": \"popup\", \"minutes\": 10}
-      ]
-    }
-  }" \
+  -d "$JSON_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 ```
 
 ### Update Event
 
-When user says: "Change my 2 PM meeting to 3 PM" or "Update the meeting description"
+When user says: "Change my 2 PM meeting to 3 PM" or "Update the Marvin meeting to tomorrow"
+
+**Steps:**
+1. **Search for the event** using time/title from user's request
+2. **Extract the EVENT_ID** from search results
+3. **Parse what to update** from user's request:
+   - Time change: "2 PM to 3 PM" → update start/end times
+   - Date change: "move to tomorrow" → update date
+   - Title change: "rename to Project Review" → update summary
+4. **Calculate new values dynamically**
 
 ```bash
-EVENT_ID="eventid123"  # Get this from listing events first
+# Step 1: Find the event (search by time or title)
+SEARCH_TERM="<FROM_USER_REQUEST>"
 
-# Calculate new time dynamically
-NEW_START=$(date -u -d 'today 15:00' +%Y-%m-%dT%H:%M:%SZ)
-NEW_END=$(date -u -d 'today 16:00' +%Y-%m-%dT%H:%M:%SZ)
+# Step 2: Extract EVENT_ID from search results
+EVENT_ID="<FROM_SEARCH_RESULTS>"
+
+# Step 3: Parse what to update
+NEW_TIME="<IF_TIME_CHANGED>"
+NEW_DATE="<IF_DATE_CHANGED>"
+NEW_TITLE="<IF_TITLE_CHANGED>"
+
+# Step 4: Calculate new values
+if [ -n "$NEW_TIME" ] || [ -n "$NEW_DATE" ]; then
+  NEW_START=$(date -u -d "${NEW_DATE} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+  NEW_END=$(date -u -d "${NEW_DATE} ${NEW_TIME} + 60 minutes" +%Y-%m-%dT%H:%M:%SZ)
+fi
+
+# Build update payload dynamically
+UPDATE_PAYLOAD="{"
+[ -n "$NEW_TITLE" ] && UPDATE_PAYLOAD="$UPDATE_PAYLOAD\"summary\": \"${NEW_TITLE}\","
+[ -n "$NEW_START" ] && UPDATE_PAYLOAD="$UPDATE_PAYLOAD\"start\": {\"dateTime\": \"${NEW_START}\", \"timeZone\": \"UTC\"},"
+[ -n "$NEW_END" ] && UPDATE_PAYLOAD="$UPDATE_PAYLOAD\"end\": {\"dateTime\": \"${NEW_END}\", \"timeZone\": \"UTC\"}"
+UPDATE_PAYLOAD="$UPDATE_PAYLOAD}"
 
 curl -s -X PUT \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"summary\": \"Updated Meeting Title\",
-    \"start\": {
-      \"dateTime\": \"${NEW_START}\",
-      \"timeZone\": \"UTC\"
-    },
-    \"end\": {
-      \"dateTime\": \"${NEW_END}\",
-      \"timeZone\": \"UTC\"
-    }
-  }" \
+  -d "$UPDATE_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
 ```
 
 ### Delete Event
 
-When user says: "Cancel my meeting with John" or "Delete the 2 PM appointment"
+When user says: "Cancel my meeting with Marvin" or "Delete the 2 PM appointment"
+
+**Steps:**
+1. **Search for the event** using details from user's request
+2. **Confirm with user** which event to delete (show title, time, date)
+3. **Extract EVENT_ID** from search results
+4. **Delete the event**
 
 ```bash
-EVENT_ID="eventid123"
+# Step 1: Search for event based on user's description
+SEARCH_TERM="<FROM_USER_REQUEST>"
 
+# Step 2: Get EVENT_ID from search results
+EVENT_ID="<FROM_SEARCH_RESULTS>"
+
+# Step 3: Delete
 curl -s -X DELETE \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
@@ -167,55 +246,45 @@ curl -s -X DELETE \
 
 ## 📧 GMAIL API
 
-All endpoints use: `https://gmail.googleapis.com/gmail/v1`
+Base URL: `https://gmail.googleapis.com/gmail/v1`
 
-### List Recent Messages
+### List Recent/Unread/Important Messages
 
-When user asks: "Show me my recent emails" or "What are my latest messages?"
+When user asks: "Show me my recent emails" or "Any unread messages?" or "Important emails?"
+
+**PARSE user's filter criteria:**
+- "recent" → no filter, maxResults=10
+- "unread" → q=is:unread
+- "important" → q=is:important
+- "starred" → q=is:starred
+- Custom count: "last 20 emails" → maxResults=20
 
 ```bash
+# Extract filter from user's request
+QUERY="<FILTER_IF_ANY>"  # e.g., "is:unread" or empty
+MAX_RESULTS=<COUNT_OR_DEFAULT_10>
+
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=10"
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${QUERY}&maxResults=${MAX_RESULTS}"
 ```
 
-### List Unread Messages
+### Search Messages
 
-When user asks: "Do I have any unread emails?" or "Show me unread messages"
+When user asks: "Show me emails from Marvin" or "Find messages about project X"
 
-```bash
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:unread&maxResults=10"
-```
-
-### List Important/Starred Messages
-
-When user asks: "Any important emails?" or "Show me starred messages"
+**EXTRACT search criteria from user's request:**
+- "from Marvin" → q=from:marvin (or ask for email)
+- "from sarah@example.com" → q=from:sarah@example.com
+- "about project X" → q=subject:project X
+- "with attachment" → q=has:attachment
+- Combinations: "unread from John" → q=is:unread from:john
 
 ```bash
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=is:important&maxResults=10"
-```
-
-### Search Messages by Sender
-
-When user asks: "Show me emails from John" or "Any messages from sarah@example.com?"
-
-```bash
-SENDER="john@example.com"
+# Build search query from user's actual request
+SEARCH_QUERY="<DYNAMIC_QUERY_FROM_REQUEST>"
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from:${SENDER}&maxResults=10"
-```
-
-### Search Messages by Subject
-
-When user asks: "Find emails about project X" or "Show me messages with 'invoice' in subject"
-
-```bash
-SUBJECT="project X"
-
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=subject:${SUBJECT}&maxResults=10"
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${SEARCH_QUERY}&maxResults=10"
 ```
 
 ### Get Message Details
@@ -223,44 +292,51 @@ curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 After listing messages, get full content of a specific message:
 
 ```bash
-MESSAGE_ID="msg123abc"
+# Extract MESSAGE_ID from previous list results
+MESSAGE_ID="<FROM_LIST_RESULTS>"
+
+# Use format=full for complete content, format=metadata for headers only
+FORMAT="<full_or_metadata>"
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}?format=full"
-```
-
-### Get Message (Metadata Only - Faster)
-
-For quick preview without full body:
-
-```bash
-MESSAGE_ID="msg123abc"
-
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}?format=metadata"
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}?format=${FORMAT}"
 ```
 
 ### Send Email
 
-When user says: "Send an email to john@example.com" or "Compose a message"
+When user says: "Send an email to marvin@example.com saying hi" or "Email Sarah about the meeting"
 
-**Step 1:** Create RFC 2822 formatted email and base64url encode it:
+**CRITICAL: Extract ALL email components from user's request:**
+
+1. **Recipient (To)**: Extract email address
+   - "to marvin@example.com" → TO="marvin@example.com"
+   - "email Marvin" → ask user for Marvin's email address
+   - Multiple recipients: "to john@a.com and sarah@b.com" → parse both
+
+2. **Subject**: Extract or ask user
+   - "about the meeting" → SUBJECT="About the meeting"
+   - "saying hi" → SUBJECT="Hi" (infer simple subject)
+   - Not specified → ask user: "What should the subject be?"
+
+3. **Body**: Extract message content
+   - User provides body directly → use exactly as given
+   - "saying hi" → BODY="Hi,\n\n[user may provide more]"
+   - Complex body → ask user for full message
 
 ```bash
-# Create email content
+# PARSE from user's actual request - DO NOT use placeholder values!
+TO_EMAIL="<EXTRACTED_EMAIL_ADDRESS>"
+SUBJECT="<EXTRACTED_OR_ASK_USER>"
+BODY="<EXTRACTED_MESSAGE_BODY>"
+
+# Build RFC 2822 email
 EMAIL_CONTENT="From: me
-To: john@example.com
-Subject: Meeting Follow-up
+To: ${TO_EMAIL}
+Subject: ${SUBJECT}
 
-Hi John,
+${BODY}"
 
-Thanks for the meeting today. Here are the action items we discussed:
-1. Review the proposal
-2. Schedule follow-up call
-
-Best regards"
-
-# Base64url encode (replace + with -, / with _, remove =)
+# Base64url encode (required by Gmail API)
 ENCODED=$(echo -n "$EMAIL_CONTENT" | base64 | tr '+/' '-_' | tr -d '=')
 
 # Send email
@@ -271,123 +347,83 @@ curl -s -X POST \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 ```
 
-### Mark Message as Read
+### Mark Message as Read/Unread/Starred
 
-When user says: "Mark this email as read"
+When user says: "Mark this email as read" or "Star the message from John"
 
-```bash
-MESSAGE_ID="msg123abc"
-
-curl -s -X POST \
-  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"removeLabelIds": ["UNREAD"]}' \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}/modify"
-```
-
-### Mark Message as Unread
+**Steps:**
+1. **Identify the message** (may need to search first)
+2. **Extract MESSAGE_ID**
+3. **Determine action**:
+   - "mark as read" → removeLabelIds: ["UNREAD"]
+   - "mark as unread" → addLabelIds: ["UNREAD"]
+   - "star" → addLabelIds: ["STARRED"]
+   - "unstar" → removeLabelIds: ["STARRED"]
 
 ```bash
-MESSAGE_ID="msg123abc"
+MESSAGE_ID="<FROM_SEARCH_OR_CONTEXT>"
+ACTION="<add_or_remove>"
+LABEL="<UNREAD_or_STARRED>"
 
 curl -s -X POST \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"addLabelIds": ["UNREAD"]}' \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}/modify"
-```
-
-### Star/Unstar Message
-
-```bash
-MESSAGE_ID="msg123abc"
-
-# Star
-curl -s -X POST \
-  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"addLabelIds": ["STARRED"]}' \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}/modify"
-
-# Unstar
-curl -s -X POST \
-  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"removeLabelIds": ["STARRED"]}' \
+  -d "{\"${ACTION}LabelIds\": [\"${LABEL}\"]}" \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}/modify"
 ```
 
 ### Delete Message
 
-When user says: "Delete this email" or "Move to trash"
+When user says: "Delete this email" or "Remove the spam message"
 
 ```bash
-MESSAGE_ID="msg123abc"
+MESSAGE_ID="<FROM_SEARCH_OR_CONTEXT>"
 
 curl -s -X DELETE \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}"
 ```
 
-## 🎯 Common Patterns & Best Practices
+## 🎯 Response Formatting
 
-### Getting Current Date/Time
+After executing API calls:
 
-Always use `session_status` tool to get current date and time before making calendar queries:
+1. **Parse JSON responses** using `jq`:
+   ```bash
+   # Extract event summaries
+   curl ... | jq -r '.items[] | "\(.summary) - \(.start.dateTime)"'
 
-```python
-# This returns: "Friday, February 6th, 2026 — 5:56 PM (UTC)"
-default_api.session_status()
-```
+   # Extract email subjects and senders
+   curl ... | jq -r '.messages[].id'  # then get details for each
+   ```
 
-Then parse to ISO 8601 format: `2026-02-06T17:56:00Z`
+2. **Format for user readability**:
+   - Calendar events: "📅 Meeting with Marvin - Tomorrow at 6:00 PM"
+   - Emails: "📧 From: marvin@example.com | Subject: Project Update"
 
-### Date Formatting
+3. **Handle errors gracefully**:
+   - 401 Unauthorized → "OAuth token issue (auto-refresh failed)"
+   - 403 Forbidden → "Missing permissions for this operation"
+   - 404 Not Found → "Event/message not found"
+   - 429 Rate Limited → "Too many requests, please wait"
 
-- Use ISO 8601 format with UTC timezone: `YYYY-MM-DDTHH:MM:SSZ`
-- For all-day events, use date only: `YYYY-MM-DD`
-- Always use `timeMin` and `timeMax` for calendar queries to filter results
+4. **Confirm actions**:
+   - After creating event: "✅ Created: Meeting with Marvin on Feb 7 at 6:00 PM"
+   - After sending email: "✅ Email sent to marvin@example.com"
 
-### Parsing JSON Responses
+## 🚨 CRITICAL RULES
 
-Calendar and Gmail APIs return JSON. Use `exec` tool with `jq` for parsing:
+1. **NEVER use hardcoded values** - ALWAYS extract from user's actual request
+2. **NEVER use example emails** like "john@example.com" in production
+3. **ASK user for missing information** rather than making assumptions
+4. **PARSE natural language** to extract dates, times, names, emails
+5. **CALCULATE dates dynamically** using `date` command
+6. **CONFIRM actions** before deleting or modifying events
+7. **FORMAT responses** in user-friendly way with emojis/structure
 
-```bash
-# Extract event summaries
-curl ... | jq -r '.items[] | .summary'
-
-# Extract email subjects
-curl ... | jq -r '.messages[].id'
-```
-
-### Error Handling
-
-If API returns error:
-- **401 Unauthorized**: OAuth token expired (shouldn't happen - auto-refreshed)
-- **403 Forbidden**: Insufficient permissions
-- **404 Not Found**: Event/message ID doesn't exist
-- **429 Too Many Requests**: Rate limit exceeded (wait and retry)
-
-### User-Friendly Responses
-
-After making API calls:
-1. Parse the JSON response
-2. Format nicely for the user
-3. Include relevant details (time, sender, subject, etc.)
-4. If no results, inform user clearly
-
-## 📚 Reference Documentation
+## 📚 Reference
 
 - [Google Calendar API v3](https://developers.google.com/workspace/calendar/api/v3/reference)
 - [Gmail API v1](https://developers.google.com/gmail/api/reference/rest)
-- [Events: list](https://developers.google.com/workspace/calendar/api/v3/reference/events/list)
-- [Messages: list](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/list)
-
-## 🔧 Implementation Notes
-
-- All API calls use the `exec` tool with curl commands
-- OAuth token is automatically available in `$GOOGLE_ACCESS_TOKEN`
-- Token is auto-refreshed by the FastAPI backend
-- Use `primary` as calendar ID for user's primary calendar
-- Use `me` as user ID for Gmail API
-- All times should be in UTC unless specified otherwise
+- [Calendar Events](https://developers.google.com/workspace/calendar/api/v3/reference/events)
+- [Gmail Messages](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)
