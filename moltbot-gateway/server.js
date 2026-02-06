@@ -167,23 +167,17 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
 
     const args = ['agent', '--message', fullMessage];
 
-    // Use --session-id to avoid the --to requirement
-    args.push('--session-id', sessionId || 'api-session');
-
-    // CRITICAL FIX: Use user-specific workspace for multi-tenant isolation
-    // Each user gets their own workspace directory to prevent data leakage
+    // CRITICAL FIX: Multi-tenant isolation using OpenClaw session key format
+    // Session key format: agent:{agentId}:{channel}:{accountId}:dm:{peerId}
+    // This works with dmScope: "per-peer" to isolate sessions per user
+    // Ref: https://docs.openclaw.ai/concepts/session
     if (userId) {
-      const homeDir = process.env.HOME || '/root';
-      const userWorkspace = path.join(homeDir, '.openclaw', 'users', `user_${userId}`);
-
-      // Ensure user workspace exists
-      if (!fs.existsSync(userWorkspace)) {
-        fs.mkdirSync(userWorkspace, { recursive: true });
-        console.log(`Created user workspace: ${userWorkspace}`);
-      }
-
-      args.push('--workspace', userWorkspace);
-      console.log(`[${sessionId}] Using isolated workspace for user ${userId}`);
+      const sessionKey = `agent:main:api:moltbot:dm:user_${userId}`;
+      args.push('--to', sessionKey);
+      console.log(`[${sessionId}] Using isolated session key for user ${userId}: ${sessionKey}`);
+    } else {
+      // Fallback for requests without user_id
+      args.push('--session-id', sessionId || 'api-session');
     }
 
     // Use --local to run the embedded agent directly with shell env vars.
