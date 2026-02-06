@@ -102,8 +102,8 @@ app.post('/execute', async (req, res) => {
     // Build context from credentials and history
     const context = buildContext(enhancedCredentials, history);
 
-    // Execute OpenClaw command
-    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials);
+    // Execute OpenClaw command (pass user_id for workspace isolation)
+    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id);
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -153,7 +153,7 @@ function buildContext(credentials, history) {
 /**
  * Execute OpenClaw command and return result
  */
-function executeOpenClaw(sessionId, message, context, credentials) {
+function executeOpenClaw(sessionId, message, context, credentials, userId) {
   return new Promise((resolve, reject) => {
     const timeout = 55000; // 55 second timeout
 
@@ -169,6 +169,22 @@ function executeOpenClaw(sessionId, message, context, credentials) {
 
     // Use --session-id to avoid the --to requirement
     args.push('--session-id', sessionId || 'api-session');
+
+    // CRITICAL FIX: Use user-specific workspace for multi-tenant isolation
+    // Each user gets their own workspace directory to prevent data leakage
+    if (userId) {
+      const homeDir = process.env.HOME || '/root';
+      const userWorkspace = path.join(homeDir, '.openclaw', 'users', `user_${userId}`);
+
+      // Ensure user workspace exists
+      if (!fs.existsSync(userWorkspace)) {
+        fs.mkdirSync(userWorkspace, { recursive: true });
+        console.log(`Created user workspace: ${userWorkspace}`);
+      }
+
+      args.push('--workspace', userWorkspace);
+      console.log(`[${sessionId}] Using isolated workspace for user ${userId}`);
+    }
 
     // Use --local to run the embedded agent directly with shell env vars.
     // This avoids the "gateway closed" errors seen with the background daemon.
