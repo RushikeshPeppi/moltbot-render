@@ -1,18 +1,30 @@
 services:
   - type: web
-    name: moltbot-gateway
-    env: node
+    name: openclaw-gateway
+    runtime: node
     region: oregon
-    plan: starter
-    buildCommand: npm install && npm install -g moltbot
+    plan: pro
+    buildCommand: |
+      npm install && \
+      npm install -g openclaw@latest && \
+      npx clawhub@latest install gog && \
+      npx clawhub@latest install clawlist
     startCommand: npm start
     healthCheckPath: /health
     disk:
-      name: moltbot-config
-      mountPath: /root/.moltbot
+      name: openclaw-data
+      mountPath: /root/.openclaw
       sizeGB: 1
     envVars:
       - key: NODE_VERSION
-        value: 20.10.0
+        value: "22"
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=2048"
       - key: GEMINI_API_KEY
         sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: SEARXNG_BASE_URL
+        value: https://searxng-09k9.onrender.com
+      - key: FASTAPI_URL
+        value: https://moltbot-fastapi.onrender.com
