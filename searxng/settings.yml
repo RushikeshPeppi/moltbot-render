@@ -1,0 +1,56 @@
+# SearXNG Configuration for Render.com deployment
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  # Bind to all interfaces for Docker
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "replace_this_with_a_random_secret_key_for_production"
+
+  # Trust Render.com reverse proxy headers
+  limiter: false  # Disable rate limiting (handled by Render)
+  image_proxy: true
+
+  # HTTP settings for reverse proxy compatibility
+  http_protocol_version: "1.0"
+
+ui:
+  static_use_hash: true
+  default_locale: "en"
+  query_in_title: true
+  infinite_scroll: false
+  theme_args:
+    simple_style: auto
+
+search:
+  safe_search: 0
+  autocomplete: "google"
+  default_lang: "auto"
+
+  # Format results
+  formats:
+    - html
+    - json
+
+enabled_plugins:
+  - 'Hash plugin'
+  - 'Search on category select'
+  - 'Self Information'
+  - 'Tracker URL remover'
+  - 'Hostnames plugin'
+
+# Disable bot detection since we're behind Render's reverse proxy
+# and don't have access to real client IPs
+outgoing:
+  request_timeout: 3.0
+  max_request_timeout: 15.0
+
+engines:
+  # Keep default engines enabled
+  # Disable engines that are failing
+  - name: ahmia
+    disabled: true
+  - name: torch
+    disabled: true
