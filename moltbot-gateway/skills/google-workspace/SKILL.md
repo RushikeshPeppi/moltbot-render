@@ -1,3 +1,10 @@
+---
+name: google-workspace
+description: Google Calendar and Gmail integration via OAuth - create/update/delete events, send/search emails, manage inbox
+user-invocable: true
+metadata: {"openclaw": {"emoji": "📧", "requires": {"env": ["GOOGLE_ACCESS_TOKEN"]}, "primaryEnv": "GOOGLE_ACCESS_TOKEN"}}
+---
+
 # Google Workspace - Calendar & Gmail
 
 🎯 **Comprehensive Google Calendar and Gmail integration using OAuth tokens and direct API calls.**

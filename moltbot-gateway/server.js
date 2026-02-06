@@ -363,39 +363,40 @@ async function startOpenClaw() {
     const openClawDir = path.join(homeDir, '.openclaw');
     const configPath = path.join(openClawDir, 'openclaw.json');
     const memoryDir = path.join(openClawDir, 'memory');
-    const skillsDir = path.join(openClawDir, 'skills');
+    const workspaceDir = path.join(openClawDir, 'workspace');
+    const workspaceSkillsDir = path.join(workspaceDir, 'skills');
 
     // Ensure directories exist
     const agentDir = path.join(openClawDir, 'agents', 'main', 'agent');
-    [openClawDir, memoryDir, skillsDir, agentDir].forEach(dir => {
+    [openClawDir, memoryDir, workspaceDir, workspaceSkillsDir, agentDir].forEach(dir => {
       if (!fs.existsSync(dir)) {
         console.log(`Creating directory: ${dir}`);
         fs.mkdirSync(dir, { recursive: true });
       }
     });
 
-    // CRITICAL FIX: Copy skills from build location to runtime location
-    // Skills are installed during build in /opt/render/project/src/moltbot-gateway/skills/
-    // But OpenClaw looks for them in ~/.openclaw/skills/
+    // CRITICAL FIX: Copy custom skills from build to workspace/skills/
+    // OpenClaw loads skills from ~/.openclaw/workspace/skills/
+    // ClawHub-installed skills (gog, clawlist) go to a different location automatically
     const buildSkillsDir = path.join(__dirname, 'skills');
     if (fs.existsSync(buildSkillsDir)) {
-      console.log(`Copying skills from ${buildSkillsDir} to ${skillsDir}...`);
+      console.log(`Copying custom skills from ${buildSkillsDir} to ${workspaceSkillsDir}...`);
       const skills = fs.readdirSync(buildSkillsDir);
       skills.forEach(skill => {
         const srcPath = path.join(buildSkillsDir, skill);
-        const destPath = path.join(skillsDir, skill);
+        const destPath = path.join(workspaceSkillsDir, skill);
         if (!fs.existsSync(destPath)) {
           if (fs.lstatSync(srcPath).isDirectory()) {
             // Copy directory recursively
             fs.cpSync(srcPath, destPath, { recursive: true });
-            console.log(`✓ Copied skill: ${skill}`);
+            console.log(`✓ Copied custom skill: ${skill}`);
           }
         } else {
-          console.log(`✓ Skill already exists: ${skill}`);
+          console.log(`✓ Custom skill already exists: ${skill}`);
         }
       });
     } else {
-      console.log(`⚠ Skills directory not found at ${buildSkillsDir}`);
+      console.log(`⚠ Custom skills directory not found at ${buildSkillsDir}`);
     }
 
     // Create OpenClaw configuration files per official docs
