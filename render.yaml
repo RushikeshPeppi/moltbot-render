@@ -60,7 +60,9 @@ services:
       npm install && \
       npm install -g openclaw@latest && \
       npx clawhub@latest install gog && \
-      npx clawhub@latest install clawlist
+      npx clawhub@latest install clawlist && \
+      mkdir -p /root/.openclaw/skills/google-workspace && \
+      cp -r skills/google-workspace/* /root/.openclaw/skills/google-workspace/
     startCommand: npm start
     healthCheckPath: /health
     disk:
