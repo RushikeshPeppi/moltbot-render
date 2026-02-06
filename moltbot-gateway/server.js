@@ -374,6 +374,30 @@ async function startOpenClaw() {
       }
     });
 
+    // CRITICAL FIX: Copy skills from build location to runtime location
+    // Skills are installed during build in /opt/render/project/src/moltbot-gateway/skills/
+    // But OpenClaw looks for them in ~/.openclaw/skills/
+    const buildSkillsDir = path.join(__dirname, 'skills');
+    if (fs.existsSync(buildSkillsDir)) {
+      console.log(`Copying skills from ${buildSkillsDir} to ${skillsDir}...`);
+      const skills = fs.readdirSync(buildSkillsDir);
+      skills.forEach(skill => {
+        const srcPath = path.join(buildSkillsDir, skill);
+        const destPath = path.join(skillsDir, skill);
+        if (!fs.existsSync(destPath)) {
+          if (fs.lstatSync(srcPath).isDirectory()) {
+            // Copy directory recursively
+            fs.cpSync(srcPath, destPath, { recursive: true });
+            console.log(`✓ Copied skill: ${skill}`);
+          }
+        } else {
+          console.log(`✓ Skill already exists: ${skill}`);
+        }
+      });
+    } else {
+      console.log(`⚠ Skills directory not found at ${buildSkillsDir}`);
+    }
+
     // Create OpenClaw configuration files per official docs
     if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
       console.log('Creating OpenClaw configuration files...');
