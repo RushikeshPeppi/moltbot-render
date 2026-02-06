@@ -59,9 +59,8 @@ services:
     buildCommand: |
       npm install && \
       npm install -g openclaw@latest && \
-      npm install -g clawhub && \
-      clawhub install gog && \
-      clawhub install clawlist
+      npx clawhub@latest install gog && \
+      npx clawhub@latest install clawlist
     startCommand: npm start
     healthCheckPath: /health
     disk:
