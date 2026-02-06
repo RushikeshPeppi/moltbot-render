@@ -383,7 +383,7 @@ async function startOpenClaw() {
         agents: {
           defaults: {
             model: {
-              primary: "google/gemini-2.5-flash"
+              primary: "google/gemini-2.5-flash-lite"
             }
           }
         },
@@ -415,7 +415,7 @@ async function startOpenClaw() {
       // Display configuration summary
       console.log('\nConfiguration Summary:');
       console.log(`- Provider: Google (via GEMINI_API_KEY env var)`);
-      console.log(`- Model: google/gemini-2.5-flash`);
+      console.log(`- Model: google/gemini-2.5-flash-lite`);
       console.log(`- Web Search: SearXNG (${process.env.SEARXNG_BASE_URL || 'Not configured'})`);
       console.log(`- Session Isolation: per-peer (multi-tenant)`);
       console.log(`- Config: ${configPath}`);
@@ -469,7 +469,7 @@ async function startOpenClaw() {
       console.log('  ✓ Memory/Context persistence');
       console.log('  ✓ Browser automation');
       console.log('\nMode: Local execution (--local flag)');
-      console.log('Model: Google Gemini 2.0 Flash');
+      console.log('Model: Google Gemini 2.5 Flash Lite');
       console.log('========================================\n');
 
       isReady = true;
