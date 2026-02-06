@@ -39,6 +39,16 @@ services:
       - key: GOOGLE_REDIRECT_URI
         sync: false
 
+  # SearXNG - Free self-hosted search engine (NO API keys needed!)
+  - type: web
+    name: searxng
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./searxng/Dockerfile
+    dockerContext: ./searxng
+    healthCheckPath: /
+
   # OpenClaw Gateway - Runs the AI agent
   - type: web
     name: openclaw-gateway
@@ -63,3 +73,6 @@ services:
         sync: false
       - key: GOOGLE_API_KEY
         sync: false
+      # SearXNG URL (internal free search)
+      - key: SEARXNG_BASE_URL
+        value: https://searxng.onrender.com
