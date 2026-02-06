@@ -79,7 +79,7 @@ services:
         sync: false
       # SearXNG URL (internal free search)
       - key: SEARXNG_BASE_URL
-        value: https://searxng.onrender.com
+        value: https://searxng-09k9.onrender.com
       # FastAPI URL for OAuth token bridge
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
