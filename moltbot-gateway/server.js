@@ -2,6 +2,7 @@ const express = require('express');
 const { spawn, exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 18789;
 
@@ -42,18 +43,41 @@ app.get('/diagnose', (req, res) => {
 });
 
 /**
+ * Fetch OAuth token from FastAPI for a user
+ */
+async function fetchOAuthTokenFromFastAPI(userId) {
+  try {
+    const fastApiUrl = process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com';
+
+    const response = await axios.get(`${fastApiUrl}/api/v1/oauth/google/token/${userId}`, {
+      timeout: 10000
+    });
+
+    if (response.data && response.data.data && response.data.data.access_token) {
+      return response.data.data.access_token;
+    }
+
+    return null;
+  } catch (error) {
+    console.error(`Failed to fetch OAuth token for user ${userId}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
  * Execute action via OpenClaw
- * 
+ *
  * POST /execute
  * Body: {
  *   session_id: string,
  *   message: string,
+ *   user_id: number,  // NEW: Required for OAuth token bridge
  *   credentials: object,
  *   history: array
  * }
  */
 app.post('/execute', async (req, res) => {
-  const { session_id, message, credentials, history } = req.body;
+  const { session_id, message, user_id, credentials, history } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -62,11 +86,24 @@ app.post('/execute', async (req, res) => {
   try {
     console.log(`[${session_id}] Processing: ${message.substring(0, 50)}...`);
 
+    // OAuth token bridge: Fetch fresh token from FastAPI if user_id provided
+    let enhancedCredentials = { ...credentials };
+    if (user_id) {
+      console.log(`[${session_id}] Fetching OAuth token for user ${user_id}...`);
+      const accessToken = await fetchOAuthTokenFromFastAPI(user_id);
+      if (accessToken) {
+        enhancedCredentials.google_access_token = accessToken;
+        console.log(`[${session_id}] OAuth token retrieved successfully`);
+      } else {
+        console.log(`[${session_id}] No OAuth token available for user ${user_id}`);
+      }
+    }
+
     // Build context from credentials and history
-    const context = buildContext(credentials, history);
+    const context = buildContext(enhancedCredentials, history);
 
     // Execute OpenClaw command
-    const result = await executeOpenClaw(session_id, message, context, credentials);
+    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials);
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -165,8 +202,8 @@ function executeOpenClaw(sessionId, message, context, credentials) {
         // OpenClaw 2026 expects GOOGLE_API_KEY for Google/Gemini models
         GOOGLE_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
         GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-        // Brave Search API for web search
-        BRAVE_API_KEY: process.env.BRAVE_API_KEY || '',
+        // SearXNG URL for free web search (NO API keys needed)
+        SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
         // Google OAuth tokens for skills
         ...extraEnv,
         // Ensure HOME is set for config file location
@@ -331,7 +368,7 @@ async function startOpenClaw() {
     if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
       console.log('Creating OpenClaw configuration files...');
 
-      // 1. Create openclaw.json - sets default model
+      // 1. Create openclaw.json - sets default model and session isolation
       const openclawConfig = {
         agents: {
           defaults: {
@@ -339,6 +376,11 @@ async function startOpenClaw() {
               primary: "google/gemini-2.5-flash"
             }
           }
+        },
+        session: {
+          // Multi-tenant isolation: per-peer isolates DMs by sender ID across channels
+          // This ensures each user gets their own private session with isolated memory
+          dmScope: "per-peer"
         }
       };
       fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
@@ -364,7 +406,8 @@ async function startOpenClaw() {
       console.log('\nConfiguration Summary:');
       console.log(`- Provider: Google (via GEMINI_API_KEY env var)`);
       console.log(`- Model: google/gemini-2.5-flash`);
-      console.log(`- Web Search: OpenClaw built-in`);
+      console.log(`- Web Search: SearXNG (${process.env.SEARXNG_BASE_URL || 'Not configured'})`);
+      console.log(`- Session Isolation: per-peer (multi-tenant)`);
       console.log(`- Config: ${configPath}`);
       console.log(`- Auth: ${authProfilePath}`);
 

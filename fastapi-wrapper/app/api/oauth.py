@@ -353,13 +353,13 @@ async def google_oauth_disconnect(user_id: int):
 async def google_oauth_refresh(user_id: int):
     """
     Manually refresh a user's Google access token.
-    
+
     Normally tokens are refreshed automatically, but this endpoint
     allows manual refresh if needed.
     """
     try:
         token = await credential_manager.get_valid_google_token(user_id)
-        
+
         if token:
             return create_response(
                 code=ResponseCode.SUCCESS,
@@ -379,5 +379,45 @@ async def google_oauth_refresh(user_id: int):
             code=ResponseCode.INTERNAL_ERROR,
             message="Failed to refresh token",
             error="TOKEN_REFRESH_ERROR",
+            exception=str(e)
+        )
+
+
+@router.get("/google/token/{user_id}")
+async def google_oauth_get_token(user_id: int):
+    """
+    Get a valid Google access token for a user.
+
+    This endpoint is used by the OpenClaw Gateway to fetch OAuth tokens
+    for GOG skill integration. The token is automatically refreshed if expired.
+
+    Used internally for OAuth token bridge between FastAPI and OpenClaw.
+    """
+    try:
+        # Get valid token (auto-refreshes if expired)
+        token = await credential_manager.get_valid_google_token(user_id)
+
+        if token:
+            return create_response(
+                code=ResponseCode.SUCCESS,
+                message="OAuth token retrieved successfully",
+                data={
+                    "access_token": token,
+                    "token_type": "Bearer"
+                }
+            )
+        else:
+            return create_error_response(
+                code=ResponseCode.NOT_FOUND,
+                message="No Google account connected for this user",
+                error="NOT_CONNECTED",
+                exception=None
+            )
+    except Exception as e:
+        logger.error(f"Error getting OAuth token for user {user_id}: {e}")
+        return create_error_response(
+            code=ResponseCode.INTERNAL_ERROR,
+            message="Failed to get OAuth token",
+            error="TOKEN_RETRIEVAL_ERROR",
             exception=str(e)
         )

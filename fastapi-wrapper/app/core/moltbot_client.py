@@ -47,17 +47,18 @@ class OpenClawClient:
         self,
         session_id: str,
         message: str,
+        user_id: Optional[int] = None,
         user_credentials: Optional[Dict] = None,
         conversation_history: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
         """
         Send message to OpenClaw Gateway with retry logic.
-        
+
         Retry conditions:
         - Network errors (connection refused, timeout)
         - Server errors (502, 503, 504)
         - Rate limits (429)
-        
+
         No retry for:
         - Client errors (400, 401, 403, 404)
         - Successful responses
@@ -65,6 +66,7 @@ class OpenClawClient:
         payload = {
             "session_id": session_id,
             "message": message,
+            "user_id": user_id,  # Pass user_id for OAuth token bridge
             "credentials": user_credentials or {},
             "history": conversation_history or []
         }

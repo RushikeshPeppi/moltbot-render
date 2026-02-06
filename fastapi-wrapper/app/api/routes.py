@@ -196,9 +196,13 @@ async def execute_action(request: ExecuteActionRequest):
         
         # 6. Call OpenClaw with retry logic
         try:
+            # Pass user_id for OAuth token bridge in OpenClaw gateway
+            user_id_int = int(user_id) if str(user_id).isdigit() else None
+
             openclaw_response = await openclaw_client.send_message(
                 session_id=session_id,
                 message=request.message,
+                user_id=user_id_int,  # Pass user_id for OAuth token bridge
                 user_credentials=user_credentials,
                 conversation_history=session_data.get('conversation_history', [])
             )

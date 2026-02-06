@@ -56,7 +56,12 @@ services:
     region: oregon
     plan: pro
     rootDir: moltbot-gateway
-    buildCommand: npm install && npm install -g openclaw@latest
+    buildCommand: |
+      npm install && \
+      npm install -g openclaw@latest && \
+      npm install -g @clawhub/cli@latest && \
+      npx @clawhub/cli install gog && \
+      npx @clawhub/cli install clawlist
     startCommand: npm start
     healthCheckPath: /health
     disk:
@@ -76,3 +81,6 @@ services:
       # SearXNG URL (internal free search)
       - key: SEARXNG_BASE_URL
         value: https://searxng.onrender.com
+      # FastAPI URL for OAuth token bridge
+      - key: FASTAPI_URL
+        value: https://moltbot-fastapi.onrender.com
