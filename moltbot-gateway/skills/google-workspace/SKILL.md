@@ -22,11 +22,9 @@ All endpoints use: `https://www.googleapis.com/calendar/v3`
 When user asks: "What meetings do I have today?" or "What's on my schedule today?"
 
 ```bash
-# Get current date first using session_status
-# Then construct ISO timestamp (format: 2026-02-06T00:00:00Z)
-
-TODAY_START="2026-02-06T00:00:00Z"
-TODAY_END="2026-02-06T23:59:59Z"
+# Calculate today's date range dynamically
+TODAY_START=$(date -u +%Y-%m-%dT00:00:00Z)
+TODAY_END=$(date -u +%Y-%m-%dT23:59:59Z)
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TODAY_START}&timeMax=${TODAY_END}&singleEvents=true&orderBy=startTime"
@@ -37,8 +35,9 @@ curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 When user asks: "What meetings do I have tomorrow?" or "What's my schedule tomorrow?"
 
 ```bash
-TOMORROW_START="2026-02-07T00:00:00Z"
-TOMORROW_END="2026-02-07T23:59:59Z"
+# Calculate tomorrow's date range dynamically
+TOMORROW_START=$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)
+TOMORROW_END=$(date -u -d '+1 day' +%Y-%m-%dT23:59:59Z)
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TOMORROW_START}&timeMax=${TOMORROW_END}&singleEvents=true&orderBy=startTime"
@@ -49,8 +48,9 @@ curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 When user asks: "What meetings do I have this week?" or "What's my schedule this week?"
 
 ```bash
-WEEK_START="2026-02-06T00:00:00Z"  # Monday of current week
-WEEK_END="2026-02-12T23:59:59Z"     # Sunday of current week
+# Calculate this week's date range (Monday to Sunday)
+WEEK_START=$(date -u -d 'monday this week' +%Y-%m-%dT00:00:00Z)
+WEEK_END=$(date -u -d 'sunday this week' +%Y-%m-%dT23:59:59Z)
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${WEEK_START}&timeMax=${WEEK_END}&singleEvents=true&orderBy=startTime"
@@ -92,31 +92,36 @@ curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 When user says: "Schedule a meeting with John tomorrow at 2 PM" or "Create a calendar event"
 
 ```bash
+# Calculate event time dynamically based on user's request
+# Example: tomorrow at 2 PM
+EVENT_START=$(date -u -d 'tomorrow 14:00' +%Y-%m-%dT%H:%M:%SZ)
+EVENT_END=$(date -u -d 'tomorrow 15:00' +%Y-%m-%dT%H:%M:%SZ)
+
 curl -s -X POST \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "summary": "Meeting with John",
-    "description": "Discuss project updates",
-    "start": {
-      "dateTime": "2026-02-07T14:00:00Z",
-      "timeZone": "UTC"
+  -d "{
+    \"summary\": \"Meeting with John\",
+    \"description\": \"Discuss project updates\",
+    \"start\": {
+      \"dateTime\": \"${EVENT_START}\",
+      \"timeZone\": \"UTC\"
     },
-    "end": {
-      "dateTime": "2026-02-07T15:00:00Z",
-      "timeZone": "UTC"
+    \"end\": {
+      \"dateTime\": \"${EVENT_END}\",
+      \"timeZone\": \"UTC\"
     },
-    "attendees": [
-      {"email": "john@example.com"}
+    \"attendees\": [
+      {\"email\": \"john@example.com\"}
     ],
-    "reminders": {
-      "useDefault": false,
-      "overrides": [
-        {"method": "email", "minutes": 30},
-        {"method": "popup", "minutes": 10}
+    \"reminders\": {
+      \"useDefault\": false,
+      \"overrides\": [
+        {\"method\": \"email\", \"minutes\": 30},
+        {\"method\": \"popup\", \"minutes\": 10}
       ]
     }
-  }' \
+  }" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 ```
 
@@ -125,22 +130,26 @@ curl -s -X POST \
 When user says: "Change my 2 PM meeting to 3 PM" or "Update the meeting description"
 
 ```bash
-EVENT_ID="eventid123"
+EVENT_ID="eventid123"  # Get this from listing events first
+
+# Calculate new time dynamically
+NEW_START=$(date -u -d 'today 15:00' +%Y-%m-%dT%H:%M:%SZ)
+NEW_END=$(date -u -d 'today 16:00' +%Y-%m-%dT%H:%M:%SZ)
 
 curl -s -X PUT \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "summary": "Updated Meeting Title",
-    "start": {
-      "dateTime": "2026-02-07T15:00:00Z",
-      "timeZone": "UTC"
+  -d "{
+    \"summary\": \"Updated Meeting Title\",
+    \"start\": {
+      \"dateTime\": \"${NEW_START}\",
+      \"timeZone\": \"UTC\"
     },
-    "end": {
-      "dateTime": "2026-02-07T16:00:00Z",
-      "timeZone": "UTC"
+    \"end\": {
+      \"dateTime\": \"${NEW_END}\",
+      \"timeZone\": \"UTC\"
     }
-  }' \
+  }" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
 ```
 
