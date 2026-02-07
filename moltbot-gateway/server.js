@@ -402,7 +402,7 @@ async function startOpenClaw() {
 
     // CRITICAL FIX: Copy custom skills from build to workspace/skills/
     // OpenClaw loads skills from ~/.openclaw/workspace/skills/
-    // ClawHub-installed skills (gog, clawlist) go to a different location automatically
+    // Force copy to ensure latest version is always used
     const buildSkillsDir = path.join(__dirname, 'skills');
     if (fs.existsSync(buildSkillsDir)) {
       console.log(`Copying custom skills from ${buildSkillsDir} to ${workspaceSkillsDir}...`);
@@ -410,18 +410,26 @@ async function startOpenClaw() {
       skills.forEach(skill => {
         const srcPath = path.join(buildSkillsDir, skill);
         const destPath = path.join(workspaceSkillsDir, skill);
-        if (!fs.existsSync(destPath)) {
-          if (fs.lstatSync(srcPath).isDirectory()) {
-            // Copy directory recursively
-            fs.cpSync(srcPath, destPath, { recursive: true });
-            console.log(`✓ Copied custom skill: ${skill}`);
+        if (fs.lstatSync(srcPath).isDirectory()) {
+          // Remove existing and copy fresh (ensures latest version)
+          if (fs.existsSync(destPath)) {
+            fs.rmSync(destPath, { recursive: true, force: true });
           }
-        } else {
-          console.log(`✓ Custom skill already exists: ${skill}`);
+          fs.cpSync(srcPath, destPath, { recursive: true });
+          console.log(`✓ Copied custom skill: ${skill}`);
         }
       });
     } else {
       console.log(`⚠ Custom skills directory not found at ${buildSkillsDir}`);
+    }
+
+    // Remove conflicting gog skill from ClawHub if it exists
+    // gog requires Homebrew which doesn't work on Render
+    const gogSkillPath = path.join(openClawDir, 'skills', 'gog');
+    if (fs.existsSync(gogSkillPath)) {
+      console.log('Removing conflicting gog skill (requires Homebrew)...');
+      fs.rmSync(gogSkillPath, { recursive: true, force: true });
+      console.log('✓ Removed gog skill');
     }
 
     // Create OpenClaw configuration files per official docs
