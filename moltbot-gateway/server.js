@@ -146,7 +146,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   context += `IDENTITY: You are ${botName}, Peppi's AI assistant for user ${userId}`;
   if (userName) context += ` (${userName})`;
-  context += `. TZ: ${timezone || 'UTC'}. `;
+  context += `. User timezone: ${timezone || 'UTC'}. CRITICAL: When user mentions ANY time (e.g., "2pm", "tomorrow at 3pm"), it is in ${timezone || 'UTC'} timezone, NOT UTC. Create calendar events in user's local time. `;
 
   // Capabilities
   if (credentials && credentials.google_access_token) {
