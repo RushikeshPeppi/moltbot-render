@@ -151,6 +151,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
   // Capabilities
   if (credentials && credentials.google_access_token) {
     context += 'Google Calendar & Gmail enabled via OAuth. IMPORTANT: Use curl directly with Google Calendar API v3. Example to LIST events this week: curl -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-01T18:30:00Z&timeMax=2026-02-08T18:29:59Z&singleEvents=true&orderBy=startTime" | jq -r \'.items[] | "\\(.summary) at \\(.start.dateTime // .start.date)"\'. ';
+  }
 
   // Preferences
   if (userContext.preferences) {
