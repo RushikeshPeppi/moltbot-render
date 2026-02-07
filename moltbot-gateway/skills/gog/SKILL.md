@@ -1,5 +1,5 @@
 ---
-name: google-workspace
+name: gog
 description: Google Calendar and Gmail - list/view/check meetings, schedule, create/update/delete events, read/send emails
 user-invocable: true
 metadata: {"openclaw": {"emoji": "📧", "requires": {"env": ["GOOGLE_ACCESS_TOKEN"]}, "primaryEnv": "GOOGLE_ACCESS_TOKEN"}}
