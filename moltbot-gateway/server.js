@@ -236,6 +236,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
         // OpenClaw 2026 expects GOOGLE_API_KEY for Google/Gemini models
         GOOGLE_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
         GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+        GOOGLE_MODEL: 'gemini-2.5-flash-lite',  // Use lite model
         // SearXNG URL for free web search (NO API keys needed)
         SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
         // Google OAuth tokens for skills
