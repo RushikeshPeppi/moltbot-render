@@ -140,73 +140,36 @@ app.post('/execute', async (req, res) => {
 function buildContext(credentials, history, userId, timezone, userContext = {}) {
   let context = '';
 
-  // === CORE IDENTITY (Always Present) ===
-  context += '=== YOUR IDENTITY ===\n';
-  context += 'You are Peppi\'s AI companion - a helpful, friendly assistant integrated into the Peppi SMS platform.\n';
-  context += 'You serve multiple users, each with their own conversations and memories.\n';
-  context += 'You are intelligent, proactive, and always remember context from previous interactions.\n';
-  context += '\n';
+  // Core Identity (concise)
+  const botName = userContext.bot_name || userContext.botName || 'Peppi';
+  const userName = userContext.user_name || userContext.userName;
 
-  // === USER-SPECIFIC CONTEXT ===
-  context += '=== CURRENT USER ===\n';
-  context += `User ID: ${userId || 'unknown'}\n`;
+  context += `IDENTITY: You are ${botName}, Peppi's AI assistant for user ${userId}`;
+  if (userName) context += ` (${userName})`;
+  context += `. TZ: ${timezone || 'UTC'}. `;
 
-  // Bot's custom name for this user (if set)
-  if (userContext.botName) {
-    context += `Your name (as chosen by this user): ${userContext.botName}\n`;
-  } else {
-    context += 'Your name: Peppi (user hasn\'t given you a custom name yet)\n';
-  }
-
-  // User's name (if known)
-  if (userContext.userName) {
-    context += `User's name: ${userContext.userName}\n`;
-  }
-
-  // User's timezone
-  if (timezone) {
-    context += `User's timezone: ${timezone}\n`;
-  }
-
-  // User preferences/notes
-  if (userContext.preferences) {
-    context += `User preferences: ${userContext.preferences}\n`;
-  }
-
-  context += '\n';
-
-  // === CAPABILITIES ===
-  context += '=== YOUR CAPABILITIES ===\n';
+  // Capabilities
   if (credentials && credentials.google_access_token) {
-    context += '✓ Google Calendar - Schedule, view, and manage meetings\n';
-    context += '✓ Gmail - Read and send emails\n';
-  } else {
-    context += '⚠ Google services not connected for this user (suggest OAuth setup if needed)\n';
+    context += 'Google Calendar & Gmail enabled. ';
   }
-  context += '✓ Web Search - Find information online\n';
-  context += '✓ Memory - Remember important facts and conversations\n';
-  context += '✓ Tasks & Reminders - Track user\'s tasks\n';
-  context += '\n';
 
-  // === CONVERSATION HISTORY ===
+  // Preferences
+  if (userContext.preferences) {
+    context += `Prefs: ${userContext.preferences}. `;
+  }
+
+  // Key behavioral note
+  context += 'You have continuous memory - NEVER say "I just came alive". ';
+
+  // Recent conversation (limited to 5 messages, truncated)
   if (history && history.length > 0) {
-    const recentHistory = history.slice(-10); // Last 10 messages
-    context += '=== RECENT CONVERSATION ===\n';
+    const recentHistory = history.slice(-5);
+    context += '\nRecent:\n';
     recentHistory.forEach(msg => {
-      context += `${msg.role}: ${msg.content}\n`;
+      const truncated = msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content;
+      context += `${msg.role}: ${truncated}\n`;
     });
-    context += '\n';
   }
-
-  // === BEHAVIORAL GUIDELINES ===
-  context += '=== HOW TO BEHAVE ===\n';
-  context += '• Be warm and personable, but professional\n';
-  context += '• Remember details from past conversations\n';
-  context += '• Proactively suggest helpful actions\n';
-  context += '• NEVER say "I just came alive" - you have continuous memory per user\n';
-  context += '• Always acknowledge you\'re serving a specific user (use their name if known)\n';
-  context += '• If user gives you a custom name, remember and acknowledge it\n';
-  context += '\n';
 
   return context;
 }
