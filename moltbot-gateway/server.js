@@ -400,34 +400,33 @@ async function startOpenClaw() {
       }
     });
 
-    // CRITICAL FIX: Copy custom skills to ClawHub location ~/.openclaw/skills/
-    // ClawHub skills are loaded from ~/.openclaw/skills/, NOT workspace/skills/
+    // Copy custom skills to workspace/skills/ (where CREATE operations worked)
     const buildSkillsDir = path.join(__dirname, 'skills');
-    const clawHubSkillsDir = path.join(openClawDir, 'skills');
-
-    // Ensure ClawHub skills directory exists
-    if (!fs.existsSync(clawHubSkillsDir)) {
-      fs.mkdirSync(clawHubSkillsDir, { recursive: true });
-    }
-
     if (fs.existsSync(buildSkillsDir)) {
-      console.log(`Copying custom skills from ${buildSkillsDir} to ${clawHubSkillsDir}...`);
+      console.log(`Copying custom skills from ${buildSkillsDir} to ${workspaceSkillsDir}...`);
       const skills = fs.readdirSync(buildSkillsDir);
       skills.forEach(skill => {
         const srcPath = path.join(buildSkillsDir, skill);
-        const destPath = path.join(clawHubSkillsDir, skill);
+        const destPath = path.join(workspaceSkillsDir, skill);
         if (fs.lstatSync(srcPath).isDirectory()) {
-          // Remove existing and copy fresh (overwrites ClawHub skills like gog)
+          // Remove existing and copy fresh
           if (fs.existsSync(destPath)) {
-            console.log(`Overwriting existing skill: ${skill}`);
             fs.rmSync(destPath, { recursive: true, force: true });
           }
           fs.cpSync(srcPath, destPath, { recursive: true });
-          console.log(`✓ Copied custom skill to ClawHub location: ${skill}`);
+          console.log(`✓ Copied custom skill: ${skill}`);
         }
       });
     } else {
       console.log(`⚠ Custom skills directory not found at ${buildSkillsDir}`);
+    }
+
+    // Remove conflicting gog skill from ClawHub location
+    const gogSkillPath = path.join(openClawDir, 'skills', 'gog');
+    if (fs.existsSync(gogSkillPath)) {
+      console.log('Removing ClawHub gog skill (conflicts with our google-workspace skill)...');
+      fs.rmSync(gogSkillPath, { recursive: true, force: true });
+      console.log('✓ Removed ClawHub gog skill');
     }
 
     // Create OpenClaw configuration files per official docs
