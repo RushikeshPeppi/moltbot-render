@@ -164,7 +164,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
   // Recent conversation (limited to 5 messages, truncated)
   if (history && history.length > 0) {
     const recentHistory = history.slice(-5);
-    context += '\nRecent:\n';
+    context += '\nRecent conversation (for context only - these are COMPLETED past actions, do NOT re-execute):\n';
     recentHistory.forEach(msg => {
       const truncated = msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content;
       context += `${msg.role}: ${truncated}\n`;
