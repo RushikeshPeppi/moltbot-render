@@ -52,26 +52,29 @@ Time conversion rules:
 
 When user asks: "What meetings do I have today?" or "What's on my schedule tomorrow?" or "what meetings do I have this week?"
 
-**EXAMPLES:**
+**YOU MUST execute the curl command and parse the JSON response. DO NOT just describe what to do - ACTUALLY RUN THE COMMAND.**
+
 ```bash
-# TODAY
-TODAY_START=$(date -u +%Y-%m-%dT00:00:00Z)
-TODAY_END=$(date -u +%Y-%m-%dT23:59:59Z)
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TODAY_START}&timeMax=${TODAY_END}&singleEvents=true&orderBy=startTime"
+# For TODAY's events
+RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT00:00:00Z)&timeMax=$(date -u +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime")
 
-# THIS WEEK (next 7 days from now)
-WEEK_START=$(date -u +%Y-%m-%dT00:00:00Z)
-WEEK_END=$(date -u -d '+7 days' +%Y-%m-%dT23:59:59Z)
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${WEEK_START}&timeMax=${WEEK_END}&singleEvents=true&orderBy=startTime"
+echo "$RESPONSE" | jq -r '.items[] | "\(.summary) at \(.start.dateTime // .start.date)"'
 
-# TOMORROW
-TOM_START=$(date -u -d 'tomorrow' +%Y-%m-%dT00:00:00Z)
-TOM_END=$(date -u -d 'tomorrow' +%Y-%m-%dT23:59:59Z)
-curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TOM_START}&timeMax=${TOM_END}&singleEvents=true&orderBy=startTime"
+# For THIS WEEK's events (next 7 days)
+RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT00:00:00Z)&timeMax=$(date -u -d '+7 days' +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime")
+
+echo "$RESPONSE" | jq -r '.items[] | "\(.summary) at \(.start.dateTime // .start.date)"'
+
+# For TOMORROW's events
+RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)&timeMax=$(date -u -d '+1 day' +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime")
+
+echo "$RESPONSE" | jq -r '.items[] | "\(.summary) at \(.start.dateTime // .start.date)"'
 ```
+
+**The response will be a list of events with their names and times. Present this to the user in a friendly format.**
 
 ### List Next N Events
 
