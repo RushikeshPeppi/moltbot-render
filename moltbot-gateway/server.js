@@ -400,36 +400,34 @@ async function startOpenClaw() {
       }
     });
 
-    // CRITICAL FIX: Copy custom skills from build to workspace/skills/
-    // OpenClaw loads skills from ~/.openclaw/workspace/skills/
-    // Force copy to ensure latest version is always used
+    // CRITICAL FIX: Copy custom skills to ClawHub location ~/.openclaw/skills/
+    // ClawHub skills are loaded from ~/.openclaw/skills/, NOT workspace/skills/
     const buildSkillsDir = path.join(__dirname, 'skills');
+    const clawHubSkillsDir = path.join(openClawDir, 'skills');
+
+    // Ensure ClawHub skills directory exists
+    if (!fs.existsSync(clawHubSkillsDir)) {
+      fs.mkdirSync(clawHubSkillsDir, { recursive: true });
+    }
+
     if (fs.existsSync(buildSkillsDir)) {
-      console.log(`Copying custom skills from ${buildSkillsDir} to ${workspaceSkillsDir}...`);
+      console.log(`Copying custom skills from ${buildSkillsDir} to ${clawHubSkillsDir}...`);
       const skills = fs.readdirSync(buildSkillsDir);
       skills.forEach(skill => {
         const srcPath = path.join(buildSkillsDir, skill);
-        const destPath = path.join(workspaceSkillsDir, skill);
+        const destPath = path.join(clawHubSkillsDir, skill);
         if (fs.lstatSync(srcPath).isDirectory()) {
-          // Remove existing and copy fresh (ensures latest version)
+          // Remove existing and copy fresh (overwrites ClawHub skills like gog)
           if (fs.existsSync(destPath)) {
+            console.log(`Overwriting existing skill: ${skill}`);
             fs.rmSync(destPath, { recursive: true, force: true });
           }
           fs.cpSync(srcPath, destPath, { recursive: true });
-          console.log(`✓ Copied custom skill: ${skill}`);
+          console.log(`✓ Copied custom skill to ClawHub location: ${skill}`);
         }
       });
     } else {
       console.log(`⚠ Custom skills directory not found at ${buildSkillsDir}`);
-    }
-
-    // Remove conflicting gog skill from ClawHub if it exists
-    // gog requires Homebrew which doesn't work on Render
-    const gogSkillPath = path.join(openClawDir, 'skills', 'gog');
-    if (fs.existsSync(gogSkillPath)) {
-      console.log('Removing conflicting gog skill (requires Homebrew)...');
-      fs.rmSync(gogSkillPath, { recursive: true, force: true });
-      console.log('✓ Removed gog skill');
     }
 
     // Create OpenClaw configuration files per official docs
