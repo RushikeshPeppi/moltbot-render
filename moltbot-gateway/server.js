@@ -222,6 +222,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
       console.log(`[${sessionId}] Google OAuth token configured for skills`);
     }
 
+    // Set model to Gemini 2.0 Flash
+    args.push('--model', 'gemini-2.0-flash-exp');
+
     // Set thinking level
     args.push('--thinking', 'medium');
 
