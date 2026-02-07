@@ -1,6 +1,6 @@
 ---
 name: google-workspace
-description: Google Calendar and Gmail integration via OAuth - create/update/delete events, send/search emails, manage inbox
+description: Google Calendar and Gmail - list/view/check meetings, schedule, create/update/delete events, read/send emails
 user-invocable: true
 metadata: {"openclaw": {"emoji": "📧", "requires": {"env": ["GOOGLE_ACCESS_TOKEN"]}, "primaryEnv": "GOOGLE_ACCESS_TOKEN"}}
 ---
@@ -12,8 +12,8 @@ metadata: {"openclaw": {"emoji": "📧", "requires": {"env": ["GOOGLE_ACCESS_TOK
 ## ⚡ When to Use This Skill
 
 Use this skill when the user asks about:
-- **Calendar**: meetings, appointments, schedule, calendar events, create/update/delete events
-- **Gmail**: emails, messages, inbox, send email, search messages, mark read/unread
+- **Calendar**: list meetings, view schedule, check calendar, what meetings, create/update/delete events, appointments
+- **Gmail**: read emails, check inbox, send email, search messages, mark read/unread
 
 ## 🔑 Environment Variables
 
