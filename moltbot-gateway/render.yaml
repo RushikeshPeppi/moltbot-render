@@ -8,7 +8,9 @@ services:
       npm install && \
       npm install -g openclaw@latest && \
       npx clawhub@latest install gog && \
-      npx clawhub@latest install clawlist
+      npx clawhub@latest install clawlist && \
+      mkdir -p /root/.openclaw && \
+      echo '{"model":"gemini-2.0-flash-exp"}' > /root/.openclaw/config.json
     startCommand: npm start
     healthCheckPath: /health
     disk:
