@@ -50,22 +50,27 @@ Time conversion rules:
 
 ### List Events (Today/Tomorrow/This Week/Range)
 
-When user asks: "What meetings do I have today?" or "What's on my schedule tomorrow?"
+When user asks: "What meetings do I have today?" or "What's on my schedule tomorrow?" or "what meetings do I have this week?"
 
-**PARSE the user's request to determine which date range:**
-- "today" → use today's start/end
-- "tomorrow" → use tomorrow's start/end
-- "this week" → use Monday-Sunday of current week
-- "next week" → use Monday-Sunday of next week
-- Custom range → parse both dates from request
-
+**EXAMPLES:**
 ```bash
-# DYNAMICALLY calculate based on user's request
-TIME_START=$(date -u -d '<USER_REQUESTED_DATE>' +%Y-%m-%dT00:00:00Z)
-TIME_END=$(date -u -d '<USER_REQUESTED_DATE>' +%Y-%m-%dT23:59:59Z)
-
+# TODAY
+TODAY_START=$(date -u +%Y-%m-%dT00:00:00Z)
+TODAY_END=$(date -u +%Y-%m-%dT23:59:59Z)
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_START}&timeMax=${TIME_END}&singleEvents=true&orderBy=startTime"
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TODAY_START}&timeMax=${TODAY_END}&singleEvents=true&orderBy=startTime"
+
+# THIS WEEK (next 7 days from now)
+WEEK_START=$(date -u +%Y-%m-%dT00:00:00Z)
+WEEK_END=$(date -u -d '+7 days' +%Y-%m-%dT23:59:59Z)
+curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${WEEK_START}&timeMax=${WEEK_END}&singleEvents=true&orderBy=startTime"
+
+# TOMORROW
+TOM_START=$(date -u -d 'tomorrow' +%Y-%m-%dT00:00:00Z)
+TOM_END=$(date -u -d 'tomorrow' +%Y-%m-%dT23:59:59Z)
+curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TOM_START}&timeMax=${TOM_END}&singleEvents=true&orderBy=startTime"
 ```
 
 ### List Next N Events
