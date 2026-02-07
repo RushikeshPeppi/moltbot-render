@@ -50,7 +50,8 @@ class OpenClawClient:
         user_id: Optional[int] = None,
         timezone: Optional[str] = None,
         user_credentials: Optional[Dict] = None,
-        conversation_history: Optional[List[Dict]] = None
+        conversation_history: Optional[List[Dict]] = None,
+        user_context: Optional[Dict] = None
     ) -> Dict[str, Any]:
         """
         Send message to OpenClaw Gateway with retry logic.
@@ -70,7 +71,8 @@ class OpenClawClient:
             "user_id": user_id,  # Pass user_id for OAuth token bridge
             "timezone": timezone,  # Pass user's timezone
             "credentials": user_credentials or {},
-            "history": conversation_history or []
+            "history": conversation_history or [],
+            "user_context": user_context or {}  # Pass user-specific context (bot name, preferences, etc.)
         }
         
         last_exception = None

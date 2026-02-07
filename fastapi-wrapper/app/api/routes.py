@@ -181,6 +181,10 @@ async def execute_action(request: ExecuteActionRequest):
                     user_credentials = {"google_access_token": google_token}
             except ValueError:
                 pass  # user_id is not a valid int, skip Google token
+
+        # 3b. Get user context (bot name, preferences, etc.)
+        user_context = await session_manager.get_user_context(session_id, user_id)
+        logger.debug(f"Retrieved user context for {user_id}: {user_context}")
         
         # 4. Log action start
         log_id = await db.log_action(
@@ -205,7 +209,8 @@ async def execute_action(request: ExecuteActionRequest):
                 user_id=user_id_int,  # Pass user_id for OAuth token bridge
                 timezone=request.timezone,  # Pass user's timezone
                 user_credentials=user_credentials,
-                conversation_history=session_data.get('conversation_history', [])
+                conversation_history=session_data.get('conversation_history', []),
+                user_context=user_context  # Pass user-specific context
             )
         except OpenClawClientError as e:
             # OpenClaw call failed after retries

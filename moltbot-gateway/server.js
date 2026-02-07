@@ -77,14 +77,14 @@ async function fetchOAuthTokenFromFastAPI(userId) {
  * }
  */
 app.post('/execute', async (req, res) => {
-  const { session_id, message, user_id, credentials, history } = req.body;
+  const { session_id, message, user_id, credentials, history, timezone, user_context } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
   }
 
   try {
-    console.log(`[${session_id}] Processing: ${message.substring(0, 50)}...`);
+    console.log(`[${session_id}] Processing for user ${user_id}: ${message.substring(0, 50)}...`);
 
     // OAuth token bridge: Fetch fresh token from FastAPI if user_id provided
     let enhancedCredentials = { ...credentials };
@@ -99,8 +99,17 @@ app.post('/execute', async (req, res) => {
       }
     }
 
-    // Build context from credentials and history
-    const context = buildContext(enhancedCredentials, history);
+    // Extract user context for personalization
+    const userContext = user_context || {};
+
+    // Build rich context with identity, user-specific data, and history
+    const context = buildContext(
+      enhancedCredentials,
+      history,
+      user_id,
+      timezone || 'UTC',
+      userContext
+    );
 
     // Execute OpenClaw command (pass user_id for workspace isolation)
     const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id);
@@ -126,26 +135,78 @@ app.post('/execute', async (req, res) => {
 });
 
 /**
- * Build context string for OpenClaw from credentials and history
+ * Build context string for OpenClaw from credentials, history, and user-specific data
  */
-function buildContext(credentials, history) {
+function buildContext(credentials, history, userId, timezone, userContext = {}) {
   let context = '';
 
-  // Add credentials context
-  if (credentials) {
-    if (credentials.google_access_token) {
-      context += 'User has connected their Google account. You can access their calendar and email.\n';
-    }
+  // === CORE IDENTITY (Always Present) ===
+  context += '=== YOUR IDENTITY ===\n';
+  context += 'You are Peppi\'s AI companion - a helpful, friendly assistant integrated into the Peppi SMS platform.\n';
+  context += 'You serve multiple users, each with their own conversations and memories.\n';
+  context += 'You are intelligent, proactive, and always remember context from previous interactions.\n';
+  context += '\n';
+
+  // === USER-SPECIFIC CONTEXT ===
+  context += '=== CURRENT USER ===\n';
+  context += `User ID: ${userId || 'unknown'}\n`;
+
+  // Bot's custom name for this user (if set)
+  if (userContext.botName) {
+    context += `Your name (as chosen by this user): ${userContext.botName}\n`;
+  } else {
+    context += 'Your name: Peppi (user hasn\'t given you a custom name yet)\n';
   }
 
-  // Add conversation history context
+  // User's name (if known)
+  if (userContext.userName) {
+    context += `User's name: ${userContext.userName}\n`;
+  }
+
+  // User's timezone
+  if (timezone) {
+    context += `User's timezone: ${timezone}\n`;
+  }
+
+  // User preferences/notes
+  if (userContext.preferences) {
+    context += `User preferences: ${userContext.preferences}\n`;
+  }
+
+  context += '\n';
+
+  // === CAPABILITIES ===
+  context += '=== YOUR CAPABILITIES ===\n';
+  if (credentials && credentials.google_access_token) {
+    context += '✓ Google Calendar - Schedule, view, and manage meetings\n';
+    context += '✓ Gmail - Read and send emails\n';
+  } else {
+    context += '⚠ Google services not connected for this user (suggest OAuth setup if needed)\n';
+  }
+  context += '✓ Web Search - Find information online\n';
+  context += '✓ Memory - Remember important facts and conversations\n';
+  context += '✓ Tasks & Reminders - Track user\'s tasks\n';
+  context += '\n';
+
+  // === CONVERSATION HISTORY ===
   if (history && history.length > 0) {
     const recentHistory = history.slice(-10); // Last 10 messages
-    context += '\nRecent conversation:\n';
+    context += '=== RECENT CONVERSATION ===\n';
     recentHistory.forEach(msg => {
       context += `${msg.role}: ${msg.content}\n`;
     });
+    context += '\n';
   }
+
+  // === BEHAVIORAL GUIDELINES ===
+  context += '=== HOW TO BEHAVE ===\n';
+  context += '• Be warm and personable, but professional\n';
+  context += '• Remember details from past conversations\n';
+  context += '• Proactively suggest helpful actions\n';
+  context += '• NEVER say "I just came alive" - you have continuous memory per user\n';
+  context += '• Always acknowledge you\'re serving a specific user (use their name if known)\n';
+  context += '• If user gives you a custom name, remember and acknowledge it\n';
+  context += '\n';
 
   return context;
 }

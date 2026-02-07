@@ -47,6 +47,12 @@ class SessionManager:
                 "last_action": None,
                 "user_timezone": "UTC"
             },
+            "user_context": {
+                "bot_name": None,  # Custom name given by user to the bot
+                "user_name": None,  # User's real name
+                "preferences": None,  # User-specific preferences/notes
+                "relationship": "assistant"  # Default relationship type
+            },
             "metadata": {
                 "message_count": 0,
                 "total_tokens": 0
@@ -169,21 +175,60 @@ class SessionManager:
         return history
     
     async def update_context(
-        self, 
-        session_id: str, 
+        self,
+        session_id: str,
         user_id: str,
         context_updates: Dict[str, Any]
     ) -> bool:
         """Update session context (pending_action, last_action, etc.)"""
         session_data = await self.get_session(session_id, user_id)
-        
+
         if not session_data:
             return False
-        
+
         session_data['context'].update(context_updates)
-        
+
         return await self.update_session(session_id, user_id, session_data)
-    
+
+    async def update_user_context(
+        self,
+        session_id: str,
+        user_id: str,
+        user_context_updates: Dict[str, Any]
+    ) -> bool:
+        """
+        Update user-specific context (bot name, user name, preferences).
+        Example: {"bot_name": "Molly", "user_name": "John", "preferences": "loves tech news"}
+        """
+        session_data = await self.get_session(session_id, user_id)
+
+        if not session_data:
+            return False
+
+        # Ensure user_context exists
+        if 'user_context' not in session_data:
+            session_data['user_context'] = {
+                "bot_name": None,
+                "user_name": None,
+                "preferences": None,
+                "relationship": "assistant"
+            }
+
+        session_data['user_context'].update(user_context_updates)
+
+        logger.info(f"Updated user context for {user_id}: {user_context_updates}")
+
+        return await self.update_session(session_id, user_id, session_data)
+
+    async def get_user_context(self, session_id: str, user_id: str) -> Dict[str, Any]:
+        """Get user-specific context (bot name, user name, preferences)"""
+        session_data = await self.get_session(session_id, user_id)
+
+        if not session_data:
+            return {}
+
+        return session_data.get('user_context', {})
+
     async def get_active_sessions_count(self) -> int:
         """Count active sessions across all users"""
         return await self.redis.get_active_sessions_count()
