@@ -61,6 +61,7 @@ class ExecuteActionRequest(BaseModel):
     """Request to execute an action via OpenClaw"""
     user_id: str = Field(..., description="User ID from Peppi system")
     message: str = Field(..., description="User's SMS message/action request")
+    timezone: str = Field(..., description="User's timezone (e.g., 'Asia/Kolkata', 'America/New_York')")
     phone_number: Optional[str] = Field(None, description="User's phone number")
     credentials: Optional[Dict[str, Any]] = Field(None, description="User service credentials")
 
@@ -69,6 +70,7 @@ class ExecuteActionRequest(BaseModel):
             "example": {
                 "user_id": "123",
                 "message": "Schedule a meeting tomorrow at 3pm",
+                "timezone": "Asia/Kolkata",
                 "phone_number": "+1234567890",
                 "credentials": None
             }

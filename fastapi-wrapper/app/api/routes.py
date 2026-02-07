@@ -203,6 +203,7 @@ async def execute_action(request: ExecuteActionRequest):
                 session_id=session_id,
                 message=request.message,
                 user_id=user_id_int,  # Pass user_id for OAuth token bridge
+                timezone=request.timezone,  # Pass user's timezone
                 user_credentials=user_credentials,
                 conversation_history=session_data.get('conversation_history', [])
             )

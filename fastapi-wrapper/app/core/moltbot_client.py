@@ -48,6 +48,7 @@ class OpenClawClient:
         session_id: str,
         message: str,
         user_id: Optional[int] = None,
+        timezone: Optional[str] = None,
         user_credentials: Optional[Dict] = None,
         conversation_history: Optional[List[Dict]] = None
     ) -> Dict[str, Any]:
@@ -67,6 +68,7 @@ class OpenClawClient:
             "session_id": session_id,
             "message": message,
             "user_id": user_id,  # Pass user_id for OAuth token bridge
+            "timezone": timezone,  # Pass user's timezone
             "credentials": user_credentials or {},
             "history": conversation_history or []
         }
