@@ -222,6 +222,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
       console.log(`[${sessionId}] Google OAuth token configured for skills`);
     }
 
+    // Set model to Gemini 2.0 Flash
+    args.push('--model', 'gemini-2.0-flash-exp');
+
     // Set thinking level
     args.push('--thinking', 'medium');
 
@@ -234,10 +237,8 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
       env: {
         ...process.env,
         // OpenClaw 2026 expects GOOGLE_API_KEY for Google/Gemini models
-        // Use Gemini 2.0 Flash model (set via GOOGLE_MODEL env var)
         GOOGLE_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
         GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-        GOOGLE_MODEL: 'gemini-2.0-flash-exp',  // Specify model via env var
         // SearXNG URL for free web search (NO API keys needed)
         SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
         // Google OAuth tokens for skills
