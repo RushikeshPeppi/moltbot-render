@@ -242,7 +242,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
         // OpenClaw 2026 expects GOOGLE_API_KEY for Google/Gemini models
         GOOGLE_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
         GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-        GOOGLE_MODEL: 'gemini-3-flash',  // Use Gemini 3 Flash
+        GOOGLE_MODEL: 'gemini-2.5-flash',  // Use Gemini 2.5 Flash
         // SearXNG URL for free web search (NO API keys needed)
         SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
         // Google OAuth tokens for skills
@@ -444,7 +444,7 @@ async function startOpenClaw() {
         agents: {
           defaults: {
             model: {
-              primary: "google/gemini-3-flash"
+              primary: "google/gemini-2.5-flash"
             }
           }
         },
@@ -476,7 +476,7 @@ async function startOpenClaw() {
       // Display configuration summary
       console.log('\nConfiguration Summary:');
       console.log(`- Provider: Google (via GEMINI_API_KEY env var)`);
-      console.log(`- Model: google/gemini-3-flash`);
+      console.log(`- Model: google/gemini-2.5-flash`);
       console.log(`- Web Search: SearXNG (${process.env.SEARXNG_BASE_URL || 'Not configured'})`);
       console.log(`- Session Isolation: per-peer (multi-tenant)`);
       console.log(`- Config: ${configPath}`);
