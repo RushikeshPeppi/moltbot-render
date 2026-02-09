@@ -1,6 +1,6 @@
 ---
 name: google-workspace
-description: Google Calendar and Gmail - list events, view calendar, check schedule, show meetings, get appointments, create/update/delete events, read/send emails, check inbox, search emails, recent messages, unread emails, send message, compose email, find messages, email search
+description: Google Calendar and Gmail - list events, view calendar, check schedule, show meetings, get appointments, create/update/delete events, read/send emails, check inbox, search emails, recent messages, unread emails, send message, compose email, find messages, email search, reply to email, respond to message, answer email
 user-invocable: true
 metadata: {"openclaw": {"emoji": "📧"}}
 ---
@@ -431,6 +431,85 @@ curl -s -X POST \
   -H "Content-Type: application/json" \
   -d "{\"raw\": \"$ENCODED\"}" \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
+# IMPORTANT: Always confirm success
+echo "✅ Email sent successfully to ${TO_EMAIL}"
+```
+
+### Reply to Email
+
+When user says: "Reply to the email from John" or "Reply to the latest email saying thanks"
+
+**CRITICAL: Extract reply details and provide confirmation:**
+
+1. **Identify the original email**:
+   - "reply to email from John" → search for latest email from John
+   - "reply to latest email" → get most recent email
+   - "reply to that email" → use email from context
+
+2. **Extract reply message**:
+   - "saying thanks" → REPLY_BODY="Thanks"
+   - "tell them I'll check it out" → REPLY_BODY="I'll check it out"
+   - User provides full message → use exactly as given
+
+3. **Get original message details** for threading:
+   - MESSAGE_ID
+   - THREAD_ID (for proper email threading)
+   - Original subject (for Re: prefix)
+   - Sender email (for To: field)
+
+```bash
+# Step 1: Find the original email (search by sender or get latest)
+SEARCH_QUERY="<FROM_USER_REQUEST>"  # e.g., "from:john" or empty for latest
+
+# Get the message
+RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${SEARCH_QUERY}&maxResults=1")
+
+MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.messages[0].id')
+
+# Step 2: Get full message details for threading
+MESSAGE_DETAILS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}?format=metadata")
+
+THREAD_ID=$(echo "$MESSAGE_DETAILS" | jq -r '.threadId')
+ORIGINAL_FROM=$(echo "$MESSAGE_DETAILS" | jq -r '.payload.headers[] | select(.name=="From") | .value')
+ORIGINAL_SUBJECT=$(echo "$MESSAGE_DETAILS" | jq -r '.payload.headers[] | select(.name=="Subject") | .value')
+
+# Extract email from "Name <email@domain.com>" format
+TO_EMAIL=$(echo "$ORIGINAL_FROM" | grep -oP '<\K[^>]+' || echo "$ORIGINAL_FROM")
+
+# Add "Re:" prefix if not already present
+if [[ "$ORIGINAL_SUBJECT" != Re:* ]]; then
+  REPLY_SUBJECT="Re: ${ORIGINAL_SUBJECT}"
+else
+  REPLY_SUBJECT="${ORIGINAL_SUBJECT}"
+fi
+
+# Step 3: Extract reply body from user's request
+REPLY_BODY="<EXTRACTED_FROM_USER_REQUEST>"
+
+# Step 4: Build reply email with proper threading
+REPLY_CONTENT="From: me
+To: ${TO_EMAIL}
+Subject: ${REPLY_SUBJECT}
+In-Reply-To: ${MESSAGE_ID}
+References: ${MESSAGE_ID}
+
+${REPLY_BODY}"
+
+# Base64url encode
+ENCODED=$(echo -n "$REPLY_CONTENT" | base64 | tr '+/' '-_' | tr -d '=')
+
+# Step 5: Send reply with threadId for proper threading
+curl -s -X POST \
+  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"raw\": \"$ENCODED\", \"threadId\": \"$THREAD_ID\"}" \
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+
+# CRITICAL: Always provide confirmation to user
+echo "✅ Reply sent successfully to ${TO_EMAIL} in thread '${ORIGINAL_SUBJECT}'"
 ```
 
 ### Mark Message as Read/Unread/Starred
