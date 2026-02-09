@@ -111,8 +111,8 @@ app.post('/execute', async (req, res) => {
       userContext
     );
 
-    // Execute OpenClaw command (pass user_id for workspace isolation)
-    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id);
+    // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
+    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id, timezone || 'UTC');
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -177,7 +177,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 /**
  * Execute OpenClaw command and return result
  */
-function executeOpenClaw(sessionId, message, context, credentials, userId) {
+function executeOpenClaw(sessionId, message, context, credentials, userId, timezone) {
   return new Promise((resolve, reject) => {
     const timeout = 55000; // 55 second timeout
 
@@ -208,7 +208,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
     // This avoids the "gateway closed" errors seen with the background daemon.
     args.push('--local');
 
-    // Pass Google OAuth Token for skills (Gmail, Calendar, etc.)
+    // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
     const extraEnv = {};
     if (credentials && credentials.google_access_token) {
       // OpenClaw skills may look for different environment variable names
@@ -220,6 +220,12 @@ function executeOpenClaw(sessionId, message, context, credentials, userId) {
       extraEnv.CALENDAR_TOKEN = credentials.google_access_token;
 
       console.log(`[${sessionId}] Google OAuth token configured for skills`);
+    }
+
+    // Pass user's timezone for date/time calculations in skills
+    if (timezone) {
+      extraEnv.USER_TIMEZONE = timezone;
+      console.log(`[${sessionId}] User timezone set to: ${timezone}`);
     }
 
     // Set thinking level

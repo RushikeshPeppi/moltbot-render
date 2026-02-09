@@ -1,6 +1,6 @@
 ---
 name: google-workspace
-description: Google Calendar and Gmail - list events, view calendar, check schedule, show meetings, get appointments, create/update/delete events, read/send emails
+description: Google Calendar and Gmail - list events, view calendar, check schedule, show meetings, get appointments, create/update/delete events, read/send emails, check inbox, search emails, recent messages, unread emails, send message, compose email, find messages, email search
 user-invocable: true
 metadata: {"openclaw": {"emoji": "📧"}}
 ---
@@ -263,43 +263,114 @@ curl -s -X DELETE \
 
 Base URL: `https://gmail.googleapis.com/gmail/v1`
 
+### IMPORTANT: Timezone Context for Date-Based Gmail Queries
+
+When user asks for emails with date/time filters (e.g., "emails from today", "messages from this week"), use the user's timezone context to calculate the correct date ranges.
+
+**The user's timezone is available via the `$USER_TIMEZONE` environment variable** (e.g., "Asia/Kolkata", "America/New_York").
+
+Date calculation with timezone:
+- "Today's emails": Get start of today in user's timezone, convert to UTC for API query
+- "This week": Get start of week (Monday 00:00) in user's timezone
+- "Last 3 days": Calculate date range based on user's timezone
+
+```bash
+# Example: Get today's date range in user's timezone
+# If USER_TIMEZONE="Asia/Kolkata" and it's Feb 9, 2026
+# Today starts at 2026-02-09 00:00:00 IST = 2026-02-08 18:30:00 UTC
+
+TODAY_START=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
+TODAY_END=$(TZ="$USER_TIMEZONE" date -d "today 23:59:59" +%s)
+
+# Gmail API uses "after:" and "before:" with timestamps
+QUERY="after:${TODAY_START} before:${TODAY_END}"
+```
+
 ### List Recent/Unread/Important Messages
 
-When user asks: "Show me my recent emails" or "Any unread messages?" or "Important emails?"
+When user asks: "Show me my recent emails" or "Any unread messages?" or "Important emails?" or "Emails from today"
 
 **PARSE user's filter criteria:**
 - "recent" → no filter, maxResults=10
 - "unread" → q=is:unread
 - "important" → q=is:important
 - "starred" → q=is:starred
+- "today" / "from today" → calculate date range using USER_TIMEZONE
+- "this week" → calculate week range using USER_TIMEZONE
+- "last 3 days" → calculate date range using USER_TIMEZONE
 - Custom count: "last 20 emails" → maxResults=20
 
 ```bash
 # Extract filter from user's request
-QUERY="<FILTER_IF_ANY>"  # e.g., "is:unread" or empty
+BASE_QUERY="<FILTER_IF_ANY>"  # e.g., "is:unread" or empty
 MAX_RESULTS=<COUNT_OR_DEFAULT_10>
 
+# If user specifies date range, add timezone-aware filtering
+DATE_FILTER=""
+if [[ "$USER_REQUEST" == *"today"* ]] || [[ "$USER_REQUEST" == *"from today"* ]]; then
+  # Calculate today in user's timezone
+  TODAY_START=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
+  DATE_FILTER="after:${TODAY_START}"
+fi
+
+if [[ "$USER_REQUEST" == *"this week"* ]]; then
+  # Calculate start of this week (Monday) in user's timezone
+  WEEK_START=$(TZ="$USER_TIMEZONE" date -d "monday this week 00:00:00" +%s)
+  DATE_FILTER="after:${WEEK_START}"
+fi
+
+if [[ "$USER_REQUEST" == *"last 3 days"* ]]; then
+  # Calculate 3 days ago in user's timezone
+  THREE_DAYS_AGO=$(TZ="$USER_TIMEZONE" date -d "3 days ago 00:00:00" +%s)
+  DATE_FILTER="after:${THREE_DAYS_AGO}"
+fi
+
+# Combine base query with date filter
+FINAL_QUERY="${BASE_QUERY} ${DATE_FILTER}"
+
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${QUERY}&maxResults=${MAX_RESULTS}"
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${FINAL_QUERY}&maxResults=${MAX_RESULTS}"
 ```
 
 ### Search Messages
 
-When user asks: "Show me emails from Marvin" or "Find messages about project X"
+When user asks: "Show me emails from Marvin" or "Find messages about project X" or "Emails from John today"
 
 **EXTRACT search criteria from user's request:**
 - "from Marvin" → q=from:marvin (or ask for email)
 - "from sarah@example.com" → q=from:sarah@example.com
 - "about project X" → q=subject:project X
 - "with attachment" → q=has:attachment
-- Combinations: "unread from John" → q=is:unread from:john
+- "from John today" → q=from:john after:<TODAY_TIMESTAMP>
+- "unread from John this week" → q=is:unread from:john after:<WEEK_START_TIMESTAMP>
+- Combinations with dates: Always use USER_TIMEZONE for date calculations
 
 ```bash
 # Build search query from user's actual request
-SEARCH_QUERY="<DYNAMIC_QUERY_FROM_REQUEST>"
+BASE_SEARCH_QUERY="<DYNAMIC_QUERY_FROM_REQUEST>"
+
+# If user includes date/time context, add timezone-aware filtering
+DATE_FILTER=""
+if [[ "$USER_REQUEST" == *"today"* ]]; then
+  TODAY_START=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
+  DATE_FILTER="after:${TODAY_START}"
+fi
+
+if [[ "$USER_REQUEST" == *"this week"* ]]; then
+  WEEK_START=$(TZ="$USER_TIMEZONE" date -d "monday this week 00:00:00" +%s)
+  DATE_FILTER="after:${WEEK_START}"
+fi
+
+if [[ "$USER_REQUEST" == *"yesterday"* ]]; then
+  YESTERDAY_START=$(TZ="$USER_TIMEZONE" date -d "yesterday 00:00:00" +%s)
+  YESTERDAY_END=$(TZ="$USER_TIMEZONE" date -d "yesterday 23:59:59" +%s)
+  DATE_FILTER="after:${YESTERDAY_START} before:${YESTERDAY_END}"
+fi
+
+FINAL_SEARCH_QUERY="${BASE_SEARCH_QUERY} ${DATE_FILTER}"
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${SEARCH_QUERY}&maxResults=10"
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${FINAL_SEARCH_QUERY}&maxResults=10"
 ```
 
 ### Get Message Details
