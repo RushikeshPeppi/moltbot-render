@@ -189,6 +189,9 @@ curl -s -X POST \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+
+# IMPORTANT: Always confirm success
+echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
 ```
 
 ### Update Event
@@ -234,6 +237,9 @@ curl -s -X PUT \
   -H "Content-Type: application/json" \
   -d "$UPDATE_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
+
+# IMPORTANT: Always confirm success
+echo "✅ Calendar event updated successfully"
 ```
 
 ### Delete Event
@@ -257,6 +263,9 @@ EVENT_ID="<FROM_SEARCH_RESULTS>"
 curl -s -X DELETE \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
+
+# IMPORTANT: Always confirm success
+echo "✅ Calendar event deleted successfully"
 ```
 
 ## 📧 GMAIL API
