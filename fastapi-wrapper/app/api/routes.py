@@ -230,34 +230,60 @@ async def execute_action(request: ExecuteActionRequest):
                 exception=e.message
             )
         
-        # 7. Add assistant response to history
-        assistant_message = openclaw_response.get('response', 'Action completed')
-        await session_manager.add_message(session_id, user_id, "assistant", assistant_message)
-        
+        # 7. Parse and clean the response
+        raw_response = openclaw_response.get('response', 'Action completed')
+
+        # Try to parse the stringified JSON response from OpenClaw
+        try:
+            import json
+            parsed_response = json.loads(raw_response)
+
+            # Extract just the text from payloads
+            payloads = parsed_response.get('payloads', [])
+            if payloads and len(payloads) > 0:
+                # Get the text content from the first payload
+                clean_response = payloads[0].get('text', raw_response)
+            else:
+                clean_response = raw_response
+
+            # Extract token usage from meta if available
+            meta = parsed_response.get('meta', {})
+            agent_meta = meta.get('agentMeta', {})
+            usage = agent_meta.get('usage', {})
+            tokens_used = usage.get('total', 0)
+
+        except (json.JSONDecodeError, AttributeError, KeyError):
+            # If parsing fails, use the raw response
+            clean_response = raw_response
+            tokens_used = 0
+
+        # Add assistant response to history
+        await session_manager.add_message(session_id, user_id, "assistant", clean_response)
+
         # 8. Update session context
         await session_manager.update_context(session_id, user_id, {
             "last_action": openclaw_response.get('action_type'),
             "pending_action": None
         })
-        
+
         # 9. Update action log
         if log_id:
             await db.update_action_log(
                 log_id=log_id,
                 status="success",
-                response_summary=assistant_message[:200],
-                tokens_used=openclaw_response.get('tokens_used', 0)
+                response_summary=clean_response[:200] if clean_response else "Action completed",
+                tokens_used=tokens_used
             )
-        
-        # 10. Return success response
+
+        # 10. Return clean success response
         return {
             "code": ResponseCode.SUCCESS,
             "message": "Action executed successfully",
             "data": {
                 "session_id": session_id,
-                "response": assistant_message,
+                "response": clean_response,
                 "action_performed": openclaw_response.get('action_type'),
-                "details": openclaw_response.get('details')
+                "tokens_used": tokens_used if tokens_used > 0 else None
             },
             "error": None,
             "exception": None,
