@@ -150,7 +150,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   // Capabilities
   if (credentials && credentials.google_access_token) {
-    context += 'Google Calendar & Gmail AVAILABLE via google-workspace skill. CRITICAL: You MUST use the google-workspace skill for ALL calendar and email operations. When user asks to reply to email, send email, check calendar, or create events, you MUST invoke the google-workspace skill with the user\'s request. The skill has direct API access with $GOOGLE_ACCESS_TOKEN already configured. DO NOT just respond with text - actually use the skill to perform the action. Example: User says "Reply to John saying thanks" → You invoke google-workspace skill to send the reply via Gmail API. ';
+    context += 'Google Calendar & Gmail are FULLY FUNCTIONAL via google-workspace skill with Gmail API. CRITICAL INSTRUCTIONS: (1) You CAN send and reply to emails - there is NO channel requirement, the Gmail API works directly. (2) When user asks to reply/send email, USE the google-workspace skill immediately - do NOT say you cannot do it. (3) The skill executes bash commands with curl to Gmail API - $GOOGLE_ACCESS_TOKEN is already set. (4) For replies: The skill will find the original email, extract sender, construct proper reply with threading, and send via Gmail API. (5) DO NOT respond with "I cannot send emails" - you CAN and MUST use the google-workspace skill to send them. Example: "Reply to John" → Use google-workspace skill which runs: curl -X POST -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" gmail.googleapis.com/.../send ';
   }
 
   // Preferences
