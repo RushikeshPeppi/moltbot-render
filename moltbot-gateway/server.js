@@ -150,7 +150,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   // Capabilities
   if (credentials && credentials.google_access_token) {
-    context += 'Google Calendar & Gmail AVAILABLE via direct API calls. CRITICAL: DO NOT use gog skill - it is broken. Instead, use the exec tool with curl commands. $GOOGLE_ACCESS_TOKEN is set. To list events: exec tool with command: curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-01T18:30:00Z&timeMax=2026-02-08T18:29:59Z&singleEvents=true&orderBy=startTime". Extract event names and times from the JSON response. ';
+    context += 'Google Calendar & Gmail AVAILABLE via google-workspace skill. CRITICAL: You MUST use the google-workspace skill for ALL calendar and email operations. When user asks to reply to email, send email, check calendar, or create events, you MUST invoke the google-workspace skill with the user\'s request. The skill has direct API access with $GOOGLE_ACCESS_TOKEN already configured. DO NOT just respond with text - actually use the skill to perform the action. Example: User says "Reply to John saying thanks" → You invoke google-workspace skill to send the reply via Gmail API. ';
   }
 
   // Preferences
