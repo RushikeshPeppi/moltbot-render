@@ -302,6 +302,115 @@ class Database:
         """Reset daily limit - Note: Rate limiting handled by Peppi"""
         return True
     
+    # ==================== Reminders ====================
+    
+    async def create_reminder(self, data: dict) -> dict:
+        """
+        Insert a new reminder into tbl_clawdbot_reminders.
+        
+        Args:
+            data: Dict with user_id, message, trigger_at, user_timezone, recurrence, etc.
+            
+        Returns:
+            The created reminder row as a dict, or None on failure.
+        """
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return None
+            
+            response = self._client.table("tbl_clawdbot_reminders").insert(data).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"Created reminder for user {data.get('user_id')}: {response.data[0].get('id')}")
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error creating reminder: {e}")
+            return None
+    
+    async def get_reminder(self, reminder_id: int) -> dict:
+        """Fetch a single reminder by ID."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return None
+            
+            response = self._client.table("tbl_clawdbot_reminders").select("*").eq(
+                "id", reminder_id
+            ).execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error getting reminder {reminder_id}: {e}")
+            return None
+    
+    async def update_reminder(self, reminder_id: int, data: dict) -> bool:
+        """
+        Update reminder fields (status, qstash_message_id, delivered_at, etc.).
+        
+        Args:
+            reminder_id: ID of the reminder to update
+            data: Dict of fields to update
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
+            self._client.table("tbl_clawdbot_reminders").update(data).eq(
+                "id", reminder_id
+            ).execute()
+            
+            logger.info(f"Updated reminder {reminder_id}: {list(data.keys())}")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating reminder {reminder_id}: {e}")
+            return False
+    
+    async def get_user_reminders(self, user_id: str, status: str = None) -> list:
+        """
+        Get all reminders for a user, optionally filtered by status.
+        
+        Args:
+            user_id: Peppi user ID
+            status: Optional filter ('pending', 'delivered', 'failed', 'cancelled')
+            
+        Returns:
+            List of reminder dicts, sorted by trigger_at descending
+        """
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return []
+            
+            query = self._client.table("tbl_clawdbot_reminders").select("*").eq(
+                "user_id", user_id
+            )
+            
+            if status:
+                query = query.eq("status", status)
+            
+            response = query.order("trigger_at", desc=True).execute()
+            
+            return response.data if response.data else []
+        except Exception as e:
+            logger.error(f"Error getting reminders for user {user_id}: {e}")
+            return []
+    
+    async def cancel_reminder(self, reminder_id: int) -> bool:
+        """Set reminder status to 'cancelled'."""
+        return await self.update_reminder(reminder_id, {"status": "cancelled"})
+    
     # ==================== Utility ====================
     
     async def health_check(self) -> bool:

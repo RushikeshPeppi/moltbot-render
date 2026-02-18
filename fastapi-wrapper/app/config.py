@@ -51,6 +51,19 @@ class Settings(BaseSettings):
     # Peppi Website
     PEPPI_WEBSITE_URL: str = os.getenv("PEPPI_WEBSITE_URL", "https://peppi.app")
     
+    # Upstash QStash (Reminder Scheduling)
+    QSTASH_URL: str = os.getenv("QSTASH_URL", "")
+    QSTASH_TOKEN: str = os.getenv("QSTASH_TOKEN", "")
+    QSTASH_CURRENT_SIGNING_KEY: str = os.getenv("QSTASH_CURRENT_SIGNING_KEY", "")
+    QSTASH_NEXT_SIGNING_KEY: str = os.getenv("QSTASH_NEXT_SIGNING_KEY", "")
+    
+    # Peppi Outbound SMS
+    PEPPI_OUTBOUND_URL: str = os.getenv("PEPPI_OUTBOUND_URL", "")
+    PEPPI_OUTBOUND_API_KEY: str = os.getenv("PEPPI_OUTBOUND_API_KEY", "")
+    
+    # Moltbot FastAPI Public URL (for QStash webhook callbacks)
+    MOLTBOT_PUBLIC_URL: str = os.getenv("MOLTBOT_PUBLIC_URL", "https://moltbot-fastapi.onrender.com")
+    
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "/tmp/logs"

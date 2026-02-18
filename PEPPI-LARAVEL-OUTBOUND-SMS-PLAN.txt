@@ -1,0 +1,403 @@
+================================================================================
+  PEPPI LARAVEL — OUTBOUND SMS ENDPOINT (for Moltbot Reminders)
+  Prepared by: Moltbot Engineering Team
+  Date: February 2026
+================================================================================
+
+OVERVIEW
+--------
+Moltbot is implementing a Reminder feature. When a user says "Remind me at 2pm 
+to buy milk", the AI assistant schedules that reminder. When the time arrives, 
+Moltbot needs to proactively send an SMS to the user. 
+
+Currently, Moltbot can only RESPOND to incoming messages (request-response). 
+To send proactive reminders, Moltbot needs to call a Peppi API endpoint that 
+sends an outbound SMS to a user via Twilio.
+
+THIS DOCUMENT describes the Laravel endpoint that the Peppi team must build.
+
+
+================================================================================
+  ENDPOINT SPECIFICATION
+================================================================================
+
+Endpoint:   POST /api/v1/outbound/send-message
+Auth:       Bearer Token (API Key — shared between Moltbot and Peppi)
+Content:    application/json
+
+
+REQUEST BODY
+------------
+{
+    "user_id": "123",
+    "message": "⏰ Reminder: Buy milk on your way home!",
+    "source": "moltbot-reminder",
+    "priority": "normal"
+}
+
+Fields:
+  - user_id   (string, required) — Peppi's internal user ID
+  - message   (string, required) — The SMS text to send (max 1600 chars)
+  - source    (string, required) — Identifies the caller. Value will be 
+                                   "moltbot-reminder" for reminders
+  - priority  (string, optional) — "normal" or "high" (default: normal)
+
+
+SUCCESS RESPONSE (HTTP 200)
+---------------------------
+{
+    "status": "sent",
+    "message_id": "sms_abc123def",
+    "twilio_sid": "SM1234567890abcdef",
+    "delivered_at": "2026-02-18T19:00:05Z"
+}
+
+
+ERROR RESPONSES
+---------------
+HTTP 401 — Unauthorized (invalid API key):
+{
+    "status": "failed",
+    "error": "unauthorized",
+    "message": "Invalid API key"
+}
+
+HTTP 404 — User not found:
+{
+    "status": "failed",
+    "error": "user_not_found",
+    "message": "No user found for user_id 123"
+}
+
+HTTP 422 — User has no phone number:
+{
+    "status": "failed",
+    "error": "no_phone_number",
+    "message": "User does not have a phone number on file"
+}
+
+HTTP 500 — Twilio failure:
+{
+    "status": "failed",
+    "error": "twilio_error",
+    "message": "Failed to send SMS via Twilio: <error details>"
+}
+
+
+================================================================================
+  LARAVEL IMPLEMENTATION
+================================================================================
+
+1. ROUTE
+--------
+File: routes/api.php
+
+    Route::prefix('v1/outbound')
+        ->middleware('verify.moltbot.apikey')
+        ->group(function () {
+            Route::post('/send-message', [OutboundMessageController::class, 'sendMessage']);
+        });
+
+
+2. CONTROLLER
+-------------
+File: app/Http/Controllers/Api/V1/OutboundMessageController.php
+
+    <?php
+
+    namespace App\Http\Controllers\Api\V1;
+
+    use App\Http\Controllers\Controller;
+    use App\Models\OutboundMessage;
+    use App\Models\User;
+    use Illuminate\Http\Request;
+    use Illuminate\Http\JsonResponse;
+    use Twilio\Rest\Client as TwilioClient;
+    use Illuminate\Support\Facades\Log;
+
+    class OutboundMessageController extends Controller
+    {
+        /**
+         * Send an outbound SMS to a user.
+         * Called by Moltbot to deliver reminders, notifications, etc.
+         */
+        public function sendMessage(Request $request): JsonResponse
+        {
+            // 1. Validate request
+            $validated = $request->validate([
+                'user_id'  => 'required|string',
+                'message'  => 'required|string|max:1600',
+                'source'   => 'required|string|in:moltbot-reminder,moltbot-notification',
+                'priority' => 'nullable|string|in:normal,high',
+            ]);
+
+            // 2. Look up user and their phone number
+            $user = User::find($validated['user_id']);
+            
+            if (!$user) {
+                return response()->json([
+                    'status'  => 'failed',
+                    'error'   => 'user_not_found',
+                    'message' => "No user found for user_id {$validated['user_id']}",
+                ], 404);
+            }
+            
+            $phoneNumber = $user->phone_number;
+            
+            if (!$phoneNumber) {
+                return response()->json([
+                    'status'  => 'failed',
+                    'error'   => 'no_phone_number',
+                    'message' => 'User does not have a phone number on file',
+                ], 422);
+            }
+
+            // 3. Send SMS via Twilio
+            try {
+                $twilio = new TwilioClient(
+                    config('services.twilio.sid'),
+                    config('services.twilio.token')
+                );
+
+                $twilioMessage = $twilio->messages->create(
+                    $phoneNumber,
+                    [
+                        'from' => config('services.twilio.from'),
+                        'body' => $validated['message'],
+                    ]
+                );
+
+                // 4. Log the outbound message for auditing
+                OutboundMessage::create([
+                    'user_id'    => $validated['user_id'],
+                    'message'    => $validated['message'],
+                    'source'     => $validated['source'],
+                    'priority'   => $validated['priority'] ?? 'normal',
+                    'twilio_sid' => $twilioMessage->sid,
+                    'status'     => $twilioMessage->status,
+                    'sent_at'    => now(),
+                ]);
+
+                Log::info("Outbound SMS sent", [
+                    'user_id'    => $validated['user_id'],
+                    'source'     => $validated['source'],
+                    'twilio_sid' => $twilioMessage->sid,
+                ]);
+
+                // 5. Return success
+                return response()->json([
+                    'status'       => 'sent',
+                    'message_id'   => $twilioMessage->sid,
+                    'twilio_sid'   => $twilioMessage->sid,
+                    'delivered_at' => now()->toIso8601String(),
+                ]);
+
+            } catch (\Exception $e) {
+                Log::error("Outbound SMS failed", [
+                    'user_id' => $validated['user_id'],
+                    'error'   => $e->getMessage(),
+                ]);
+
+                return response()->json([
+                    'status'  => 'failed',
+                    'error'   => 'twilio_error',
+                    'message' => 'Failed to send SMS: ' . $e->getMessage(),
+                ], 500);
+            }
+        }
+    }
+
+
+3. API KEY MIDDLEWARE
+--------------------
+File: app/Http/Middleware/VerifyMoltbotApiKey.php
+
+    <?php
+
+    namespace App\Http\Middleware;
+
+    use Closure;
+    use Illuminate\Http\Request;
+
+    class VerifyMoltbotApiKey
+    {
+        /**
+         * Verify that the request comes from Moltbot using a shared API key.
+         */
+        public function handle(Request $request, Closure $next)
+        {
+            $apiKey = $request->bearerToken();
+            
+            if (!$apiKey || $apiKey !== config('services.moltbot.api_key')) {
+                return response()->json([
+                    'status'  => 'failed',
+                    'error'   => 'unauthorized',
+                    'message' => 'Invalid or missing API key',
+                ], 401);
+            }
+            
+            return $next($request);
+        }
+    }
+
+Register in app/Http/Kernel.php:
+
+    'verify.moltbot.apikey' => \App\Http\Middleware\VerifyMoltbotApiKey::class,
+
+
+4. DATABASE MIGRATION
+---------------------
+File: database/migrations/xxxx_create_outbound_messages_table.php
+
+    <?php
+
+    use Illuminate\Database\Migrations\Migration;
+    use Illuminate\Database\Schema\Blueprint;
+    use Illuminate\Support\Facades\Schema;
+
+    return new class extends Migration
+    {
+        public function up(): void
+        {
+            Schema::create('outbound_messages', function (Blueprint $table) {
+                $table->id();
+                $table->string('user_id');
+                $table->text('message');
+                $table->string('source');           // "moltbot-reminder", etc.
+                $table->string('priority')->default('normal');
+                $table->string('twilio_sid')->nullable();
+                $table->string('status')->default('pending');
+                $table->timestamp('sent_at')->nullable();
+                $table->timestamps();
+                
+                $table->index('user_id');
+                $table->index('source');
+                $table->index('twilio_sid');
+                $table->index('created_at');
+            });
+        }
+
+        public function down(): void
+        {
+            Schema::dropIfExists('outbound_messages');
+        }
+    };
+
+
+5. MODEL
+--------
+File: app/Models/OutboundMessage.php
+
+    <?php
+
+    namespace App\Models;
+
+    use Illuminate\Database\Eloquent\Model;
+
+    class OutboundMessage extends Model
+    {
+        protected $fillable = [
+            'user_id',
+            'message',
+            'source',
+            'priority',
+            'twilio_sid',
+            'status',
+            'sent_at',
+        ];
+
+        protected $casts = [
+            'sent_at' => 'datetime',
+        ];
+
+        public function user()
+        {
+            return $this->belongsTo(User::class, 'user_id');
+        }
+    }
+
+
+6. CONFIGURATION
+----------------
+File: config/services.php — add these entries:
+
+    'twilio' => [
+        'sid'   => env('TWILIO_ACCOUNT_SID'),
+        'token' => env('TWILIO_AUTH_TOKEN'),
+        'from'  => env('TWILIO_FROM_NUMBER'),
+    ],
+    
+    'moltbot' => [
+        'api_key' => env('MOLTBOT_API_KEY'),
+    ],
+
+
+7. ENVIRONMENT VARIABLES
+------------------------
+Add to .env file:
+
+    TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    TWILIO_AUTH_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+    TWILIO_FROM_NUMBER=+1234567890
+    MOLTBOT_API_KEY=<generate-a-secure-random-key>
+
+The MOLTBOT_API_KEY should be a strong, random string (e.g., 64 chars).
+Share this same key with the Moltbot team to set as PEPPI_OUTBOUND_API_KEY.
+
+
+8. COMPOSER DEPENDENCY
+----------------------
+If not already installed, add the Twilio SDK:
+
+    composer require twilio/sdk
+
+
+================================================================================
+  TESTING
+================================================================================
+
+After deployment, test with curl:
+
+    curl -X POST https://peppi.com/api/v1/outbound/send-message \
+      -H "Authorization: Bearer <MOLTBOT_API_KEY>" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "user_id": "123",
+        "message": "⏰ Test reminder from Moltbot",
+        "source": "moltbot-reminder",
+        "priority": "normal"
+      }'
+
+Expected response:
+    {
+        "status": "sent",
+        "message_id": "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "twilio_sid": "SMxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "delivered_at": "2026-02-18T19:00:05Z"
+    }
+
+
+================================================================================
+  QUESTIONS / COORDINATION
+================================================================================
+
+1. Please share the MOLTBOT_API_KEY once generated — we'll configure it on 
+   the Moltbot side as PEPPI_OUTBOUND_API_KEY.
+
+2. What is the production base URL for this endpoint? 
+   (e.g., https://peppi.com or https://api.peppi.com)
+
+3. Are there existing rate limits on outbound SMS? If so, what are the limits?
+   (Moltbot may send burst reminders if many users set reminders for the
+   same time, e.g., "every Monday at 9am")
+
+4. Can we get delivery confirmation via webhook? (e.g., Twilio status callback)
+   This would let us update reminder status from "sent" to "delivered" or "failed".
+
+5. What is the per-SMS cost on your Twilio plan? 
+   This helps us estimate the cost of reminders at scale.
+
+
+================================================================================
+  END OF DOCUMENT
+================================================================================

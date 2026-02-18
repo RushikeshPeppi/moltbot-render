@@ -194,6 +194,66 @@ class OAuthStatusResponse(BaseResponse):
     data: Optional[OAuthStatusData] = None
 
 
+# ==================== Reminders ====================
+
+class CreateReminderRequest(BaseModel):
+    """Request to create a new reminder"""
+    user_id: str = Field(..., description="User ID from Peppi system")
+    message: str = Field(..., description="What to remind the user about")
+    trigger_at: str = Field(..., description="ISO 8601 datetime for when to fire (UTC)")
+    user_timezone: str = Field(..., description="User's timezone (e.g., 'Asia/Kolkata')")
+    recurrence: str = Field(default="none", description="none, daily, weekly, monthly")
+    recurrence_rule: Optional[Dict[str, Any]] = Field(
+        None, description="Complex recurrence rules (day_of_week, etc.)"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "123",
+                "message": "Buy milk on your way home",
+                "trigger_at": "2026-02-19T08:30:00Z",
+                "user_timezone": "Asia/Kolkata",
+                "recurrence": "none",
+                "recurrence_rule": None
+            }
+        }
+
+
+class ReminderData(BaseModel):
+    """Reminder data in responses"""
+    id: int
+    user_id: str
+    message: str
+    trigger_at: str
+    user_timezone: str
+    recurrence: str
+    status: str
+    created_at: str
+    qstash_message_id: Optional[str] = None
+    qstash_schedule_id: Optional[str] = None
+
+
+class ReminderListData(BaseModel):
+    """Reminder list data"""
+    user_id: str
+    reminders: List[Dict[str, Any]]
+    total: int
+
+
+class CancelReminderRequest(BaseModel):
+    """Request to cancel a reminder"""
+    user_id: str = Field(..., description="User ID from Peppi system")
+    reminder_id: int = Field(..., description="Reminder ID to cancel")
+
+
+class DeliverReminderPayload(BaseModel):
+    """Payload received from QStash when a reminder fires"""
+    reminder_id: int
+    user_id: str
+    message: str
+
+
 # ==================== Helper Functions ====================
 
 def success_response(

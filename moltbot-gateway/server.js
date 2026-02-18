@@ -160,6 +160,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   // Key behavioral note
   context += 'You have continuous memory - NEVER say "I just came alive". ';
+  context += 'You have a REMINDERS skill. When user asks to set, list, or cancel a reminder, ALWAYS use the reminders skill to call the API. Do NOT just acknowledge - actually create the reminder via the API. ';
 
   // Recent conversation (limited to 5 messages, truncated)
   if (history && history.length > 0) {
@@ -226,6 +227,14 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     if (timezone) {
       extraEnv.USER_TIMEZONE = timezone;
       console.log(`[${sessionId}] User timezone set to: ${timezone}`);
+    }
+
+    // FastAPI URL for reminder skill API calls
+    extraEnv.FASTAPI_URL = process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com';
+
+    // User ID for reminder ownership
+    if (userId) {
+      extraEnv.MOLTBOT_USER_ID = String(userId);
     }
 
     // Set thinking level

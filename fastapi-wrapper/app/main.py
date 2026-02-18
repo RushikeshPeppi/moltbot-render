@@ -10,6 +10,7 @@ from .config import settings
 from .api import routes
 from .api import oauth
 from .api import google_services
+from .api import reminders
 from .core.database import db
 from .core.redis_client import redis_client
 
@@ -80,6 +81,7 @@ app.add_middleware(
 app.include_router(routes.router, prefix=f"/api/{settings.API_VERSION}")
 app.include_router(oauth.router, prefix=f"/api/{settings.API_VERSION}")
 app.include_router(google_services.router, prefix=f"/api/{settings.API_VERSION}")
+app.include_router(reminders.router, prefix=f"/api/{settings.API_VERSION}")
 
 
 # Root endpoint

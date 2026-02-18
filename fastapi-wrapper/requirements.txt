@@ -26,6 +26,9 @@ aiofiles==24.1.0
 # Upstash Redis
 upstash-redis==1.1.0
 
+# Upstash QStash (Reminder Scheduling)
+qstash>=2.0.0
+
 # Supabase
 supabase==2.27.3
 

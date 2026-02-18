@@ -38,6 +38,20 @@ services:
         sync: false
       - key: GOOGLE_REDIRECT_URI
         sync: false
+      # Upstash QStash (Reminder Scheduling)
+      - key: QSTASH_URL
+        sync: false
+      - key: QSTASH_TOKEN
+        sync: false
+      - key: QSTASH_CURRENT_SIGNING_KEY
+        sync: false
+      - key: QSTASH_NEXT_SIGNING_KEY
+        sync: false
+      # Peppi Outbound SMS
+      - key: PEPPI_OUTBOUND_URL
+        sync: false
+      - key: PEPPI_OUTBOUND_API_KEY
+        sync: false
 
   # SearXNG - Free self-hosted search engine (NO API keys needed!)
   - type: web
@@ -82,3 +96,4 @@ services:
       # FastAPI URL for OAuth token bridge
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
+
