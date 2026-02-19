@@ -160,7 +160,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   // Key behavioral note
   context += 'You have continuous memory - NEVER say "I just came alive". ';
-  context += 'You have a REMINDERS skill. When user asks to set, list, or cancel a reminder, ALWAYS use the reminders skill to call the API. Do NOT just acknowledge - actually create the reminder via the API. ';
+  context += 'Reminders are FULLY FUNCTIONAL via the reminders skill. CRITICAL INSTRUCTIONS: (1) When user asks to set, list, or cancel a reminder, USE the reminders skill immediately. (2) The skill executes bash commands with curl to the Moltbot FastAPI - $FASTAPI_URL and $MOLTBOT_USER_ID are already set. (3) You MUST actually execute the curl command from the skill - do NOT just describe or acknowledge it. (4) For creating reminders: The skill runs curl -X POST "$FASTAPI_URL/api/v1/reminders/create" with user_id, message, trigger_at (UTC ISO 8601), user_timezone, and recurrence. (5) ALWAYS convert user local time to UTC before calling. Example: "remind me tomorrow at 2pm" in Asia/Kolkata → trigger_at="2026-02-20T08:30:00Z". ';
 
   // Recent conversation (limited to 5 messages, truncated)
   if (history && history.length > 0) {
