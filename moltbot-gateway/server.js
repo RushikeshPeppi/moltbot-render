@@ -180,7 +180,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
  */
 function executeOpenClaw(sessionId, message, context, credentials, userId, timezone) {
   return new Promise((resolve, reject) => {
-    const timeout = 55000; // 55 second timeout
+    const timeout = 120000; // 120 second timeout (skills need more time to execute bash commands)
 
     // Build the command
     // OpenClaw CLI: openclaw agent --message "message" --thinking high
@@ -243,7 +243,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Request JSON output
     args.push('--json');
 
-    console.log(`Executing: openclaw ${args.join(' ')}`);
+    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --to ${userId ? `agent:main:api:moltbot:dm:user_${userId}` : sessionId} --local --thinking medium --json`);
 
     const openclaw = spawn('openclaw', args, {
       env: {

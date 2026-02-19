@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     
     # Moltbot Gateway
     MOLTBOT_GATEWAY_URL: str = os.getenv("MOLTBOT_GATEWAY_URL", "http://moltbot-gateway:18789")
-    MOLTBOT_TIMEOUT: int = 60
+    MOLTBOT_TIMEOUT: int = 130  # Must exceed gateway's 120s internal timeout for skill execution
     
     # Upstash Redis
     UPSTASH_REDIS_URL: str = os.getenv("UPSTASH_REDIS_URL", "")
