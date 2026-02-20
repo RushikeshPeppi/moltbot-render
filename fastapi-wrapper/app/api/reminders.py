@@ -238,7 +238,15 @@ async def deliver_reminder(request: Request):
             # Return 200 so QStash doesn't retry (we handle retries ourselves)
             return {"status": "failed", "reason": str(sms_error)}
 
-        # 4. Update status to delivered
+        # 4. Check if SMS was actually sent (not just skipped)
+        if sms_result.get("status") == "skipped":
+            logger.warning(
+                f"Reminder {payload.reminder_id} SMS was skipped: {sms_result.get('message')}"
+            )
+            await db.update_reminder(payload.reminder_id, {"status": "failed"})
+            return {"status": "failed", "reason": sms_result.get("message")}
+
+        # 5. Update status to delivered
         await db.update_reminder(payload.reminder_id, {
             "status": "delivered",
             "delivered_at": datetime.utcnow().isoformat(),
