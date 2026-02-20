@@ -3,7 +3,7 @@ Pydantic models for API request/response with standardized DTO format.
 All responses follow the structure: Code, Message, Data, Error, Exception
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Generic, TypeVar
 from datetime import datetime
 from enum import IntEnum
@@ -206,6 +206,18 @@ class CreateReminderRequest(BaseModel):
     recurrence_rule: Optional[Dict[str, Any]] = Field(
         None, description="Complex recurrence rules (day_of_week, etc.)"
     )
+
+    @field_validator("recurrence", mode="before")
+    @classmethod
+    def normalize_recurrence(cls, v):
+        """Normalize empty/whitespace recurrence to 'none' to satisfy DB check constraint."""
+        if not v or (isinstance(v, str) and not v.strip()):
+            return "none"
+        v = v.strip().lower()
+        allowed = {"none", "daily", "weekly", "monthly"}
+        if v not in allowed:
+            return "none"
+        return v
 
     class Config:
         json_schema_extra = {
