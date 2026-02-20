@@ -25,7 +25,7 @@ class GoogleCalendarService:
             'https://www.googleapis.com/auth/calendar.events'
         ]
 
-    async def _get_calendar_service(self, user_id: int):
+    async def _get_calendar_service(self, user_id: str):
         """Get authenticated Calendar API service"""
         # Get valid access token
         access_token = await self.credential_manager.get_valid_google_token(user_id)
@@ -42,7 +42,7 @@ class GoogleCalendarService:
 
     async def list_events(
         self,
-        user_id: int,
+        user_id: str,
         calendar_id: str = 'primary',
         time_min: Optional[datetime] = None,
         time_max: Optional[datetime] = None,
@@ -107,7 +107,7 @@ class GoogleCalendarService:
 
     async def create_event(
         self,
-        user_id: int,
+        user_id: str,
         summary: str,
         start_time: datetime,
         end_time: datetime,
@@ -188,7 +188,7 @@ class GoogleCalendarService:
 
     async def get_event(
         self,
-        user_id: int,
+        user_id: str,
         event_id: str,
         calendar_id: str = 'primary'
     ) -> Dict[str, Any]:
@@ -224,7 +224,7 @@ class GoogleCalendarService:
 
     async def update_event(
         self,
-        user_id: int,
+        user_id: str,
         event_id: str,
         summary: Optional[str] = None,
         start_time: Optional[datetime] = None,
@@ -291,7 +291,7 @@ class GoogleCalendarService:
 
     async def delete_event(
         self,
-        user_id: int,
+        user_id: str,
         event_id: str,
         calendar_id: str = 'primary'
     ) -> Dict[str, Any]:

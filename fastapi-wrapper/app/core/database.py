@@ -71,7 +71,7 @@ class Database:
     
     async def store_credentials(
         self, 
-        user_id: int, 
+        user_id: str, 
         service: str, 
         credentials: Dict[str, Any],
         expires_at: datetime = None
@@ -105,7 +105,7 @@ class Database:
             logger.error(f"Error storing credentials: {e}")
             return False
     
-    async def get_credentials(self, user_id: int, service: str) -> Optional[Dict[str, Any]]:
+    async def get_credentials(self, user_id: str, service: str) -> Optional[Dict[str, Any]]:
         """Retrieve and decrypt credentials"""
         try:
             if not self._client:
@@ -129,7 +129,7 @@ class Database:
             logger.error(f"Error retrieving credentials: {e}")
             return None
     
-    async def delete_credentials(self, user_id: int, service: str) -> bool:
+    async def delete_credentials(self, user_id: str, service: str) -> bool:
         """Delete credentials for a service"""
         try:
             if not self._client:
@@ -147,7 +147,7 @@ class Database:
             logger.error(f"Error deleting credentials: {e}")
             return False
     
-    async def get_all_credentials(self, user_id: int) -> Dict[str, Dict[str, Any]]:
+    async def get_all_credentials(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """Get all credentials for a user"""
         try:
             if not self._client:
@@ -170,7 +170,7 @@ class Database:
             logger.error(f"Error retrieving all credentials: {e}")
             return {}
     
-    async def check_credentials_exist(self, user_id: int, service: str) -> bool:
+    async def check_credentials_exist(self, user_id: str, service: str) -> bool:
         """Check if credentials exist for a service"""
         try:
             if not self._client:
@@ -191,7 +191,7 @@ class Database:
     
     async def log_action(
         self,
-        user_id: int,
+        user_id: str,
         session_id: str,
         action_type: str,
         request_summary: str,
@@ -260,7 +260,7 @@ class Database:
     
     async def get_user_action_history(
         self, 
-        user_id: int, 
+        user_id: str, 
         limit: int = 50,
         offset: int = 0
     ) -> List[Dict[str, Any]]:
@@ -286,7 +286,7 @@ class Database:
     # Note: Rate limiting is handled by Peppi (Laravel), not here.
     # These functions are kept as stubs for potential future use.
     
-    async def get_user_tier(self, user_id: int) -> Dict[str, Any]:
+    async def get_user_tier(self, user_id: str) -> Dict[str, Any]:
         """Get user's tier - Note: Rate limiting handled by Peppi"""
         return {
             "tier": "free",
@@ -294,11 +294,11 @@ class Database:
             "daily_requests": 0
         }
     
-    async def increment_daily_usage(self, user_id: int) -> bool:
+    async def increment_daily_usage(self, user_id: str) -> bool:
         """Increment daily usage - Note: Rate limiting handled by Peppi"""
         return True
     
-    async def reset_daily_limit(self, user_id: int) -> bool:
+    async def reset_daily_limit(self, user_id: str) -> bool:
         """Reset daily limit - Note: Rate limiting handled by Peppi"""
         return True
     
@@ -410,6 +410,38 @@ class Database:
     async def cancel_reminder(self, reminder_id: int) -> bool:
         """Set reminder status to 'cancelled'."""
         return await self.update_reminder(reminder_id, {"status": "cancelled"})
+    
+    # ==================== Outbound SMS Log ====================
+    
+    async def log_outbound_sms(
+        self,
+        user_id: str,
+        message: str,
+        source: str = "unknown",
+        priority: str = "normal",
+    ) -> bool:
+        """
+        Log an outbound SMS delivery to tbl_clawdbot_sms_log.
+        Used by the dummy SMS stub endpoint for verifying reminder timing.
+        """
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+            
+            self._client.table("tbl_clawdbot_sms_log").insert({
+                "user_id": user_id,
+                "message": message,
+                "source": source,
+                "priority": priority,
+            }).execute()
+            
+            logger.info(f"Logged outbound SMS for user {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error logging outbound SMS: {e}")
+            return False
     
     # ==================== Utility ====================
     

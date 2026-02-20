@@ -22,7 +22,7 @@ class CredentialManager:
     
     async def store_credentials(
         self, 
-        user_id: int, 
+        user_id: str, 
         service: str, 
         credentials: Dict[str, Any],
         expires_at: datetime = None
@@ -30,19 +30,19 @@ class CredentialManager:
         """Store encrypted service credentials"""
         return await self.db.store_credentials(user_id, service, credentials, expires_at)
     
-    async def get_credentials(self, user_id: int, service: str) -> Optional[Dict[str, Any]]:
+    async def get_credentials(self, user_id: str, service: str) -> Optional[Dict[str, Any]]:
         """Retrieve and decrypt credentials"""
         return await self.db.get_credentials(user_id, service)
     
-    async def delete_credentials(self, user_id: int, service: str) -> bool:
+    async def delete_credentials(self, user_id: str, service: str) -> bool:
         """Delete service credentials"""
         return await self.db.delete_credentials(user_id, service)
     
-    async def get_all_credentials(self, user_id: int) -> Dict[str, Dict[str, Any]]:
+    async def get_all_credentials(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """Get all credentials for a user"""
         return await self.db.get_all_credentials(user_id)
     
-    async def check_credentials_exist(self, user_id: int, service: str) -> bool:
+    async def check_credentials_exist(self, user_id: str, service: str) -> bool:
         """Check if credentials exist for a service"""
         return await self.db.check_credentials_exist(user_id, service)
     
@@ -50,7 +50,7 @@ class CredentialManager:
     
     async def store_google_tokens(
         self,
-        user_id: int,
+        user_id: str,
         access_token: str,
         refresh_token: str,
         expires_in: int,
@@ -70,7 +70,7 @@ class CredentialManager:
         
         return await self.store_credentials(user_id, "google_oauth", credentials, expires_at)
     
-    async def get_valid_google_token(self, user_id: int) -> Optional[str]:
+    async def get_valid_google_token(self, user_id: str) -> Optional[str]:
         """
         Get a valid Google access token, refreshing if necessary.
         Returns None if no credentials or refresh fails.
@@ -103,7 +103,7 @@ class CredentialManager:
         
         return creds.get('access_token')
     
-    async def refresh_google_token(self, user_id: int, refresh_token: str) -> Optional[str]:
+    async def refresh_google_token(self, user_id: str, refresh_token: str) -> Optional[str]:
         """Refresh Google access token using refresh token"""
         if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
             logger.error("Google OAuth not configured")
@@ -144,7 +144,7 @@ class CredentialManager:
             logger.error(f"Error refreshing token: {e}")
             return None
     
-    async def revoke_google_token(self, user_id: int) -> bool:
+    async def revoke_google_token(self, user_id: str) -> bool:
         """Revoke Google OAuth tokens"""
         creds = await self.get_credentials(user_id, "google_oauth")
         
@@ -168,7 +168,7 @@ class CredentialManager:
             logger.error(f"Error revoking token: {e}")
             return False
     
-    async def get_google_connection_status(self, user_id: int) -> Dict[str, Any]:
+    async def get_google_connection_status(self, user_id: str) -> Dict[str, Any]:
         """Get Google OAuth connection status for a user"""
         creds = await self.get_credentials(user_id, "google_oauth")
         

@@ -63,7 +63,7 @@ def create_error_response(
 
 @router.get("/google/init")
 async def google_oauth_init(
-    user_id: int = Query(..., description="Peppi user ID"),
+    user_id: str = Query(..., description="Peppi user ID"),
     redirect_uri: Optional[str] = Query(None, description="Where to redirect after OAuth completes")
 ):
     """
@@ -179,11 +179,10 @@ async def google_oauth_callback(
         # Delete state (one-time use)
         await redis_client.delete(f"oauth_state:{state}")
 
-        # Extract user_id and ensure it's an integer
-        try:
-            user_id = int(state_data["user_id"])
-        except (ValueError, KeyError, TypeError) as e:
-            logger.error(f"Invalid user_id in state data: {state_data}")
+        # Extract user_id
+        user_id = str(state_data.get("user_id", ""))
+        if not user_id:
+            logger.error(f"Missing user_id in state data: {state_data}")
             return RedirectResponse(
                 url=f"{default_redirect}/clawdbot/oauth?status=error&error=INVALID_USER_ID"
             )
@@ -278,7 +277,7 @@ async def google_oauth_callback(
 
 
 @router.get("/google/status/{user_id}")
-async def google_oauth_status(user_id: int):
+async def google_oauth_status(user_id: str):
     """
     Check if a user has connected their Google account.
     
@@ -308,7 +307,7 @@ async def google_oauth_status(user_id: int):
 
 
 @router.delete("/google/disconnect/{user_id}")
-async def google_oauth_disconnect(user_id: int):
+async def google_oauth_disconnect(user_id: str):
     """
     Disconnect (revoke) a user's Google connection.
     
@@ -350,7 +349,7 @@ async def google_oauth_disconnect(user_id: int):
 
 
 @router.post("/google/refresh/{user_id}")
-async def google_oauth_refresh(user_id: int):
+async def google_oauth_refresh(user_id: str):
     """
     Manually refresh a user's Google access token.
 
@@ -384,7 +383,7 @@ async def google_oauth_refresh(user_id: int):
 
 
 @router.get("/google/token/{user_id}")
-async def google_oauth_get_token(user_id: int):
+async def google_oauth_get_token(user_id: str):
     """
     Get a valid Google access token for a user.
 

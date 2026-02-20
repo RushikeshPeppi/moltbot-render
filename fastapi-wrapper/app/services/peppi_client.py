@@ -52,7 +52,7 @@ class PeppiClient:
                 "message": "Peppi outbound SMS not configured",
             }
 
-        url = f"{settings.PEPPI_OUTBOUND_URL}/api/v1/outbound/send-message"
+        url = settings.PEPPI_OUTBOUND_URL
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

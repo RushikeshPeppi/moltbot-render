@@ -176,11 +176,11 @@ async def execute_action(request: ExecuteActionRequest):
         if not user_credentials:
             # Try to get Google OAuth token if available
             try:
-                google_token = await credential_manager.get_valid_google_token(int(user_id))
+                google_token = await credential_manager.get_valid_google_token(user_id)
                 if google_token:
                     user_credentials = {"google_access_token": google_token}
-            except ValueError:
-                pass  # user_id is not a valid int, skip Google token
+            except Exception:
+                pass  # skip Google token on error
 
         # 3b. Get user context (bot name, preferences, etc.)
         user_context = await session_manager.get_user_context(session_id, user_id)
@@ -188,7 +188,7 @@ async def execute_action(request: ExecuteActionRequest):
         
         # 4. Log action start
         log_id = await db.log_action(
-            user_id=int(user_id) if user_id.isdigit() else 0,
+            user_id=user_id,
             session_id=session_id,
             action_type="execute_action",
             request_summary=request.message[:200],
@@ -200,13 +200,10 @@ async def execute_action(request: ExecuteActionRequest):
         
         # 6. Call OpenClaw with retry logic
         try:
-            # Pass user_id for OAuth token bridge in OpenClaw gateway
-            user_id_int = int(user_id) if str(user_id).isdigit() else None
-
             openclaw_response = await openclaw_client.send_message(
                 session_id=session_id,
                 message=request.message,
-                user_id=user_id_int,  # Pass user_id for OAuth token bridge
+                user_id=user_id,  # Pass user_id for OAuth token bridge
                 timezone=request.timezone,  # Pass user's timezone
                 user_credentials=user_credentials,
                 conversation_history=session_data.get('conversation_history', []),
@@ -445,7 +442,7 @@ async def store_credentials(request: StoreCredentialsRequest):
     """Store user service credentials."""
     try:
         success = await credential_manager.store_credentials(
-            user_id=int(request.user_id) if request.user_id.isdigit() else 0,
+            user_id=request.user_id,
             service=request.service,
             credentials=request.credentials
         )
@@ -480,8 +477,7 @@ async def store_credentials(request: StoreCredentialsRequest):
 async def delete_credentials(user_id: str, service: str):
     """Delete user service credentials."""
     try:
-        user_id_int = int(user_id) if user_id.isdigit() else 0
-        success = await credential_manager.delete_credentials(user_id_int, service)
+        success = await credential_manager.delete_credentials(user_id, service)
         
         if success:
             return {
@@ -513,11 +509,10 @@ async def delete_credentials(user_id: str, service: str):
 async def get_credentials_status(user_id: str):
     """Get status of all credentials for a user."""
     try:
-        user_id_int = int(user_id) if user_id.isdigit() else 0
-        all_creds = await credential_manager.get_all_credentials(user_id_int)
+        all_creds = await credential_manager.get_all_credentials(user_id)
         
         # Check Google OAuth separately
-        google_status = await credential_manager.get_google_connection_status(user_id_int)
+        google_status = await credential_manager.get_google_connection_status(user_id)
         
         services = {service: True for service in all_creds.keys()}
         services['google'] = google_status['connected']
@@ -549,8 +544,7 @@ async def get_credentials_status(user_id: str):
 async def get_action_history(user_id: str, limit: int = 50, offset: int = 0):
     """Get action history for a user from audit log."""
     try:
-        user_id_int = int(user_id) if user_id.isdigit() else 0
-        actions = await db.get_user_action_history(user_id_int, limit, offset)
+        actions = await db.get_user_action_history(user_id, limit, offset)
         
         # Convert datetime objects to strings
         for action in actions:

@@ -47,7 +47,7 @@ class OpenClawClient:
         self,
         session_id: str,
         message: str,
-        user_id: Optional[int] = None,
+        user_id: Optional[str] = None,
         timezone: Optional[str] = None,
         user_credentials: Optional[Dict] = None,
         conversation_history: Optional[List[Dict]] = None,

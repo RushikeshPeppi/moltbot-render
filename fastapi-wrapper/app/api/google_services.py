@@ -36,7 +36,7 @@ def create_response(code: int, message: str, data=None, error=None, exception=No
 # ==================== Calendar Endpoints ====================
 
 class CreateEventRequest(BaseModel):
-    user_id: int
+    user_id: str
     summary: str
     start_time: datetime
     end_time: datetime
@@ -46,7 +46,7 @@ class CreateEventRequest(BaseModel):
 
 
 class UpdateEventRequest(BaseModel):
-    user_id: int
+    user_id: str
     event_id: str
     summary: Optional[str] = None
     start_time: Optional[datetime] = None
@@ -57,7 +57,7 @@ class UpdateEventRequest(BaseModel):
 
 @router.get("/calendar/events")
 async def list_calendar_events(
-    user_id: int = Query(..., description="User ID"),
+    user_id: str = Query(..., description="User ID"),
     max_results: int = Query(10, description="Maximum number of events to return"),
     days: int = Query(7, description="Number of days to look ahead")
 ):
@@ -147,7 +147,7 @@ async def create_calendar_event(request: CreateEventRequest):
 @router.get("/calendar/events/{event_id}")
 async def get_calendar_event(
     event_id: str,
-    user_id: int = Query(..., description="User ID")
+    user_id: str = Query(..., description="User ID")
 ):
     """Get a specific calendar event by ID"""
     try:
@@ -221,7 +221,7 @@ async def update_calendar_event(event_id: str, request: UpdateEventRequest):
 @router.delete("/calendar/events/{event_id}")
 async def delete_calendar_event(
     event_id: str,
-    user_id: int = Query(..., description="User ID")
+    user_id: str = Query(..., description="User ID")
 ):
     """Delete a calendar event"""
     try:
@@ -257,7 +257,7 @@ async def delete_calendar_event(
 # ==================== Gmail Endpoints ====================
 
 class SendEmailRequest(BaseModel):
-    user_id: int
+    user_id: str
     to: EmailStr
     subject: str
     body: str
@@ -268,7 +268,7 @@ class SendEmailRequest(BaseModel):
 
 @router.get("/gmail/messages")
 async def list_gmail_messages(
-    user_id: int = Query(..., description="User ID"),
+    user_id: str = Query(..., description="User ID"),
     query: Optional[str] = Query(None, description="Gmail search query"),
     max_results: int = Query(10, description="Maximum number of messages"),
     unread_only: bool = Query(False, description="Only show unread messages")
@@ -321,7 +321,7 @@ async def list_gmail_messages(
 @router.get("/gmail/messages/{message_id}")
 async def get_gmail_message(
     message_id: str,
-    user_id: int = Query(..., description="User ID"),
+    user_id: str = Query(..., description="User ID"),
     format: str = Query("full", description="Message format (minimal, full, raw, metadata)")
 ):
     """Get a specific Gmail message by ID"""
@@ -401,7 +401,7 @@ async def send_gmail_message(request: SendEmailRequest):
 @router.delete("/gmail/messages/{message_id}")
 async def delete_gmail_message(
     message_id: str,
-    user_id: int = Query(..., description="User ID")
+    user_id: str = Query(..., description="User ID")
 ):
     """Delete (trash) a Gmail message"""
     try:
@@ -437,7 +437,7 @@ async def delete_gmail_message(
 @router.post("/gmail/messages/{message_id}/mark-read")
 async def mark_gmail_message_read(
     message_id: str,
-    user_id: int = Query(..., description="User ID")
+    user_id: str = Query(..., description="User ID")
 ):
     """Mark a Gmail message as read"""
     try:
@@ -472,7 +472,7 @@ async def mark_gmail_message_read(
 
 @router.get("/gmail/search")
 async def search_gmail_messages(
-    user_id: int = Query(..., description="User ID"),
+    user_id: str = Query(..., description="User ID"),
     query: str = Query(..., description="Gmail search query"),
     max_results: int = Query(10, description="Maximum number of results")
 ):

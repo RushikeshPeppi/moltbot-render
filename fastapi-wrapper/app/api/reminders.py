@@ -60,7 +60,7 @@ async def create_reminder(request: CreateReminderRequest):
 
         # 2. Save reminder to Supabase
         reminder_data = {
-            "user_id": int(request.user_id),
+            "user_id": request.user_id,
             "message": request.message,
             "trigger_at": trigger_at_utc.isoformat(),
             "user_timezone": request.user_timezone,

@@ -28,7 +28,7 @@ class GmailService:
             'https://www.googleapis.com/auth/gmail.modify'
         ]
 
-    async def _get_gmail_service(self, user_id: int):
+    async def _get_gmail_service(self, user_id: str):
         """Get authenticated Gmail API service"""
         # Get valid access token
         access_token = await self.credential_manager.get_valid_google_token(user_id)
@@ -45,7 +45,7 @@ class GmailService:
 
     async def list_messages(
         self,
-        user_id: int,
+        user_id: str,
         query: Optional[str] = None,
         max_results: int = 10,
         label_ids: Optional[List[str]] = None
@@ -117,7 +117,7 @@ class GmailService:
 
     async def get_message(
         self,
-        user_id: int,
+        user_id: str,
         message_id: str,
         format: str = 'full'
     ) -> Dict[str, Any]:
@@ -164,7 +164,7 @@ class GmailService:
 
     async def send_message(
         self,
-        user_id: int,
+        user_id: str,
         to: str,
         subject: str,
         body: str,
@@ -238,7 +238,7 @@ class GmailService:
 
     async def delete_message(
         self,
-        user_id: int,
+        user_id: str,
         message_id: str
     ) -> Dict[str, Any]:
         """
@@ -282,7 +282,7 @@ class GmailService:
 
     async def mark_as_read(
         self,
-        user_id: int,
+        user_id: str,
         message_id: str
     ) -> Dict[str, Any]:
         """Mark a message as read"""
@@ -318,7 +318,7 @@ class GmailService:
 
     async def search_messages(
         self,
-        user_id: int,
+        user_id: str,
         query: str,
         max_results: int = 10
     ) -> Dict[str, Any]:
