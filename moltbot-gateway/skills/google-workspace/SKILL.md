@@ -2,25 +2,25 @@
 name: google-workspace
 description: Google Calendar and Gmail - list events, view calendar, check schedule, show meetings, get appointments, create/update/delete events, read/send emails, check inbox, search emails, recent messages, unread emails, send message, compose email, find messages, email search, reply to email, respond to message, answer email
 user-invocable: true
-metadata: {"openclaw": {"emoji": "📧"}}
+metadata: {"openclaw": {"emoji": "≡ƒôº"}}
 ---
 
 # Google Workspace - Calendar & Gmail
 
-🎯 **Comprehensive Google Calendar and Gmail integration using OAuth tokens and direct API calls.**
+≡ƒÄ» **Comprehensive Google Calendar and Gmail integration using OAuth tokens and direct API calls.**
 
-## ⚡ When to Use This Skill
+## ΓÜí When to Use This Skill
 
 Use this skill when the user asks about:
 - **Calendar**: list meetings, view schedule, check calendar, what meetings, create/update/delete events, appointments
 - **Gmail**: read emails, check inbox, send email, search messages, mark read/unread
 
-## 🔑 Environment Variables
+## ≡ƒöæ Environment Variables
 
 The OAuth access token is automatically available:
 - `$GOOGLE_ACCESS_TOKEN` - OAuth 2.0 bearer token (auto-refreshed by FastAPI backend)
 
-## 📅 GOOGLE CALENDAR API
+## ≡ƒôà GOOGLE CALENDAR API
 
 Base URL: `https://www.googleapis.com/calendar/v3`
 
@@ -42,11 +42,11 @@ Calculate dates dynamically using `date` command:
 - This week range: `$(date -u -d 'monday this week' +%Y-%m-%dT00:00:00Z)` to `$(date -u -d 'sunday this week' +%Y-%m-%dT23:59:59Z)`
 
 Time conversion rules:
-- "6pm" → 18:00
-- "2 PM" → 14:00
-- "noon" → 12:00
-- "midnight" → 00:00
-- No time specified → default to 9:00 for morning, 14:00 for afternoon
+- "6pm" ΓåÆ 18:00
+- "2 PM" ΓåÆ 14:00
+- "noon" ΓåÆ 12:00
+- "midnight" ΓåÆ 00:00
+- No time specified ΓåÆ default to 9:00 for morning, 14:00 for afternoon
 
 ### List Events (Today/Tomorrow/This Week/Range)
 
@@ -83,7 +83,7 @@ When user asks: "What are my next 5 meetings?" or "Show upcoming appointments"
 **PARSE the number N from user's request.** Default to 10 if not specified.
 
 ```bash
-# Extract N from user request (e.g., "next 5 meetings" → N=5)
+# Extract N from user request (e.g., "next 5 meetings" ΓåÆ N=5)
 N=<USER_REQUESTED_COUNT>
 
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
@@ -95,9 +95,9 @@ curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 When user asks: "Do I have any meetings with Marvin?" or "Find meetings about project X"
 
 **EXTRACT the search keyword from user's request.**
-- "meetings with Marvin" → QUERY="Marvin"
-- "meetings about project X" → QUERY="project X"
-- "standup meetings" → QUERY="standup"
+- "meetings with Marvin" ΓåÆ QUERY="Marvin"
+- "meetings about project X" ΓåÆ QUERY="project X"
+- "standup meetings" ΓåÆ QUERY="standup"
 
 ```bash
 # Extract keyword from user's actual request
@@ -114,32 +114,32 @@ When user says: "Schedule a meeting with Marvin tomorrow at 6 PM" or "Create eve
 **CRITICAL: Extract ALL parameters dynamically from user's request:**
 
 1. **Meeting title/summary**: Parse from context
-   - "meeting with Marvin" → summary = "Meeting with Marvin"
-   - "project review" → summary = "Project review"
-   - "standup call" → summary = "Standup call"
+   - "meeting with Marvin" ΓåÆ summary = "Meeting with Marvin"
+   - "project review" ΓåÆ summary = "Project review"
+   - "standup call" ΓåÆ summary = "Standup call"
    - Default format: Capitalize first letter of each word
 
 2. **Date**: Extract from user's request
-   - "tomorrow" → calculate tomorrow's date
-   - "next Tuesday" → calculate next Tuesday's date
-   - "February 15" → parse as 2026-02-15
-   - "in 3 days" → add 3 days to current date
+   - "tomorrow" ΓåÆ calculate tomorrow's date
+   - "next Tuesday" ΓåÆ calculate next Tuesday's date
+   - "February 15" ΓåÆ parse as 2026-02-15
+   - "in 3 days" ΓåÆ add 3 days to current date
 
 3. **Time**: Extract from user's request
-   - "at 6pm" → 18:00
-   - "at 2 PM" → 14:00
-   - "at 14:00" → 14:00
-   - No time specified → default 14:00 (2 PM)
+   - "at 6pm" ΓåÆ 18:00
+   - "at 2 PM" ΓåÆ 14:00
+   - "at 14:00" ΓåÆ 14:00
+   - No time specified ΓåÆ default 14:00 (2 PM)
 
 4. **Duration**: Extract or default to 1 hour
-   - "30 minute meeting" → 30 minutes
-   - "2 hour call" → 120 minutes
-   - Not specified → 60 minutes (1 hour)
+   - "30 minute meeting" ΓåÆ 30 minutes
+   - "2 hour call" ΓåÆ 120 minutes
+   - Not specified ΓåÆ 60 minutes (1 hour)
 
 5. **Attendees**: Extract names/emails from request
-   - "with Marvin" → ask user for Marvin's email OR use name only
-   - "with john@example.com" → use email directly
-   - Multiple attendees: "with Marvin and Sarah" → parse both names
+   - "with Marvin" ΓåÆ ask user for Marvin's email OR use name only
+   - "with john@example.com" ΓåÆ use email directly
+   - Multiple attendees: "with Marvin and Sarah" ΓåÆ parse both names
 
 6. **Description**: Optional, infer from context or leave empty
 
@@ -191,7 +191,7 @@ curl -s -X POST \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
 # IMPORTANT: Always confirm success
-echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
+echo "Γ£à Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
 ```
 
 ### Update Event
@@ -202,9 +202,9 @@ When user says: "Change my 2 PM meeting to 3 PM" or "Update the Marvin meeting t
 1. **Search for the event** using time/title from user's request
 2. **Extract the EVENT_ID** from search results
 3. **Parse what to update** from user's request:
-   - Time change: "2 PM to 3 PM" → update start/end times
-   - Date change: "move to tomorrow" → update date
-   - Title change: "rename to Project Review" → update summary
+   - Time change: "2 PM to 3 PM" ΓåÆ update start/end times
+   - Date change: "move to tomorrow" ΓåÆ update date
+   - Title change: "rename to Project Review" ΓåÆ update summary
 4. **Calculate new values dynamically**
 
 ```bash
@@ -239,7 +239,7 @@ curl -s -X PUT \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
 
 # IMPORTANT: Always confirm success
-echo "✅ Calendar event updated successfully"
+echo "Γ£à Calendar event updated successfully"
 ```
 
 ### Delete Event
@@ -265,10 +265,10 @@ curl -s -X DELETE \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
 
 # IMPORTANT: Always confirm success
-echo "✅ Calendar event deleted successfully"
+echo "Γ£à Calendar event deleted successfully"
 ```
 
-## 📧 GMAIL API
+## ≡ƒôº GMAIL API
 
 Base URL: `https://gmail.googleapis.com/gmail/v1`
 
@@ -300,14 +300,14 @@ QUERY="after:${TODAY_START} before:${TODAY_END}"
 When user asks: "Show me my recent emails" or "Any unread messages?" or "Important emails?" or "Emails from today"
 
 **PARSE user's filter criteria:**
-- "recent" → no filter, maxResults=10
-- "unread" → q=is:unread
-- "important" → q=is:important
-- "starred" → q=is:starred
-- "today" / "from today" → calculate date range using USER_TIMEZONE
-- "this week" → calculate week range using USER_TIMEZONE
-- "last 3 days" → calculate date range using USER_TIMEZONE
-- Custom count: "last 20 emails" → maxResults=20
+- "recent" ΓåÆ no filter, maxResults=10
+- "unread" ΓåÆ q=is:unread
+- "important" ΓåÆ q=is:important
+- "starred" ΓåÆ q=is:starred
+- "today" / "from today" ΓåÆ calculate date range using USER_TIMEZONE
+- "this week" ΓåÆ calculate week range using USER_TIMEZONE
+- "last 3 days" ΓåÆ calculate date range using USER_TIMEZONE
+- Custom count: "last 20 emails" ΓåÆ maxResults=20
 
 ```bash
 # Extract filter from user's request
@@ -346,12 +346,12 @@ curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 When user asks: "Show me emails from Marvin" or "Find messages about project X" or "Emails from John today"
 
 **EXTRACT search criteria from user's request:**
-- "from Marvin" → q=from:marvin (or ask for email)
-- "from sarah@example.com" → q=from:sarah@example.com
-- "about project X" → q=subject:project X
-- "with attachment" → q=has:attachment
-- "from John today" → q=from:john after:<TODAY_TIMESTAMP>
-- "unread from John this week" → q=is:unread from:john after:<WEEK_START_TIMESTAMP>
+- "from Marvin" ΓåÆ q=from:marvin (or ask for email)
+- "from sarah@example.com" ΓåÆ q=from:sarah@example.com
+- "about project X" ΓåÆ q=subject:project X
+- "with attachment" ΓåÆ q=has:attachment
+- "from John today" ΓåÆ q=from:john after:<TODAY_TIMESTAMP>
+- "unread from John this week" ΓåÆ q=is:unread from:john after:<WEEK_START_TIMESTAMP>
 - Combinations with dates: Always use USER_TIMEZONE for date calculations
 
 ```bash
@@ -404,19 +404,19 @@ When user says: "Send an email to marvin@example.com saying hi" or "Email Sarah 
 **CRITICAL: Extract ALL email components from user's request:**
 
 1. **Recipient (To)**: Extract email address
-   - "to marvin@example.com" → TO="marvin@example.com"
-   - "email Marvin" → ask user for Marvin's email address
-   - Multiple recipients: "to john@a.com and sarah@b.com" → parse both
+   - "to marvin@example.com" ΓåÆ TO="marvin@example.com"
+   - "email Marvin" ΓåÆ ask user for Marvin's email address
+   - Multiple recipients: "to john@a.com and sarah@b.com" ΓåÆ parse both
 
 2. **Subject**: Extract or ask user
-   - "about the meeting" → SUBJECT="About the meeting"
-   - "saying hi" → SUBJECT="Hi" (infer simple subject)
-   - Not specified → ask user: "What should the subject be?"
+   - "about the meeting" ΓåÆ SUBJECT="About the meeting"
+   - "saying hi" ΓåÆ SUBJECT="Hi" (infer simple subject)
+   - Not specified ΓåÆ ask user: "What should the subject be?"
 
 3. **Body**: Extract message content
-   - User provides body directly → use exactly as given
-   - "saying hi" → BODY="Hi,\n\n[user may provide more]"
-   - Complex body → ask user for full message
+   - User provides body directly ΓåÆ use exactly as given
+   - "saying hi" ΓåÆ BODY="Hi,\n\n[user may provide more]"
+   - Complex body ΓåÆ ask user for full message
 
 ```bash
 # PARSE from user's actual request - DO NOT use placeholder values!
@@ -442,7 +442,7 @@ curl -s -X POST \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
 # IMPORTANT: Always confirm success
-echo "✅ Email sent successfully to ${TO_EMAIL}"
+echo "Γ£à Email sent successfully to ${TO_EMAIL}"
 ```
 
 ### Reply to Email
@@ -452,14 +452,14 @@ When user says: "Reply to the email from John" or "Reply to the latest email say
 **CRITICAL: Extract reply details and provide confirmation:**
 
 1. **Identify the original email**:
-   - "reply to email from John" → search for latest email from John
-   - "reply to latest email" → get most recent email
-   - "reply to that email" → use email from context
+   - "reply to email from John" ΓåÆ search for latest email from John
+   - "reply to latest email" ΓåÆ get most recent email
+   - "reply to that email" ΓåÆ use email from context
 
 2. **Extract reply message**:
-   - "saying thanks" → REPLY_BODY="Thanks"
-   - "tell them I'll check it out" → REPLY_BODY="I'll check it out"
-   - User provides full message → use exactly as given
+   - "saying thanks" ΓåÆ REPLY_BODY="Thanks"
+   - "tell them I'll check it out" ΓåÆ REPLY_BODY="I'll check it out"
+   - User provides full message ΓåÆ use exactly as given
 
 3. **Get original message details** for threading:
    - MESSAGE_ID
@@ -518,7 +518,7 @@ curl -s -X POST \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
 # CRITICAL: Always provide confirmation to user
-echo "✅ Reply sent successfully to ${TO_EMAIL} in thread '${ORIGINAL_SUBJECT}'"
+echo "Γ£à Reply sent successfully to ${TO_EMAIL} in thread '${ORIGINAL_SUBJECT}'"
 ```
 
 ### Mark Message as Read/Unread/Starred
@@ -529,10 +529,10 @@ When user says: "Mark this email as read" or "Star the message from John"
 1. **Identify the message** (may need to search first)
 2. **Extract MESSAGE_ID**
 3. **Determine action**:
-   - "mark as read" → removeLabelIds: ["UNREAD"]
-   - "mark as unread" → addLabelIds: ["UNREAD"]
-   - "star" → addLabelIds: ["STARRED"]
-   - "unstar" → removeLabelIds: ["STARRED"]
+   - "mark as read" ΓåÆ removeLabelIds: ["UNREAD"]
+   - "mark as unread" ΓåÆ addLabelIds: ["UNREAD"]
+   - "star" ΓåÆ addLabelIds: ["STARRED"]
+   - "unstar" ΓåÆ removeLabelIds: ["STARRED"]
 
 ```bash
 MESSAGE_ID="<FROM_SEARCH_OR_CONTEXT>"
@@ -558,7 +558,7 @@ curl -s -X DELETE \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}"
 ```
 
-## 🎯 Response Formatting
+## ≡ƒÄ» Response Formatting
 
 After executing API calls:
 
@@ -572,20 +572,20 @@ After executing API calls:
    ```
 
 2. **Format for user readability**:
-   - Calendar events: "📅 Meeting with Marvin - Tomorrow at 6:00 PM"
-   - Emails: "📧 From: marvin@example.com | Subject: Project Update"
+   - Calendar events: "≡ƒôà Meeting with Marvin - Tomorrow at 6:00 PM"
+   - Emails: "≡ƒôº From: marvin@example.com | Subject: Project Update"
 
 3. **Handle errors gracefully**:
-   - 401 Unauthorized → "OAuth token issue (auto-refresh failed)"
-   - 403 Forbidden → "Missing permissions for this operation"
-   - 404 Not Found → "Event/message not found"
-   - 429 Rate Limited → "Too many requests, please wait"
+   - 401 Unauthorized ΓåÆ "OAuth token issue (auto-refresh failed)"
+   - 403 Forbidden ΓåÆ "Missing permissions for this operation"
+   - 404 Not Found ΓåÆ "Event/message not found"
+   - 429 Rate Limited ΓåÆ "Too many requests, please wait"
 
 4. **Confirm actions**:
-   - After creating event: "✅ Created: Meeting with Marvin on Feb 7 at 6:00 PM"
-   - After sending email: "✅ Email sent to marvin@example.com"
+   - After creating event: "Γ£à Created: Meeting with Marvin on Feb 7 at 6:00 PM"
+   - After sending email: "Γ£à Email sent to marvin@example.com"
 
-## 🚨 CRITICAL RULES
+## ≡ƒÜ¿ CRITICAL RULES
 
 1. **NEVER use hardcoded values** - ALWAYS extract from user's actual request
 2. **NEVER use example emails** like "john@example.com" in production
@@ -595,7 +595,7 @@ After executing API calls:
 6. **CONFIRM actions** before deleting or modifying events
 7. **FORMAT responses** in user-friendly way with emojis/structure
 
-## 📚 Reference
+## ≡ƒôÜ Reference
 
 - [Google Calendar API v3](https://developers.google.com/workspace/calendar/api/v3/reference)
 - [Gmail API v1](https://developers.google.com/gmail/api/reference/rest)
