@@ -484,9 +484,15 @@ MESSAGE_DETAILS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 THREAD_ID=$(echo "$MESSAGE_DETAILS" | jq -r '.threadId')
 ORIGINAL_FROM=$(echo "$MESSAGE_DETAILS" | jq -r '.payload.headers[] | select(.name=="From") | .value')
 ORIGINAL_SUBJECT=$(echo "$MESSAGE_DETAILS" | jq -r '.payload.headers[] | select(.name=="Subject") | .value')
+# RFC 2822 Message-ID header (for proper email threading — different from Gmail API message ID)
+RFC_MESSAGE_ID=$(echo "$MESSAGE_DETAILS" | jq -r '.payload.headers[] | select(.name=="Message-ID") | .value')
 
-# Extract email from "Name <email@domain.com>" format
-TO_EMAIL=$(echo "$ORIGINAL_FROM" | grep -oP '<\K[^>]+' || echo "$ORIGINAL_FROM")
+# Extract email from "Name <email@domain.com>" format — POSIX-safe sed (no grep -P needed)
+TO_EMAIL=$(echo "$ORIGINAL_FROM" | sed 's/.*<\([^>]*\)>.*/\1/')
+# Fallback: if no angle brackets found, sed returns the original string — strip spaces
+if [ "$TO_EMAIL" = "$ORIGINAL_FROM" ]; then
+  TO_EMAIL=$(echo "$ORIGINAL_FROM" | tr -d ' ')
+fi
 
 # Add "Re:" prefix if not already present
 if [[ "$ORIGINAL_SUBJECT" != Re:* ]]; then
@@ -498,12 +504,12 @@ fi
 # Step 3: Extract reply body from user's request
 REPLY_BODY="<EXTRACTED_FROM_USER_REQUEST>"
 
-# Step 4: Build reply email with proper threading
+# Step 4: Build reply email with proper RFC 2822 threading headers
 REPLY_CONTENT="From: me
 To: ${TO_EMAIL}
 Subject: ${REPLY_SUBJECT}
-In-Reply-To: ${MESSAGE_ID}
-References: ${MESSAGE_ID}
+In-Reply-To: ${RFC_MESSAGE_ID}
+References: ${RFC_MESSAGE_ID}
 
 ${REPLY_BODY}"
 
