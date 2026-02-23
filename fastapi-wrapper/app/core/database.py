@@ -5,6 +5,7 @@ Uses supabase-py for async operations.
 
 import json
 import logging
+import secrets
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from cryptography.fernet import Fernet
@@ -464,7 +465,7 @@ class Database:
                     return None
             
             data = {
-                "user_id": int(user_id),
+                "user_id": user_id,
                 "name": name,
                 "google_connected": google_connected,
                 "updated_at": datetime.utcnow().isoformat()
@@ -514,7 +515,7 @@ class Database:
             
             response = self._client.table("tbl_clawdbot_users").select(
                 "user_id, name, email, google_connected, timezone, created_at"
-            ).eq("user_id", int(user_id)).execute()
+            ).eq("user_id", user_id).execute()
             
             if response.data and len(response.data) > 0:
                 return response.data[0]
@@ -523,24 +524,9 @@ class Database:
             logger.error(f"Error fetching user {user_id}: {e}")
             return None
     
-    async def get_next_user_id(self) -> int:
-        """Get the next available user_id (max + 1)."""
-        try:
-            if not self._client:
-                await self.initialize()
-                if not self._client:
-                    return 1
-            
-            response = self._client.table("tbl_clawdbot_users").select(
-                "user_id"
-            ).order("user_id", desc=True).limit(1).execute()
-            
-            if response.data and len(response.data) > 0:
-                return response.data[0]["user_id"] + 1
-            return 1
-        except Exception as e:
-            logger.error(f"Error getting next user_id: {e}")
-            return 1
+    async def generate_user_id(self) -> str:
+        """Generate a unique alphanumeric user_id (e.g. 'usr_a1b2c3d4')."""
+        return f"usr_{secrets.token_hex(4)}"
     
     async def update_user_timezone(self, user_id: str, timezone: str) -> bool:
         """Update a user's timezone setting."""
@@ -553,7 +539,7 @@ class Database:
             self._client.table("tbl_clawdbot_users").update({
                 "timezone": timezone,
                 "updated_at": datetime.utcnow().isoformat()
-            }).eq("user_id", int(user_id)).execute()
+            }).eq("user_id", user_id).execute()
 
             logger.info(f"Updated timezone for user {user_id}: {timezone}")
             return True

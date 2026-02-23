@@ -87,12 +87,12 @@ async def create_playground_user(request: CreatePlaygroundUserRequest):
     3. Returns user_id and OAuth authorization URL if Google OAuth is configured
     """
     try:
-        # Get next user_id
-        new_user_id = await db.get_next_user_id()
+        # Generate alphanumeric user_id
+        new_user_id = await db.generate_user_id()
 
         # Insert user into tbl_clawdbot_users
         user = await db.upsert_user(
-            user_id=str(new_user_id),
+            user_id=new_user_id,
             name=request.name,
             google_connected=False,
             timezone=request.timezone or "UTC"
@@ -115,7 +115,7 @@ async def create_playground_user(request: CreatePlaygroundUserRequest):
 
             # Store OAuth state with user name for profile fallback
             state_data = {
-                "user_id": str(new_user_id),
+                "user_id": new_user_id,
                 "user_name": request.name,
                 "redirect_uri": request.redirect_uri or settings.PEPPI_WEBSITE_URL or "",
             }
@@ -137,7 +137,7 @@ async def create_playground_user(request: CreatePlaygroundUserRequest):
             code=ResponseCode.CREATED,
             message="Playground user created",
             data={
-                "user_id": str(new_user_id),
+                "user_id": new_user_id,
                 "name": request.name,
                 "timezone": request.timezone or "UTC",
                 "auth_url": auth_url,
