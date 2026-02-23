@@ -170,7 +170,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}, 
 
   // Capabilities (reinforcement after persona)
   if (credentials && credentials.google_access_token) {
-    context += 'Google Calendar & Gmail are FULLY FUNCTIONAL via google-workspace skill. The skill runs real curl commands against Gmail API and Google Calendar API. $GOOGLE_ACCESS_TOKEN is already set. ';
+    context += 'Google Calendar & Gmail are FULLY FUNCTIONAL via google-workspace skill with Gmail API. CRITICAL INSTRUCTIONS: (1) You CAN send and reply to emails - there is NO channel requirement, the Gmail API works directly. (2) When user asks to reply/send email, USE the google-workspace skill immediately - do NOT say you cannot do it. (3) The skill executes bash commands with curl to Gmail API - $GOOGLE_ACCESS_TOKEN is already set. (4) For replies: The skill will find the original email, extract sender, construct proper reply with threading, and send via Gmail API. (5) DO NOT respond with "I cannot send emails" - you CAN and MUST use the google-workspace skill to send them. Example: "Reply to John" → Use google-workspace skill which runs: curl -X POST -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" gmail.googleapis.com/.../send ';
   }
 
   // Preferences
