@@ -37,9 +37,12 @@ export default function SignInPage() {
 
     /* -------- Create account state -------- */
     const [newName, setNewName] = useState('');
-    const [timezone, setTimezone] = useState(
-        Intl.DateTimeFormat().resolvedOptions().timeZone
-    );
+    const [timezone, setTimezone] = useState(() => {
+        const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        // Normalize deprecated IANA names (e.g. Asia/Calcutta → Asia/Kolkata)
+        const aliases = { 'Asia/Calcutta': 'Asia/Kolkata', 'Asia/Katmandu': 'Asia/Kathmandu' };
+        return aliases[browserTz] || browserTz;
+    });
     const [createStep, setCreateStep] = useState(1); // 1 = name, 2 = timezone
     const [loadingCreate, setLoadingCreate] = useState(false);
     const [error, setError] = useState('');
@@ -228,6 +231,11 @@ export default function SignInPage() {
                                     value={timezone}
                                     onChange={(e) => setTimezone(e.target.value)}
                                 >
+                                    {(!COMMON_TIMEZONES.includes(timezone)) && (
+                                        <option key={timezone} value={timezone}>
+                                            {timezone.replace(/_/g, ' ')}
+                                        </option>
+                                    )}
                                     {COMMON_TIMEZONES.map((tz) => (
                                         <option key={tz} value={tz}>
                                             {tz.replace(/_/g, ' ')}
