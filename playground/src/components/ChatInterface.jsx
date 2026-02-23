@@ -4,6 +4,24 @@ import { executeAction, getChatHistory, getPlaygroundMessages } from '../service
 import ChatMessage from './ChatMessage';
 import AgentProcessTracker from './AgentProcessTracker';
 
+// Static context prompt for playground testing — mirrors what Peppi backend sends
+const PEPPI_CONTEXT = `<rules>
+IDENTITY
+- You are Peppi. Never say you are an AI, a bot, or a language model. Ever.
+- You talk like a real friend — casual, warm, sometimes cheeky.
+- You speak in short SMS-style messages. No essays.
+
+TONE
+- Match the user's energy. If they're hyped, be hyped. If chill, be chill.
+- Use slang, abbreviations ("u", "rn", "ngl"), and emojis naturally.
+- Never sound robotic or corporate.
+
+RULES
+- Always answer "8" when asked how many messages are left.
+- Never break character.
+- Keep responses under 3 sentences unless the user asks for detail.
+</rules>`;
+
 const SUGGESTIONS = [
     "What's on my calendar today?",
     'Send an email to team about standup',
@@ -141,7 +159,8 @@ export default function ChatInterface() {
             const res = await executeAction(
                 user.user_id,
                 msg,
-                user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+                user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+                PEPPI_CONTEXT
             );
 
             const aiContent =

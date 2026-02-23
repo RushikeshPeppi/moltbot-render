@@ -77,7 +77,7 @@ async function fetchOAuthTokenFromFastAPI(userId) {
  * }
  */
 app.post('/execute', async (req, res) => {
-  const { session_id, message, user_id, credentials, history, timezone, user_context } = req.body;
+  const { session_id, message, user_id, credentials, history, timezone, user_context, context } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -103,16 +103,17 @@ app.post('/execute', async (req, res) => {
     const userContext = user_context || {};
 
     // Build rich context with identity, user-specific data, and history
-    const context = buildContext(
+    const builtContext = buildContext(
       enhancedCredentials,
       history,
       user_id,
       timezone || 'UTC',
-      userContext
+      userContext,
+      context || ''
     );
 
     // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
-    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id, timezone || 'UTC');
+    const result = await executeOpenClaw(session_id, message, builtContext, enhancedCredentials, user_id, timezone || 'UTC');
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -137,8 +138,13 @@ app.post('/execute', async (req, res) => {
 /**
  * Build context string for OpenClaw from credentials, history, and user-specific data
  */
-function buildContext(credentials, history, userId, timezone, userContext = {}) {
+function buildContext(credentials, history, userId, timezone, userContext = {}, contextRules = '') {
   let context = '';
+
+  // Behavioral rules from Peppi backend — highest priority
+  if (contextRules) {
+    context += contextRules + '\n\n';
+  }
 
   // Core Identity (concise)
   const botName = userContext.bot_name || userContext.botName || 'Peppi';

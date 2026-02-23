@@ -207,7 +207,8 @@ async def execute_action(request: ExecuteActionRequest):
                 timezone=request.timezone,  # Pass user's timezone
                 user_credentials=user_credentials,
                 conversation_history=session_data.get('conversation_history', []),
-                user_context=user_context  # Pass user-specific context
+                user_context=user_context,  # Pass user-specific context
+                context=request.context  # Transient behavioral rules from Peppi
             )
         except OpenClawClientError as e:
             # OpenClaw call failed after retries

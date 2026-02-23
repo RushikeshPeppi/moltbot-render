@@ -51,7 +51,8 @@ class OpenClawClient:
         timezone: Optional[str] = None,
         user_credentials: Optional[Dict] = None,
         conversation_history: Optional[List[Dict]] = None,
-        user_context: Optional[Dict] = None
+        user_context: Optional[Dict] = None,
+        context: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Send message to OpenClaw Gateway with retry logic.
@@ -72,7 +73,8 @@ class OpenClawClient:
             "timezone": timezone,  # Pass user's timezone
             "credentials": user_credentials or {},
             "history": conversation_history or [],
-            "user_context": user_context or {}  # Pass user-specific context (bot name, preferences, etc.)
+            "user_context": user_context or {},  # Pass user-specific context (bot name, preferences, etc.)
+            "context": context or ""  # Transient behavioral rules from Peppi
         }
         
         last_exception = None
