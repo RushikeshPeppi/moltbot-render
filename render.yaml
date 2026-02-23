@@ -57,7 +57,6 @@ services:
   - type: static_site
     name: peppi-playground
     region: oregon
-    plan: free
     rootDir: playground
     buildCommand: npm install && npm run build
     publishPath: ./dist

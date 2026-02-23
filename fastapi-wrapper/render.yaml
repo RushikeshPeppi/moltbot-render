@@ -43,7 +43,7 @@ services:
 
   # Moltbot Gateway - Runs the AI agent
   - type: web
-    name: moltbot-gateway
+    name: openclaw-gateway
     runtime: node
     region: oregon
     plan: starter
@@ -51,7 +51,7 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     disk:
-      name: moltbot-data
+      name: openclaw-data
       mountPath: /root/.moltbot
       sizeGB: 1
     envVars:
