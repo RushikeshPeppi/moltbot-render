@@ -54,12 +54,13 @@ services:
         sync: false
 
   # Peppi PM Playground - React frontend for testing
-  - type: static_site
+  - type: web
     name: peppi-playground
+    runtime: static
     region: oregon
     rootDir: playground
     buildCommand: npm install && npm run build
-    publishPath: ./dist
+    staticPublishPath: ./dist
     headers:
       - path: /*
         name: Cache-Control
