@@ -272,7 +272,22 @@ async def execute_action(request: ExecuteActionRequest):
                 tokens_used=tokens_used
             )
 
-        # 10. Return clean success response
+        # 10. If reminder action, fetch the most recently created pending reminder's trigger_at
+        # so the playground can show a live countdown timer.
+        reminder_trigger_at = None
+        action_type_str = (openclaw_response.get('action_type') or '').lower()
+        if 'reminder' in action_type_str:
+            try:
+                pending = await db.get_user_reminders(user_id, status='pending')
+                if pending:
+                    # reminders are ordered by trigger_at desc, but we want the most recently *created*
+                    # The last one inserted will have the largest id
+                    latest = max(pending, key=lambda r: r.get('id', 0))
+                    reminder_trigger_at = latest.get('trigger_at')
+            except Exception as reminder_err:
+                logger.warning(f"Could not fetch reminder trigger_at: {reminder_err}")
+
+        # 11. Return clean success response
         return {
             "code": ResponseCode.SUCCESS,
             "message": "Action executed successfully",
@@ -280,7 +295,8 @@ async def execute_action(request: ExecuteActionRequest):
                 "session_id": session_id,
                 "response": clean_response,
                 "action_performed": openclaw_response.get('action_type'),
-                "tokens_used": tokens_used if tokens_used > 0 else None
+                "tokens_used": tokens_used if tokens_used > 0 else None,
+                "reminder_trigger_at": reminder_trigger_at,
             },
             "error": None,
             "exception": None,

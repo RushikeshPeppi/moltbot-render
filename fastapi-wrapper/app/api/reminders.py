@@ -21,6 +21,7 @@ from ..models import (
     ResponseCode,
 )
 from ..core.database import db
+from ..core.redis_client import redis_client
 from ..services.qstash_service import qstash_service
 from ..services.peppi_client import peppi_client
 from ..utils.timezone_utils import local_to_utc, recurrence_to_cron
@@ -251,6 +252,17 @@ async def deliver_reminder(request: Request):
             "status": "delivered",
             "delivered_at": datetime.utcnow().isoformat(),
         })
+
+        # 6. Push playground notification so the frontend chat window shows the reminder
+        try:
+            await redis_client.push_playground_message(payload.user_id, {
+                "type": "reminder_delivery",
+                "message": payload.message,
+                "reminder_id": payload.reminder_id,
+                "timestamp": datetime.utcnow().isoformat(),
+            })
+        except Exception as push_error:
+            logger.warning(f"Could not push playground message for reminder {payload.reminder_id}: {push_error}")
 
         logger.info(f"Reminder {payload.reminder_id} delivered successfully")
         return {"status": "delivered", "reminder_id": payload.reminder_id}

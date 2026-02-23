@@ -70,9 +70,9 @@ function formatGenericList(text, marker, type) {
     );
 }
 
-export default function ChatMessage({ role, content, timestamp }) {
+export default function ChatMessage({ role, content, timestamp, fromHistory, isReminderDelivery }) {
     const isUser = role === 'user';
-    const avatar = isUser ? '👤' : '🤖';
+    const avatar = isReminderDelivery ? '⏰' : isUser ? '👤' : '🤖';
 
     const timeStr = timestamp
         ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -80,12 +80,57 @@ export default function ChatMessage({ role, content, timestamp }) {
 
     return (
         <div className={`message ${role}`}>
-            <div className="message-avatar">{avatar}</div>
-            <div>
-                <div className="message-content">
+            <div
+                className="message-avatar"
+                style={isReminderDelivery ? { background: 'rgba(255,193,7,0.15)', color: '#FFC107' } : {}}
+            >
+                {avatar}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+                {/* History badge */}
+                {fromHistory && (
+                    <div
+                        style={{
+                            fontSize: 10,
+                            color: 'var(--text-muted)',
+                            marginBottom: 3,
+                            opacity: 0.6,
+                            fontStyle: 'italic',
+                        }}
+                    >
+                        📜 from history
+                    </div>
+                )}
+                {/* Reminder delivery badge */}
+                {isReminderDelivery && (
+                    <div
+                        style={{
+                            fontSize: 11,
+                            fontWeight: 700,
+                            color: '#FFC107',
+                            marginBottom: 4,
+                            letterSpacing: '0.05em',
+                            textTransform: 'uppercase',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 5,
+                        }}
+                    >
+                        <span style={{ animation: 'pulse 1s ease-in-out infinite' }}>●</span>
+                        Reminder Delivered via QStash
+                    </div>
+                )}
+                <div
+                    className="message-content"
+                    style={isReminderDelivery ? { borderLeft: '2px solid #FFC107', paddingLeft: 8 } : {}}
+                >
                     {isUser ? content : formatContent(content)}
                 </div>
-                {timeStr && <div className="message-time">{timeStr}</div>}
+                {timeStr && (
+                    <div className="message-time" style={fromHistory ? { opacity: 0.5 } : {}}>
+                        {timeStr}
+                    </div>
+                )}
             </div>
         </div>
     );

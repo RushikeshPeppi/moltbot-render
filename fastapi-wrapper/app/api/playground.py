@@ -193,3 +193,35 @@ async def update_user_timezone(user_id: str, request: UpdateTimezoneRequest):
                 exception=str(e),
             ),
         )
+
+
+@router.get("/messages/{user_id}")
+async def get_playground_messages(user_id: str):
+    """
+    Poll for pending playground messages for a user.
+
+    The frontend calls this every 5 seconds. When a reminder fires (QStash → /reminders/deliver),
+    the delivery handler pushes a message to Redis. This endpoint pops and returns them all,
+    clearing the queue so each message is shown exactly once.
+
+    Returns:
+        {"messages": [{"type": "reminder_delivery", "message": "...", "timestamp": "..."}]}
+    """
+    try:
+        messages = await redis_client.pop_playground_messages(user_id)
+        return create_response(
+            code=ResponseCode.SUCCESS,
+            message=f"Found {len(messages)} message(s)",
+            data={"messages": messages},
+        )
+    except Exception as e:
+        logger.error(f"Error fetching playground messages for user {user_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content=create_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to fetch messages",
+                error="PLAYGROUND_MESSAGES_ERROR",
+                exception=str(e),
+            ),
+        )

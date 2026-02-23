@@ -314,6 +314,50 @@ class RedisClient:
             logger.error(f"Error counting sessions: {e}")
             return 0
 
+    # ==================== Playground Messages ====================
+
+    async def push_playground_message(self, user_id: str, message: Dict[str, Any]) -> bool:
+        """
+        Push a playground message (e.g. reminder delivery) to a Redis list.
+        The playground frontend polls this and shows the message in the chat window.
+        TTL: 1 hour so unread messages don't accumulate forever.
+        """
+        if not self._redis:
+            logger.warning("Redis not connected, skipping playground message push")
+            return False
+
+        try:
+            key = f"playground_msg:{user_id}"
+            self._redis.rpush(key, json.dumps(message))
+            # Set/refresh TTL to 1 hour so stale messages are auto-cleaned
+            self._redis.expire(key, 3600)
+            logger.info(f"Pushed playground message for user {user_id}: {message.get('type')}")
+            return True
+        except Exception as e:
+            logger.error(f"Error pushing playground message: {e}")
+            return False
+
+    async def pop_playground_messages(self, user_id: str) -> list:
+        """
+        Atomically read all pending playground messages for a user and clear the list.
+        Returns a list of message dicts. Returns [] if none or Redis unavailable.
+        """
+        if not self._redis:
+            return []
+
+        try:
+            key = f"playground_msg:{user_id}"
+            # Get all items
+            raw_messages = self._redis.lrange(key, 0, -1)
+            if not raw_messages:
+                return []
+            # Clear the list
+            self._redis.delete(key)
+            return [json.loads(m) for m in raw_messages]
+        except Exception as e:
+            logger.error(f"Error popping playground messages: {e}")
+            return []
+
 
 # Singleton instance
 redis_client = RedisClient()

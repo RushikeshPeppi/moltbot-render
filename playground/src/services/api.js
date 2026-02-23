@@ -107,3 +107,19 @@ export async function getCredentialsStatus(userId) {
 export async function getActionHistory(userId, limit = 50) {
     return request(`/history/${userId}?limit=${limit}`);
 }
+
+/**
+ * Load chat history for persistent chat view on login.
+ * Uses the same audit log endpoint with a higher limit.
+ */
+export async function getChatHistory(userId, limit = 200) {
+    return request(`/history/${userId}?limit=${limit}`);
+}
+
+/**
+ * Poll for pending playground messages (e.g. reminder deliveries from QStash).
+ * The backend pops and returns messages atomically so each is shown exactly once.
+ */
+export async function getPlaygroundMessages(userId) {
+    return request(`/playground/messages/${userId}`);
+}
