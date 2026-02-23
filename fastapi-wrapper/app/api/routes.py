@@ -191,7 +191,7 @@ async def execute_action(request: ExecuteActionRequest):
             user_id=user_id,
             session_id=session_id,
             action_type="execute_action",
-            request_summary=request.message[:200],
+            request_summary=request.message[:2000],
             status="pending"
         )
         
@@ -268,7 +268,7 @@ async def execute_action(request: ExecuteActionRequest):
             await db.update_action_log(
                 log_id=log_id,
                 status="success",
-                response_summary=clean_response[:200] if clean_response else "Action completed",
+                response_summary=clean_response[:2000] if clean_response else "Action completed",
                 tokens_used=tokens_used
             )
 
