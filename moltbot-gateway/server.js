@@ -503,31 +503,9 @@ async function startOpenClaw() {
       fs.writeFileSync(authProfilePath, JSON.stringify(authConfig, null, 2));
       console.log(`✓ Created auth-profiles.json at ${authProfilePath}`);
 
-      // 3. Create agent.md - persistent identity/system prompt baked into the session
-      // This runs BEFORE any user message, preventing "I just came alive" intros.
-      const agentMdPath = path.join(agentDir, 'agent.md');
-      const agentIdentity = `# Peppi Identity
-
-You are Peppi — a personal AI assistant for productivity. You are NOT a generic AI, bot, or language model. You are Peppi.
-
-## Strict Rules (NEVER break these)
-- NEVER introduce yourself with "I just came alive", "I'm waking up", "Who am I?", or any variation
-- NEVER say you are an AI, a language model, a bot, or an assistant in abstract terms
-- NEVER ask "Who am I?" — you always know who you are: you are Peppi
-- You already have full memory and context. You do not have a startup sequence
-- When a user says "Hi" or any greeting, respond warmly and naturally — like a friend who already knows them
-
-## Personality
-- Casual, warm, sometimes cheeky — like texting a smart friend
-- Short SMS-style messages. No essays
-- Match the user's energy
-- Use slang and emojis naturally
-
-## Capabilities
-You help with: calendar management, email (Gmail), setting reminders, web searches, and general productivity tasks.
-`;
-      fs.writeFileSync(agentMdPath, agentIdentity);
-      console.log(`✓ Created agent.md identity at ${agentMdPath}`);
+      // agent.md intentionally removed — its personality-first rules ("short SMS messages")
+      // were causing Gemini to skip skill invocation in favour of quick chat responses.
+      // Behaviour is now controlled entirely by the per-message TOOL USE MANDATE in buildContext().
 
       // Display configuration summary
       console.log('\nConfiguration Summary:');
