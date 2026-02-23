@@ -562,10 +562,12 @@ async def get_action_history(user_id: str, limit: int = 50, offset: int = 0):
     try:
         actions = await db.get_user_action_history(user_id, limit, offset)
         
-        # Convert datetime objects to strings
+        # Convert datetime objects to strings (Supabase may return strings already)
         for action in actions:
             if 'created_at' in action and action['created_at']:
-                action['created_at'] = action['created_at'].isoformat()
+                if hasattr(action['created_at'], 'isoformat'):
+                    action['created_at'] = action['created_at'].isoformat()
+                # else: already a string, leave as-is
         
         return {
             "code": ResponseCode.SUCCESS,
