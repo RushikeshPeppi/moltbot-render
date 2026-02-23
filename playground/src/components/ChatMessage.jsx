@@ -87,20 +87,7 @@ export default function ChatMessage({ role, content, timestamp, fromHistory, isR
                 {avatar}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
-                {/* History badge */}
-                {fromHistory && (
-                    <div
-                        style={{
-                            fontSize: 10,
-                            color: 'var(--text-muted)',
-                            marginBottom: 3,
-                            opacity: 0.6,
-                            fontStyle: 'italic',
-                        }}
-                    >
-                        📜 from history
-                    </div>
-                )}
+
                 {/* Reminder delivery badge */}
                 {isReminderDelivery && (
                     <div
