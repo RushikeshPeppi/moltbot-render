@@ -77,7 +77,7 @@ async function fetchOAuthTokenFromFastAPI(userId) {
  * }
  */
 app.post('/execute', async (req, res) => {
-  const { session_id, message, user_id, credentials, history, timezone, user_context, context } = req.body;
+  const { session_id, message, user_id, credentials, history, timezone, user_context } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -103,17 +103,16 @@ app.post('/execute', async (req, res) => {
     const userContext = user_context || {};
 
     // Build rich context with identity, user-specific data, and history
-    const builtContext = buildContext(
+    const context = buildContext(
       enhancedCredentials,
       history,
       user_id,
       timezone || 'UTC',
-      userContext,
-      context || ''
+      userContext
     );
 
     // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
-    const result = await executeOpenClaw(session_id, message, builtContext, enhancedCredentials, user_id, timezone || 'UTC');
+    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id, timezone || 'UTC');
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -138,27 +137,8 @@ app.post('/execute', async (req, res) => {
 /**
  * Build context string for OpenClaw from credentials, history, and user-specific data
  */
-function buildContext(credentials, history, userId, timezone, userContext = {}, contextRules = '') {
+function buildContext(credentials, history, userId, timezone, userContext = {}) {
   let context = '';
-
-  // ============================================================
-  // TOOL USE MANDATE — ABSOLUTE HIGHEST PRIORITY
-  // This MUST come before any personality or identity rules.
-  // ============================================================
-  if (credentials && credentials.google_access_token) {
-    context += `TOOL USE MANDATE — NON-NEGOTIABLE:
-- When user asks about email (read, send, reply, check inbox, search): IMMEDIATELY invoke the google-workspace skill. Do NOT respond conversationally. Do NOT say "I'll check that". ACTUALLY RUN THE SKILL NOW.
-- When user asks about calendar (schedule, create meeting, list events, check schedule): IMMEDIATELY invoke the google-workspace skill. Do NOT respond conversationally.
-- NEVER respond with a chat message for email or calendar requests. ALWAYS invoke the tool first, then reply with real results.
-- $GOOGLE_ACCESS_TOKEN is already set in the environment. The skill works. Use it.
-
-`;
-  }
-
-  // Behavioral rules from Peppi backend (persona, tone, identity)
-  if (contextRules) {
-    context += contextRules + '\n\n';
-  }
 
   // Core Identity (concise)
   const botName = userContext.bot_name || userContext.botName || 'Peppi';
@@ -168,7 +148,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}, 
   if (userName) context += ` (${userName})`;
   context += `. User TZ: ${timezone || 'UTC'}. CRITICAL TIMEZONE RULE: When user says "2pm", they mean 2pm ${timezone || 'UTC'}. The google-workspace skill creates events in UTC, so convert first. Example: User says "2pm" in Asia/Kolkata → You calculate 8:30am UTC → Pass "8:30am" to skill. ALWAYS convert user's local time to UTC before calling calendar tools. `;
 
-  // Capabilities (reinforcement after persona)
+  // Capabilities
   if (credentials && credentials.google_access_token) {
     context += 'Google Calendar & Gmail are FULLY FUNCTIONAL via google-workspace skill with Gmail API. CRITICAL INSTRUCTIONS: (1) You CAN send and reply to emails - there is NO channel requirement, the Gmail API works directly. (2) When user asks to reply/send email, USE the google-workspace skill immediately - do NOT say you cannot do it. (3) The skill executes bash commands with curl to Gmail API - $GOOGLE_ACCESS_TOKEN is already set. (4) For replies: The skill will find the original email, extract sender, construct proper reply with threading, and send via Gmail API. (5) DO NOT respond with "I cannot send emails" - you CAN and MUST use the google-workspace skill to send them. Example: "Reply to John" → Use google-workspace skill which runs: curl -X POST -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" gmail.googleapis.com/.../send ';
   }
@@ -182,19 +162,18 @@ function buildContext(credentials, history, userId, timezone, userContext = {}, 
   context += 'You have continuous memory - NEVER say "I just came alive". ';
   context += 'Reminders are FULLY FUNCTIONAL via the reminders skill. CRITICAL INSTRUCTIONS: (1) When user asks to set, list, or cancel a reminder, USE the reminders skill immediately. (2) The skill executes bash commands with curl to the Moltbot FastAPI - $FASTAPI_URL and $MOLTBOT_USER_ID are already set. (3) You MUST actually execute the curl command from the skill - do NOT just describe or acknowledge it. (4) For creating reminders: The skill runs curl -X POST "$FASTAPI_URL/api/v1/reminders/create" with user_id, message, trigger_at (UTC ISO 8601), user_timezone, and recurrence. (5) ALWAYS convert user local time to UTC before calling. Example: "remind me tomorrow at 2pm" in Asia/Kolkata → trigger_at="2026-02-20T08:30:00Z". ';
 
-  // Recent conversation (last 10 messages, truncated)
+  // Recent conversation (limited to 5 messages, truncated)
   if (history && history.length > 0) {
-    const recentHistory = history.slice(-10);
+    const recentHistory = history.slice(-5);
     context += '\nRecent conversation (for context only - these are COMPLETED past actions, do NOT re-execute):\n';
     recentHistory.forEach(msg => {
-      const truncated = msg.content.length > 120 ? msg.content.substring(0, 120) + '...' : msg.content;
+      const truncated = msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content;
       context += `${msg.role}: ${truncated}\n`;
     });
   }
 
   return context;
 }
-
 
 /**
  * Execute OpenClaw command and return result
@@ -502,10 +481,6 @@ async function startOpenClaw() {
       };
       fs.writeFileSync(authProfilePath, JSON.stringify(authConfig, null, 2));
       console.log(`✓ Created auth-profiles.json at ${authProfilePath}`);
-
-      // agent.md intentionally removed — its personality-first rules ("short SMS messages")
-      // were causing Gemini to skip skill invocation in favour of quick chat responses.
-      // Behaviour is now controlled entirely by the per-message TOOL USE MANDATE in buildContext().
 
       // Display configuration summary
       console.log('\nConfiguration Summary:');
