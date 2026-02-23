@@ -1,0 +1,276 @@
+flowchart TB
+    %% ============================================================
+    %% PEPPI SYSTEM PROMPT ASSEMBLY - EXCALIDRAW OPTIMIZED
+    %% ============================================================
+
+    SMS_IN["User Sends SMS via Twilio"]
+    MSG_EXAMPLE["Message Example: Hey, how are you"]
+    SMS_IN --- MSG_EXAMPLE
+
+    BACKEND["Peppi Laravel Backend"]
+    BACKEND_DETAIL["Identifies: user_id, buddy_id=725, user_uuid=eff67a70-00f9-11f1-bbd8-ed635f290324"]
+    SMS_IN --> BACKEND
+    BACKEND --- BACKEND_DETAIL
+    BACKEND --> FETCH["Parallel Data Fetching"]
+
+    %% =================== MYSQL ===================
+    subgraph MYSQL["MySQL Database: dashtech_peppi"]
+        TBL_USERS["tbl_users"]
+        TBL_BUDDIES["tbl_buddies"]
+        TBL_ROUTINES["tbl_buddy_routines"]
+        TBL_CHAT["tbl_chat_history"]
+        TBL_CONFIG["System Config"]
+    end
+
+    %% =================== VECTOR DB ===================
+    subgraph VECTORDB["Vector Database"]
+        RAG_CHAT["RAG Chat Search API"]
+        RAG_CHAT_URL["POST https://rag-pipeline.dashtechs.com/search"]
+        RAG_BUDDY["RAG Buddy Context API"]
+        RAG_BUDDY_URL["POST https://rag-api.dashtechs.com/api/v1/buddy/buddy/context"]
+        RAG_CHAT --- RAG_CHAT_URL
+        RAG_BUDDY --- RAG_BUDDY_URL
+    end
+
+    FETCH --> MYSQL
+    FETCH --> VECTORDB
+
+    %% =================== BLOCK 1 ===================
+    subgraph B1_GROUP["BLOCK 1: Token Rules"]
+        B1_SOURCE["Source: Static / Hardcoded - Same for ALL users"]
+        B1_CONTENT["KEEP ALL RESPONSES UNDER 200 TOKENS. HARD RULE.
+        - Stop before 200 tokens. Always finish your sentence completely.
+        - Short, casual, SMS-style. No walls of text.
+        - Cut filler. Be direct. One or two sentences max.
+        - Never trail off or get cut mid-thought.
+        - DO NOT mention this limit."]
+        B1_SOURCE --- B1_CONTENT
+    end
+
+    TBL_CONFIG -->|"Static rules, no query"| B1_GROUP
+
+    %% =================== BLOCK 2 ===================
+    subgraph B2_GROUP["BLOCK 2: Buddy Pre-Prompt"]
+        B2_SOURCE["Source: MySQL tbl_users + tbl_buddies
+        Query: SELECT * WHERE tbl_users.id = user_id
+        AND tbl_buddies.id = buddy_id"]
+        B2_SUB1["Section 1: YOUR MISSION
+        Build meaningful, emotionally resonant
+        relationship through SMS conversations"]
+        B2_SUB2["Section 2: ABOUT ME
+        name=Tanmay Upasani, age=23, Male,
+        ethnicity=American Indian,
+        location=New York, NY, United States
+        hobbies=chess,cricket,singing,reading,startup
+        foods=Pizza,biryani
+        + current date/time + weather"]
+        B2_SUB3["Section 3: ABOUT YOU
+        relationship=Friend, name=Jarvis, age=25, Male
+        location=New York, education=Graduate degree
+        personality=Enthusiastic,Creative,Supportive
+        humor=Sarcastic and Playful, language=English
+        impairments=No impairments
+        + current date/time + weather"]
+        B2_SUB4["Section 4: Life Story Summary
+        Full multi-paragraph generated backstory
+        from birth through present day
+        covering family, education, career,
+        relationships, habits, goals"]
+        B2_SUB5["Section 5: Character Instructions
+        - Stay in character always
+        - Relationship Tone Guide
+        - Using Your Context
+        - Familiarity Over Time
+        - How To Text SMS style
+        - What Not To Do
+        - When They Are Struggling
+        - Crisis Protocol: text or call 988
+        - What You Do Not Do: no medical,
+          financial, sexual, illegal content"]
+        B2_SOURCE --- B2_SUB1
+        B2_SOURCE --- B2_SUB2
+        B2_SOURCE --- B2_SUB3
+        B2_SOURCE --- B2_SUB4
+        B2_SOURCE --- B2_SUB5
+    end
+
+    TBL_USERS -->|"SELECT * FROM tbl_users
+    WHERE id = user_id"| B2_GROUP
+    TBL_BUDDIES -->|"SELECT * FROM tbl_buddies
+    WHERE id = buddy_id"| B2_GROUP
+
+    %% =================== BLOCK 3 ===================
+    subgraph B3_GROUP["BLOCK 3: Recent Routines - Last 2 Days"]
+        B3_SOURCE["Source: MySQL tbl_buddy_routines
+        Query: SELECT * FROM tbl_buddy_routines
+        WHERE buddy_id = 725
+        AND date >= NOW() - INTERVAL 2 DAY
+        ORDER BY date DESC LIMIT 3"]
+        B3_CONTENT["Returns 3 full day schedules
+        Each schedule contains:
+        - Date and creation timestamp
+        - Summary paragraph
+        - Activity in 5 sections:
+          MORNING: wake, breakfast, commute
+          WORK: office tasks, meetings, lunch
+          AFTERNOON: meetings, focus blocks
+          EVENING: commute, dinner, personal
+          NIGHT: wind down, reading, sleep
+        Each entry: exact time + activity
+        Example dates: 2026-02-20, 2026-02-19, 2026-02-18"]
+        B3_SOURCE --- B3_CONTENT
+    end
+
+    TBL_ROUTINES -->|"WHERE buddy_id=725
+    AND date >= NOW()-2 DAY
+    ORDER BY date DESC LIMIT 3"| B3_GROUP
+
+    %% =================== BLOCK 4 ===================
+    subgraph B4_GROUP["BLOCK 4: Recent Chat History - Last 25 Messages"]
+        B4_SOURCE["Source: MySQL tbl_chat_history
+        Query: SELECT * FROM tbl_chat_history
+        WHERE user_id = user_id
+        ORDER BY created_at DESC LIMIT 25"]
+        B4_CONTENT["Returns 25 chronological message pairs:
+        Date: ISO timestamp
+        Tanmay Upasani: user message text
+        Jarvis: buddy response text
+        Example:
+        Date: 2026-02-20T10:23:43.000000Z
+        Tanmay Upasani: sure seeya bye
+        Jarvis: yo catch you later man!"]
+        B4_SOURCE --- B4_CONTENT
+    end
+
+    TBL_CHAT -->|"WHERE user_id = user_id
+    ORDER BY created_at DESC
+    LIMIT 25"| B4_GROUP
+
+    %% =================== BLOCK 5 ===================
+    subgraph B5_GROUP["BLOCK 5: RAG Story Chunks - Top 5"]
+        B5_SOURCE["Source: Vector DB via RAG Buddy Context API
+        POST https://rag-api.dashtechs.com/api/v1/buddy/buddy/context
+        Payload:
+        buddyId: 725
+        userUuid: eff67a70-00f9-11f1-bbd8-ed635f290324
+        query: user current message
+        Response field: data.storyChunks"]
+        B5_CONTENT["Returns 5 life story chunks ranked by cosine similarity:
+        STAGE_01: Early Childhood, age 0-5, relevanceScore: 0.618
+        STAGE_02: Childhood, age 6-10, relevanceScore: 0.587
+        STAGE_03: Childhood, age 11-15, relevanceScore: 0.592
+        STAGE_04: Adolescence, age 16-20, relevanceScore: 0.607
+        STAGE_05: Young Adult, age 21-25, relevanceScore: 0.611
+        Each chunk: chunkId, contentType=story, full text paragraph,
+        metadata with age_range and life_phase, relevanceScore
+        Prefixed: Here is some information about the story:
+        Chunks separated by delimiter"]
+        B5_SOURCE --- B5_CONTENT
+    end
+
+    RAG_BUDDY -->|"POST buddyId:725
+    userUuid, query
+    Response: data.storyChunks"| B5_GROUP
+
+    %% =================== BLOCK 6 ===================
+    subgraph B6_GROUP["BLOCK 6: RAG Routine Chunks - Top 5"]
+        B6_SOURCE["Source: Same API call as Block 5
+        POST https://rag-api.dashtechs.com/api/v1/buddy/buddy/context
+        Same payload: buddyId=725, userUuid, query
+        Response field: data.routineChunks"]
+        B6_CONTENT["Returns 5 past daily schedules ranked by cosine similarity:
+        routine_725_2026-02-13: Friday, relevanceScore: 0.617
+        routine_725_2026-02-14: Saturday, relevanceScore: 0.615
+        routine_725_2026-02-11: Wednesday, relevanceScore: 0.612
+        routine_725_2026-02-15: Sunday, relevanceScore: 0.610
+        routine_725_2026-02-19: Thursday, relevanceScore: 0.608
+        Each chunk: chunkId, contentType=routine, full schedule text,
+        metadata with routine_id, date, day_of_week, summary
+        Prefixed: Here is some information about the previous routine:"]
+        B6_SOURCE --- B6_CONTENT
+    end
+
+    RAG_BUDDY -->|"Same API response
+    Response: data.routineChunks"| B6_GROUP
+
+    %% =================== BLOCK 7 ===================
+    subgraph B7_GROUP["BLOCK 7: RAG Past Chat Chunks - Up to 5 Batches"]
+        B7_SOURCE["Source: Vector DB via RAG Chat Search API
+        POST https://rag-pipeline.dashtechs.com/search
+        Payload:
+        user_uuid: eff67a70-00f9-11f1-bbd8-ed635f290324
+        collection_name: peppi_chat_production
+        query: user current message
+        limit: 5"]
+        B7_CONTENT["Returns up to 5 results, each = Consolidated Batch of 15 messages:
+        Batch 1: score=0.705, similarity=0.694, timestamp=2026-02-19
+        Batch 2: score=0.667, similarity=0.646, timestamp=2026-02-03
+        Batch 3: score=0.659, similarity=0.636, timestamp=2026-02-04
+        Batch 4: score=0.649, similarity=0.623, timestamp=2026-02-04
+        Each result: score, similarity_score, question=Consolidated Batch label,
+        answer=full Q and A text of 15 message pairs,
+        timestamp, memory_type=episodic, importance_score=0.5,
+        days_ago, user_id, user_name
+        Prefixed: Here are related past chats:"]
+        B7_SOURCE --- B7_CONTENT
+    end
+
+    RAG_CHAT -->|"POST user_uuid,
+    collection: peppi_chat_production,
+    query, limit:5
+    Returns: results array"| B7_GROUP
+
+    %% =================== BLOCK 8 ===================
+    subgraph B8_GROUP["BLOCK 8: Date/Time + SMS Remaining + Token Reminder"]
+        B8_SOURCE["Source: MySQL + System Clock + Weather API"]
+        B8_CONTENT["Injected at end of system prompt:
+        - Current date and time at user location
+        - Current date and time at buddy location
+        - Weather data for both locations
+        - SMS messages remaining for the user
+        - Final token limit enforcement reminder"]
+        B8_SOURCE --- B8_CONTENT
+    end
+
+    TBL_CONFIG -->|"SMS remaining count
+    + system clock datetime
+    + weather API data"| B8_GROUP
+
+    %% =================== ASSEMBLY ORDER ===================
+    B1_GROUP -.->|"Block 1 then"| B2_GROUP
+    B2_GROUP -.->|"Block 2 then"| B3_GROUP
+    B3_GROUP -.->|"Block 3 then"| B4_GROUP
+    B4_GROUP -.->|"Block 4 then"| B5_GROUP
+    B5_GROUP -.->|"Block 5 then"| B6_GROUP
+    B6_GROUP -.->|"Block 6 then"| B7_GROUP
+    B7_GROUP -.->|"Block 7 then"| B8_GROUP
+
+    %% =================== OUTPUT ===================
+    B8_GROUP --> FINAL["Final Assembled Prompt
+    Array index 0 = System prompt with all 8 blocks concatenated
+    Array index 1 = User current message as role: user"]
+
+    FINAL --> LLM["AI Model: Claude or GPT
+    Receives system prompt + user message"]
+
+    LLM --> RESPONSE["Buddy Response
+    Under 200 tokens, SMS-style, plain text
+    No markdown, no lists, in character as Jarvis"]
+
+    RESPONSE --> SEND["Store in tbl_chat_history + Send via Twilio SMS"]
+    SEND --> SMS_IN
+
+    %% =================== STYLING ===================
+    classDef mysqlStyle fill:#3498db,stroke:#2471a3,color:#fff,stroke-width:2px
+    classDef vectorStyle fill:#8e44ad,stroke:#6c3483,color:#fff,stroke-width:2px
+    classDef blockStyle fill:#27ae60,stroke:#1e8449,color:#fff,stroke-width:2px
+    classDef entryStyle fill:#e74c3c,stroke:#c0392b,color:#fff,stroke-width:2px
+    classDef outputStyle fill:#f39c12,stroke:#d68910,color:#fff,stroke-width:2px
+    classDef detailStyle fill:#ecf0f1,stroke:#bdc3c7,color:#2c3e50,stroke-width:1px
+
+    class TBL_USERS,TBL_BUDDIES,TBL_ROUTINES,TBL_CHAT,TBL_CONFIG mysqlStyle
+    class RAG_CHAT,RAG_BUDDY,RAG_CHAT_URL,RAG_BUDDY_URL vectorStyle
+    class B1_SOURCE,B2_SOURCE,B3_SOURCE,B4_SOURCE,B5_SOURCE,B6_SOURCE,B7_SOURCE,B8_SOURCE blockStyle
+    class SMS_IN,BACKEND entryStyle
+    class FINAL,LLM,RESPONSE,SEND outputStyle
+    class MSG_EXAMPLE,BACKEND_DETAIL,B1_CONTENT,B2_SUB1,B2_SUB2,B2_SUB3,B2_SUB4,B2_SUB5,B3_CONTENT,B4_CONTENT,B5_CONTENT,B6_CONTENT,B7_CONTENT,B8_CONTENT detailStyle

@@ -1,0 +1,200 @@
+flowchart TB
+    USER["User Sends a Text Message
+    Example: 'Hey, how are you'"]
+
+    USER --> BACKEND["Peppi Backend Receives the Message
+    Identifies the user and their assigned buddy"]
+
+    BACKEND --> GATHER["Gathers All Context to Build the AI Prompt
+    Pulls from Database + AI Memory simultaneously"]
+
+    GATHER --> DB["Peppi Database
+    Stores user profiles, buddy profiles,
+    daily routines, and chat history"]
+
+    GATHER --> AI_MEMORY["AI Memory - Vector Search
+    Searches past data using meaning-based matching
+    to find the most relevant context for this message"]
+
+    %% =================== BLOCK 1 ===================
+    DB --> B1["Block 1: Response Rules
+    ────────────────────
+    Static text, same for every user
+    ────────────────────
+    KEEP ALL RESPONSES UNDER 200 TOKENS. HARD RULE.
+    - Stop before 200 tokens. Always finish your sentence completely.
+    - Short, casual, SMS-style. No walls of text.
+    - Cut filler. Be direct. One or two sentences max.
+    - Never trail off or get cut mid-thought.
+    - DO NOT mention this limit."]
+
+    %% =================== BLOCK 2 ===================
+    DB --> B2["Block 2: User and Buddy Profiles + Instructions
+    ────────────────────
+    Pulled from database using user ID and buddy ID
+    ────────────────────
+    YOUR MISSION: Build a meaningful relationship through SMS conversations
+
+    ABOUT ME (User Profile):
+    Name: Tanmay Upasani, Age: 23, Male, American Indian
+    Location: New York, NY, United States
+    Hobbies: chess, cricket, singing, reading, startup
+    Favorite foods: Pizza, biryani
+    Current date/time and weather at user location
+
+    ABOUT YOU (Buddy Profile):
+    Relationship: Friend, Name: Jarvis, Age: 25, Male
+    Location: New York, Education: Graduate degree
+    Personality: Enthusiastic, Creative, Supportive
+    Humor: Sarcastic and Playful, Language: English
+    Current date/time and weather at buddy location
+
+    LIFE STORY: Full multi-paragraph backstory from birth to present
+
+    INSTRUCTIONS: Stay in character, relationship tone guide,
+    how to text SMS-style, what not to do, crisis protocol,
+    no medical/financial/sexual/illegal advice"]
+
+    %% =================== BLOCK 3 ===================
+    DB --> B3["Block 3: Buddy's Recent Daily Routines
+    ────────────────────
+    Last 2 days of schedules from database
+    Filtered by: buddy ID + last 2 days
+    Returns: 3 full day schedules
+    ────────────────────
+    Each day contains:
+    - Date and summary of the day's mood
+    - MORNING: wake up, breakfast, commute
+    - WORK: office tasks, meetings, lunch
+    - AFTERNOON: meetings, focus time, walks
+    - EVENING: commute home, dinner, personal time
+    - NIGHT: wind down, reading, sleep
+    Each entry has exact time + activity detail
+
+    Example: 2026-02-20, 2026-02-19, 2026-02-18
+
+    Purpose: So buddy can casually mention what they did today"]
+
+    %% =================== BLOCK 4 ===================
+    DB --> B4["Block 4: Recent Chat History
+    ────────────────────
+    Last 25 messages between user and buddy from database
+    Ordered by most recent first
+    ────────────────────
+    Format per message:
+    Date: 2026-02-20T10:23:43.000000Z
+    Tanmay Upasani: sure seeya bye
+    Jarvis: yo catch you later man!
+
+    Date: 2026-02-20T10:22:46.000000Z
+    Tanmay Upasani: sorry i meant to say how many messages more do i have left to chat with you
+    Jarvis: ah i dont actually have a limit on my end...
+
+    Purpose: So buddy remembers what was just discussed"]
+
+    %% =================== BLOCK 5 ===================
+    AI_MEMORY --> B5["Block 5: Relevant Life Story Moments
+    ────────────────────
+    API: POST https://rag-api.dashtechs.com/api/v1/buddy/buddy/context
+    Payload: { buddyId: 725, userUuid: eff67a70-..., query: 'Hey, how are you' }
+    Response field used: data.storyChunks
+    ────────────────────
+    AI searches the buddy's full life story and returns
+    the 5 most relevant chapters based on what the user said:
+
+    STAGE_01: Early Childhood (age 0-5) - relevance: 0.618
+    STAGE_02: Childhood (age 6-10) - relevance: 0.587
+    STAGE_03: Childhood (age 11-15) - relevance: 0.592
+    STAGE_04: Adolescence (age 16-20) - relevance: 0.607
+    STAGE_05: Young Adult (age 21-25) - relevance: 0.611
+
+    Each chunk: chunkId, full story text, age range, life phase, relevance score
+    Inserted with prefix: 'Here is some information about the story:'"]
+
+    %% =================== BLOCK 6 ===================
+    AI_MEMORY --> B6["Block 6: Relevant Past Routines
+    ────────────────────
+    Same API call as Block 5 - single request returns both
+    API: POST https://rag-api.dashtechs.com/api/v1/buddy/buddy/context
+    Payload: { buddyId: 725, userUuid: eff67a70-..., query: 'Hey, how are you' }
+    Response field used: data.routineChunks
+    ────────────────────
+    AI searches older daily schedules and returns
+    the 5 most relevant past days:
+
+    routine_725_2026-02-13: Friday - relevance: 0.617
+    routine_725_2026-02-14: Saturday - relevance: 0.615
+    routine_725_2026-02-11: Wednesday - relevance: 0.612
+    routine_725_2026-02-15: Sunday - relevance: 0.610
+    routine_725_2026-02-19: Thursday - relevance: 0.608
+
+    Each chunk: full day schedule, date, day of week, summary, relevance score
+    Inserted with prefix: 'Here is some information about the previous routine:'"]
+
+    %% =================== BLOCK 7 ===================
+    AI_MEMORY --> B7["Block 7: Relevant Past Conversations
+    ────────────────────
+    API: POST https://rag-pipeline.dashtechs.com/search
+    Payload: {
+      user_uuid: 'eff67a70-00f9-11f1-bbd8-ed635f290324',
+      collection_name: 'peppi_chat_production',
+      query: 'Hey, how are you',
+      limit: 5
+    }
+    ────────────────────
+    AI searches all past conversations and returns
+    up to 5 batches of 15 messages each, ranked by similarity:
+
+    Batch 1: similarity 0.694, from 2026-02-19 (15 messages)
+    Batch 2: similarity 0.646, from 2026-02-03 (15 messages)
+    Batch 3: similarity 0.636, from 2026-02-04 (15 messages)
+    Batch 4: similarity 0.623, from 2026-02-04 (15 messages)
+
+    Each batch: similarity score, full Q and A text, timestamp, memory type
+    Inserted with prefix: 'Here are related past chats:'"]
+
+    %% =================== BLOCK 8 ===================
+    DB --> B8["Block 8: Current Moment + SMS Balance
+    ────────────────────
+    From system clock + database
+    ────────────────────
+    - Current date and time at user location
+    - Current date and time at buddy location
+    - Weather for both locations
+    - How many SMS messages the user has remaining
+    - Final reminder to stay under 200 tokens"]
+
+    %% =================== ASSEMBLY ===================
+    B1 -.-> B2 -.-> B3 -.-> B4 -.-> B5 -.-> B6 -.-> B7 -.-> B8
+
+    B8 --> ASSEMBLED["All 8 Blocks Combined Into One Prompt
+    ────────────────────
+    Sent as an array:
+    Index 0 = All 8 blocks concatenated as system context
+    Index 1 = The user's actual message: 'Hey, how are you'"]
+
+    ASSEMBLED --> LLM["AI Model Generates Response
+    Using all the context above to craft a reply
+    that sounds like a real friend texting back"]
+
+    LLM --> REPLY["Buddy Sends a Text Back via SMS
+    ────────────────────
+    Under 200 tokens
+    Plain text, no formatting
+    Casual SMS style, stays in character
+    Saved to chat history for future context"]
+
+    REPLY --> USER
+
+    %% =================== STYLING ===================
+    classDef dbStyle fill:#3498db,stroke:#2471a3,color:#fff,stroke-width:2px
+    classDef memStyle fill:#8e44ad,stroke:#6c3483,color:#fff,stroke-width:2px
+    classDef blockStyle fill:#27ae60,stroke:#1e8449,color:#fff,stroke-width:2px
+    classDef flowStyle fill:#e74c3c,stroke:#c0392b,color:#fff,stroke-width:2px
+    classDef outputStyle fill:#f39c12,stroke:#d68910,color:#fff,stroke-width:2px
+
+    class DB dbStyle
+    class AI_MEMORY memStyle
+    class B1,B2,B3,B4,B5,B6,B7,B8 blockStyle
+    class USER,BACKEND,GATHER flowStyle
+    class ASSEMBLED,LLM,REPLY outputStyle

@@ -443,6 +443,124 @@ class Database:
             logger.error(f"Error logging outbound SMS: {e}")
             return False
     
+    # ==================== User Management ====================
+    
+    async def upsert_user(
+        self,
+        user_id: str,
+        name: str,
+        email: str = None,
+        google_connected: bool = False,
+        timezone: str = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Create or update a user in tbl_clawdbot_users.
+        Called during OAuth completion and playground user creation.
+        """
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return None
+            
+            data = {
+                "user_id": int(user_id),
+                "name": name,
+                "google_connected": google_connected,
+                "updated_at": datetime.utcnow().isoformat()
+            }
+            if email:
+                data["email"] = email
+            if timezone:
+                data["timezone"] = timezone
+            
+            response = self._client.table("tbl_clawdbot_users").upsert(
+                data,
+                on_conflict="user_id"
+            ).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"Upserted user {user_id}: {name}")
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error upserting user {user_id}: {e}")
+            return None
+    
+    async def get_all_users(self) -> List[Dict[str, Any]]:
+        """Get all users from tbl_clawdbot_users, ordered by name."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return []
+            
+            response = self._client.table("tbl_clawdbot_users").select(
+                "user_id, name, email, google_connected, timezone, created_at"
+            ).order("name").execute()
+            
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Error fetching users: {e}")
+            return []
+    
+    async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get a single user by user_id."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return None
+            
+            response = self._client.table("tbl_clawdbot_users").select(
+                "user_id, name, email, google_connected, timezone, created_at"
+            ).eq("user_id", int(user_id)).execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error fetching user {user_id}: {e}")
+            return None
+    
+    async def get_next_user_id(self) -> int:
+        """Get the next available user_id (max + 1)."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return 1
+            
+            response = self._client.table("tbl_clawdbot_users").select(
+                "user_id"
+            ).order("user_id", desc=True).limit(1).execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0]["user_id"] + 1
+            return 1
+        except Exception as e:
+            logger.error(f"Error getting next user_id: {e}")
+            return 1
+    
+    async def update_user_timezone(self, user_id: str, timezone: str) -> bool:
+        """Update a user's timezone setting."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+
+            self._client.table("tbl_clawdbot_users").update({
+                "timezone": timezone,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("user_id", int(user_id)).execute()
+
+            logger.info(f"Updated timezone for user {user_id}: {timezone}")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating timezone for user {user_id}: {e}")
+            return False
+
     # ==================== Utility ====================
     
     async def health_check(self) -> bool:

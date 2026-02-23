@@ -9,7 +9,8 @@
       "WebFetch(domain:www.getopenclaw.ai)",
       "WebFetch(domain:developers.google.com)",
       "WebFetch(domain:github.com)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(git show:*)"
     ]
   }
 }

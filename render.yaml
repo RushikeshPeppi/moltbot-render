@@ -53,6 +53,27 @@ services:
       - key: PEPPI_OUTBOUND_API_KEY
         sync: false
 
+  # Peppi PM Playground - React frontend for testing
+  - type: web
+    name: peppi-playground
+    runtime: static
+    region: oregon
+    plan: free
+    rootDir: playground
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        value: https://moltbot-fastapi.onrender.com
+
   # SearXNG - Free self-hosted search engine (NO API keys needed!)
   - type: web
     name: searxng

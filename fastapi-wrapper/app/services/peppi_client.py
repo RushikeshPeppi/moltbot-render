@@ -10,6 +10,7 @@ import logging
 from typing import Optional, Dict, Any
 
 from ..config import settings
+from ..core.database import db
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,18 @@ class PeppiClient:
                     f"status={result.get('status')}, "
                     f"twilio_sid={result.get('twilio_sid')}"
                 )
+
+                # Log to sms_log table regardless of which endpoint handled it
+                try:
+                    await db.log_outbound_sms(
+                        user_id=user_id,
+                        message=message,
+                        source=source,
+                        priority=priority,
+                    )
+                except Exception as log_err:
+                    logger.warning(f"Failed to log outbound SMS for user {user_id}: {log_err}")
+
                 return result
 
         except httpx.HTTPStatusError as e:

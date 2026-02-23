@@ -250,6 +250,36 @@ async def google_oauth_callback(
                 url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_ERROR&details={str(e)[:100]}"
             )
 
+        # Fetch Google profile info and upsert user
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                profile_resp = await client.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {tokens['access_token']}"}
+                )
+                if profile_resp.status_code == 200:
+                    profile = profile_resp.json()
+                    user_name = profile.get("name", f"User {user_id}")
+                    user_email = profile.get("email")
+                else:
+                    user_name = state_data.get("user_name", f"User {user_id}")
+                    user_email = None
+        except Exception as e:
+            logger.warning(f"Failed to fetch Google profile for user {user_id}: {e}")
+            user_name = state_data.get("user_name", f"User {user_id}")
+            user_email = None
+
+        # Upsert user into tbl_clawdbot_users
+        try:
+            await db.upsert_user(
+                user_id=user_id,
+                name=user_name,
+                email=user_email,
+                google_connected=True
+            )
+        except Exception as e:
+            logger.warning(f"Failed to upsert user {user_id}: {e}")
+
         # Log the action (non-critical, don't fail if this fails)
         try:
             await db.log_action(
@@ -265,8 +295,17 @@ async def google_oauth_callback(
         logger.info(f"OAuth completed for user {user_id}")
 
         # Redirect to success page
+        # Only append /clawdbot/oauth for the Peppi website (base domain with no path)
+        # For custom redirect_uris (like playground's /oauth-callback), use as-is
+        base_url = redirect_uri
+        if redirect_uri == default_redirect and not any(
+            p in redirect_uri for p in ["/oauth-callback", "/callback"]
+        ):
+            base_url = f"{redirect_uri}/clawdbot/oauth"
+
+        separator = "&" if "?" in base_url else "?"
         return RedirectResponse(
-            url=f"{redirect_uri}/clawdbot/oauth?status=success&service=google"
+            url=f"{base_url}{separator}status=success&service=google&user_id={user_id}"
         )
         
     except Exception as e:
