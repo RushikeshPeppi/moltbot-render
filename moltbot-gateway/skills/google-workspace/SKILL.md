@@ -504,17 +504,11 @@ fi
 # Step 3: Extract reply body from user's request
 REPLY_BODY="<EXTRACTED_FROM_USER_REQUEST>"
 
-# Step 4: Build reply email with proper RFC 2822 threading headers
-REPLY_CONTENT="From: me
-To: ${TO_EMAIL}
-Subject: ${REPLY_SUBJECT}
-In-Reply-To: ${RFC_MESSAGE_ID}
-References: ${RFC_MESSAGE_ID}
-
-${REPLY_BODY}"
-
-# Base64url encode
-ENCODED=$(echo -n "$REPLY_CONTENT" | base64 | tr '+/' '-_' | tr -d '=')
+# Step 4: Build RFC 2822-compliant email using printf with explicit CRLF (\r\n)
+# CRITICAL: Gmail API requires \r\n line endings in the raw email — \n alone causes rejection
+ENCODED=$(printf "To: %s\r\nFrom: me\r\nSubject: %s\r\nIn-Reply-To: %s\r\nReferences: %s\r\n\r\n%s" \
+  "$TO_EMAIL" "$REPLY_SUBJECT" "$RFC_MESSAGE_ID" "$RFC_MESSAGE_ID" "$REPLY_BODY" \
+  | base64 | tr '+/' '-_' | tr -d '=')
 
 # Step 5: Send reply with threadId for proper threading
 curl -s -X POST \
