@@ -238,7 +238,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     }
 
     // Set thinking level
-    args.push('--thinking', 'medium');
+    args.push('--thinking', 'high');
 
     // Request JSON output
     args.push('--json');
