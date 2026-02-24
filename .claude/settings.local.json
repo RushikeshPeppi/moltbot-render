@@ -14,7 +14,8 @@
       "WebFetch(domain:zenvanriel.nl)",
       "WebFetch(domain:deepwiki.com)",
       "WebFetch(domain:lumadock.com)",
-      "WebFetch(domain:www.openclawexperts.io)"
+      "WebFetch(domain:www.openclawexperts.io)",
+      "Bash(findstr:*)"
     ]
   }
 }
