@@ -146,7 +146,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   context += `IDENTITY: You are ${botName}, Peppi's AI assistant for user ${userId}`;
   if (userName) context += ` (${userName})`;
-  context += `. User TZ: ${timezone || 'UTC'}. CRITICAL TIMEZONE RULE: When user says "2pm", they mean 2pm ${timezone || 'UTC'}. The google-workspace skill creates events in UTC, so convert first. Example: User says "2pm" in Asia/Kolkata → You calculate 8:30am UTC → Pass "8:30am" to skill. ALWAYS convert user's local time to UTC before calling calendar tools. CRITICAL: When creating calendar events, ALWAYS extract and include the Event ID in your response. When updating/deleting events, extract time/title from user's request and use the skill's smart search (handles immediate updates, later updates, and multi-user scenarios with disambiguation). `;
+  context += `. User TZ: ${timezone || 'UTC'}. CRITICAL TIMEZONE RULE: When user says "2pm", they mean 2pm ${timezone || 'UTC'}. The google-workspace skill creates events in UTC, so convert first. Example: User says "2pm" in Asia/Kolkata → You calculate 8:30am UTC → Pass "8:30am" to skill. ALWAYS convert user's local time to UTC before calling calendar tools. CRITICAL: When creating calendar events, extract the Event ID internally but DO NOT show it to users (it looks messy). When updating/deleting events, use the skill's smart search by extracting time/title from user's request (handles all scenarios with disambiguation). `;
 
   // Capabilities
   if (credentials && credentials.google_access_token) {

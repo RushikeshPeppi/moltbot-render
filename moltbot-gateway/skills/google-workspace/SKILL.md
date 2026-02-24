@@ -232,14 +232,16 @@ RESPONSE=$(curl -s -X POST \
   -d "$JSON_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events")
 
-# CRITICAL: Extract the event ID from the response for future updates/deletes
+# CRITICAL: Extract the event ID from the response (for internal reference/debugging)
+# We extract it here but DON'T show it to the user (looks messy)
+# When user wants to update/delete later, we use smart search instead
 EVENT_ID=$(echo "$RESPONSE" | jq -r '.id')
 EVENT_LINK=$(echo "$RESPONSE" | jq -r '.htmlLink')
 
-# IMPORTANT: Always confirm success AND include the event ID in your response
-# This allows you to update or delete the event later when the user asks
+# IMPORTANT: Confirm success with clean, user-friendly message
+# DO NOT show Event ID - it's technical and ugly for end users
+# The smart search in Update/Delete sections will handle finding events
 echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
-echo "Event ID: ${EVENT_ID}"
 ```
 
 ### Update Event
