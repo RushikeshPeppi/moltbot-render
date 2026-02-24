@@ -260,6 +260,16 @@ class CancelReminderRequest(BaseModel):
     reminder_id: int = Field(..., description="Reminder ID to cancel")
 
 
+class UpdateReminderRequest(BaseModel):
+    """Request to update an existing reminder"""
+    user_id: str = Field(..., description="User ID from Peppi system")
+    reminder_id: int = Field(..., description="Reminder ID to update")
+    message: Optional[str] = Field(None, description="New reminder message (if changing)")
+    trigger_at: Optional[str] = Field(None, description="New ISO 8601 datetime for when to fire (UTC)")
+    user_timezone: Optional[str] = Field(None, description="User's timezone (e.g., 'Asia/Kolkata')")
+    recurrence: Optional[str] = Field(None, description="New recurrence: none, daily, weekly, monthly")
+
+
 class DeliverReminderPayload(BaseModel):
     """Payload received from QStash when a reminder fires"""
     reminder_id: int

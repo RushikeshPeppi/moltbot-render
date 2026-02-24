@@ -15,6 +15,7 @@ from ..models import (
     ReminderData,
     ReminderListData,
     CancelReminderRequest,
+    UpdateReminderRequest,
     DeliverReminderPayload,
     success_response,
     error_response,
@@ -255,13 +256,15 @@ async def deliver_reminder(request: Request):
 
         # 6. Create audit log entry so the reminder appears in chat history
         # This ensures the reminder delivery persists and shows up when user refreshes/logs in again
+        # USER SIDE (request_summary) is blank - no user request, it's system-initiated
+        # AGENT SIDE (response_summary) has the full reminder message with special formatting
         reminder_delivery_message = f"⏰ Reminder: {payload.message}"
         try:
             await db.log_action(
                 user_id=payload.user_id,
                 session_id=f"reminder_{payload.reminder_id}",  # Unique session for reminder deliveries
                 action_type="reminder_delivery",
-                request_summary=f"[System] Reminder #{payload.reminder_id} triggered",
+                request_summary="",  # Blank - no user request for system-initiated reminders
                 response_summary=reminder_delivery_message,
                 status="success",
                 tokens_used=0,
@@ -392,6 +395,171 @@ async def cancel_reminder(request: CancelReminderRequest):
         logger.error(f"Error cancelling reminder {request.reminder_id}: {e}")
         return error_response(
             message="Failed to cancel reminder",
+            error="internal_error",
+            code=ResponseCode.INTERNAL_ERROR,
+            exception=str(e),
+        )
+
+
+@router.post(
+    "/reminders/update",
+    response_model=BaseResponse,
+    summary="Update an existing reminder",
+    description="Update reminder message, time, or recurrence. Cancels old QStash schedule "
+    "and creates new one with updated parameters.",
+    responses={
+        200: {"description": "Reminder updated successfully"},
+        404: {"description": "Reminder not found"},
+        400: {"description": "Invalid update parameters"},
+    },
+)
+async def update_reminder(request: UpdateReminderRequest):
+    """Update an existing reminder (message, time, or recurrence)."""
+    try:
+        # 1. Fetch the reminder
+        reminder = await db.get_reminder(request.reminder_id)
+        if not reminder:
+            return error_response(
+                message="Reminder not found",
+                error="not_found",
+                code=ResponseCode.NOT_FOUND,
+            )
+
+        # Verify ownership
+        if str(reminder.get("user_id")) != request.user_id:
+            return error_response(
+                message="Reminder does not belong to this user",
+                error="forbidden",
+                code=ResponseCode.FORBIDDEN,
+            )
+
+        # Check if already delivered or cancelled
+        current_status = reminder.get("status")
+        if current_status in ("cancelled", "delivered"):
+            return error_response(
+                message=f"Cannot update {current_status} reminder",
+                error="invalid_status",
+                code=ResponseCode.BAD_REQUEST,
+            )
+
+        # 2. Prepare updated fields
+        update_data = {}
+
+        # Update message if provided
+        if request.message:
+            update_data["message"] = request.message
+
+        # Update trigger time if provided
+        new_trigger_at_unix = None
+        if request.trigger_at:
+            # Convert to UTC
+            trigger_at_utc = local_to_utc(
+                request.trigger_at,
+                request.user_timezone or reminder.get("user_timezone", "UTC")
+            )
+            new_trigger_at_unix = int(trigger_at_utc.timestamp())
+
+            # Validate: trigger time must be in the future
+            if new_trigger_at_unix <= int(datetime.utcnow().timestamp()):
+                return error_response(
+                    message="New reminder time must be in the future",
+                    error="invalid_trigger_time",
+                    code=ResponseCode.BAD_REQUEST,
+                )
+
+            update_data["trigger_at"] = trigger_at_utc.isoformat()
+
+        # Update recurrence if provided
+        if request.recurrence:
+            update_data["recurrence"] = request.recurrence
+
+        # Update timezone if provided
+        if request.user_timezone:
+            update_data["user_timezone"] = request.user_timezone
+
+        # 3. Cancel old QStash schedule
+        if qstash_service.is_configured:
+            try:
+                qstash_message_id = reminder.get("qstash_message_id")
+                qstash_schedule_id = reminder.get("qstash_schedule_id")
+
+                if qstash_schedule_id:
+                    qstash_service.cancel_schedule(qstash_schedule_id)
+                    update_data["qstash_schedule_id"] = None
+                elif qstash_message_id:
+                    qstash_service.cancel_message(qstash_message_id)
+                    update_data["qstash_message_id"] = None
+            except Exception as qstash_error:
+                logger.warning(
+                    f"Could not cancel old QStash job for reminder {request.reminder_id}: {qstash_error}"
+                )
+
+        # 4. Create new QStash schedule with updated parameters
+        if qstash_service.is_configured:
+            updated_message = request.message or reminder.get("message")
+            updated_recurrence = request.recurrence or reminder.get("recurrence")
+            updated_timezone = request.user_timezone or reminder.get("user_timezone")
+
+            if updated_recurrence == "none":
+                # One-time reminder
+                trigger_unix = new_trigger_at_unix or int(datetime.fromisoformat(reminder.get("trigger_at")).timestamp())
+                message_id = qstash_service.schedule_one_time(
+                    reminder_id=request.reminder_id,
+                    user_id=request.user_id,
+                    message=updated_message,
+                    trigger_at_unix=trigger_unix,
+                )
+                update_data["qstash_message_id"] = message_id
+            else:
+                # Recurring reminder
+                trigger_dt = trigger_at_utc if request.trigger_at else datetime.fromisoformat(reminder.get("trigger_at"))
+                cron_expr = recurrence_to_cron(
+                    trigger_at=trigger_dt,
+                    recurrence=updated_recurrence,
+                    timezone=updated_timezone,
+                )
+                schedule_id = qstash_service.schedule_recurring(
+                    reminder_id=request.reminder_id,
+                    user_id=request.user_id,
+                    message=updated_message,
+                    cron_expression=cron_expr,
+                )
+                update_data["qstash_schedule_id"] = schedule_id
+
+        # 5. Update database
+        await db.update_reminder(request.reminder_id, update_data)
+
+        logger.info(f"Updated reminder {request.reminder_id} for user {request.user_id}")
+
+        # 6. Fetch updated reminder and return
+        updated_reminder = await db.get_reminder(request.reminder_id)
+
+        return success_response(
+            message="Reminder updated successfully",
+            data=ReminderData(
+                id=request.reminder_id,
+                user_id=request.user_id,
+                message=updated_reminder.get("message"),
+                trigger_at=updated_reminder.get("trigger_at"),
+                user_timezone=updated_reminder.get("user_timezone"),
+                recurrence=updated_reminder.get("recurrence"),
+                status=updated_reminder.get("status"),
+                created_at=updated_reminder.get("created_at", ""),
+                qstash_message_id=updated_reminder.get("qstash_message_id"),
+                qstash_schedule_id=updated_reminder.get("qstash_schedule_id"),
+            ),
+        )
+
+    except ValueError as e:
+        return error_response(
+            message=str(e),
+            error="validation_error",
+            code=ResponseCode.BAD_REQUEST,
+        )
+    except Exception as e:
+        logger.error(f"Error updating reminder {request.reminder_id}: {e}")
+        return error_response(
+            message="Failed to update reminder",
             error="internal_error",
             code=ResponseCode.INTERNAL_ERROR,
             exception=str(e),

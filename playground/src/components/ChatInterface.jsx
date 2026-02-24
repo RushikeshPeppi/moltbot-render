@@ -73,7 +73,7 @@ export default function ChatInterface() {
 
                 const historyMessages = [];
                 for (const log of sorted) {
-                    // User turn
+                    // User turn (skip if empty - e.g., system-initiated reminders)
                     if (log.request_summary) {
                         historyMessages.push({
                             role: 'user',
@@ -90,6 +90,8 @@ export default function ChatInterface() {
                             timestamp: log.created_at,
                             fromHistory: true,
                             actionType: log.action_type,
+                            // Apply special reminder styling if this is a reminder delivery
+                            isReminderDelivery: log.action_type === 'reminder_delivery',
                         });
                     }
                 }
