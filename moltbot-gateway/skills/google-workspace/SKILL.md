@@ -193,11 +193,11 @@ TIME_PART="<EXTRACTED_TIME>"  # e.g., "18:00", "14:00"
 DURATION_MINUTES=<EXTRACTED_OR_DEFAULT_60>
 ATTENDEE_EMAIL="<EXTRACTED_OR_ASK_USER>"
 
-# Calculate start time dynamically
-EVENT_START=$(date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
+# Calculate start time dynamically (convert user's local time to UTC)
+EVENT_START=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
 
 # Calculate end time (start + duration)
-EVENT_END=$(date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+EVENT_END=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
 
 # Build JSON payload dynamically
 JSON_PAYLOAD=$(cat <<EOF
@@ -206,11 +206,11 @@ JSON_PAYLOAD=$(cat <<EOF
   "description": "<OPTIONAL_FROM_CONTEXT>",
   "start": {
     "dateTime": "${EVENT_START}",
-    "timeZone": "UTC"
+    "timeZone": "$USER_TIMEZONE"
   },
   "end": {
     "dateTime": "${EVENT_END}",
-    "timeZone": "UTC"
+    "timeZone": "$USER_TIMEZONE"
   }
 }
 EOF

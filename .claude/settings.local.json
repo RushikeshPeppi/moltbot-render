@@ -15,7 +15,8 @@
       "WebFetch(domain:deepwiki.com)",
       "WebFetch(domain:lumadock.com)",
       "WebFetch(domain:www.openclawexperts.io)",
-      "Bash(findstr:*)"
+      "Bash(findstr:*)",
+      "WebFetch(domain:moltbot-fastapi.onrender.com)"
     ]
   }
 }
