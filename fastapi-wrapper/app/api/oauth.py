@@ -230,13 +230,17 @@ async def google_oauth_callback(
         
         # Store tokens
         try:
+            # Log the actual scopes received from Google (for debugging)
+            received_scope = tokens.get('scope', '')
+            logger.info(f"OAuth token received for user {user_id} with scopes: {received_scope}")
+
             stored = await credential_manager.store_google_tokens(
                 user_id=user_id,
                 access_token=tokens['access_token'],
                 refresh_token=tokens.get('refresh_token', ''),
                 expires_in=tokens.get('expires_in', 3600),
                 token_type=tokens.get('token_type', 'Bearer'),
-                scope=tokens.get('scope', '')
+                scope=received_scope
             )
 
             if not stored:

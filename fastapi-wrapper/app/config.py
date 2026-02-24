@@ -35,7 +35,10 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     GOOGLE_REDIRECT_URI: str = os.getenv("GOOGLE_REDIRECT_URI", "")
     GOOGLE_SCOPES: List[str] = [
-        "https://www.googleapis.com/auth/calendar",
+        "openid",                                            # OpenID for user identity
+        "https://www.googleapis.com/auth/userinfo.profile",  # User profile info
+        "https://www.googleapis.com/auth/userinfo.email",    # User email
+        "https://www.googleapis.com/auth/calendar",         # Google Calendar access
         "https://www.googleapis.com/auth/gmail.readonly",   # Read emails, check inbox
         "https://www.googleapis.com/auth/gmail.modify",     # Modify emails (mark as read, etc.)
         "https://www.googleapis.com/auth/gmail.send"        # Send emails
