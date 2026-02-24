@@ -1,19 +1,20 @@
 ---
 name: reminders
-description: Reminders and scheduled notifications - remind me, set reminder, create reminder, remind tomorrow, remind at, set alarm, notify me, reminder list, show reminders, my reminders, cancel reminder, delete reminder, stop reminder, remove reminder, recurring reminder, daily reminder, weekly reminder, monthly reminder, every day, every week, every monday, remind me to, don't let me forget, alert me, schedule reminder
+description: Reminders and scheduled notifications - remind me, set reminder, create reminder, remind tomorrow, remind at, set alarm, notify me, reminder list, show reminders, my reminders, update reminder, change reminder, modify reminder, cancel reminder, delete reminder, stop reminder, remove reminder, recurring reminder, daily reminder, weekly reminder, monthly reminder, every day, every week, every monday, remind me to, don't let me forget, alert me, schedule reminder
 user-invocable: true
 metadata: {"openclaw": {"emoji": "⏰"}}
 ---
 
-# Reminders — Set, List & Cancel via Moltbot API
+# Reminders — Set, List, Update & Cancel via Moltbot API
 
-🎯 **Manages reminders by calling the Moltbot FastAPI backend. Supports one-time and recurring reminders (daily, weekly, monthly).**
+🎯 **Manages reminders by calling the Moltbot FastAPI backend. Supports one-time and recurring reminders (daily, weekly, monthly). Can update existing reminders.**
 
 ## ⚡ When to Use This Skill
 
 Use this skill when the user asks about:
 - **Setting reminders**: "remind me", "set a reminder", "remind me tomorrow at 2pm to buy milk", "notify me at 6pm", "don't let me forget"
 - **Listing reminders**: "show my reminders", "what reminders do I have", "list my reminders"
+- **Updating reminders**: "change reminder to 10am", "update my daily reminder", "modify the reminder time", "change that reminder to 3pm"
 - **Cancelling reminders**: "cancel my reminder", "delete reminder", "stop the reminder", "remove reminder"
 - **Recurring reminders**: "remind me every day at 9am", "set a daily reminder", "weekly reminder every Monday"
 
@@ -178,6 +179,66 @@ echo "$RESPONSE"
 
 Convert UTC times back to the user's local timezone for display.
 
+## 🔄 UPDATE A REMINDER
+
+When user says: "Change reminder #1 to 3pm" or "Update my daily reminder to 10am" or "Change the reminder time to 10am"
+
+**IMPORTANT: Use the UPDATE endpoint instead of cancelling and recreating!**
+
+**Steps:**
+1. **First list reminders** to find the correct one (if user doesn't provide ID)
+2. **Extract what needs to be updated**: message, time, or recurrence
+3. **Call update API with PROPER TIMEZONE CONVERSION**
+
+```bash
+# Extract reminder ID
+REMINDER_ID=<FROM_LIST_OR_USER_REQUEST>
+
+# CRITICAL: Convert user's local time to UTC (if updating time)
+# When user says "change to 10am", they mean 10am in THEIR timezone
+NEW_TIME="<EXTRACTED_TIME>"  # e.g., "10:00", "14:00"
+DATE_PART="<EXTRACTED_DATE_OR_TOMORROW>"  # e.g., "tomorrow", "next Monday", "today"
+
+# ALWAYS run this timezone conversion command FIRST
+# This converts user's local time to UTC
+TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+
+# Update the reminder with the UTC time
+RESPONSE=$(curl -s -X POST \
+  "${FASTAPI_URL}/api/v1/reminders/update" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"user_id\": \"${MOLTBOT_USER_ID}\",
+    \"reminder_id\": ${REMINDER_ID},
+    \"trigger_at\": \"${TRIGGER_AT}\",
+    \"user_timezone\": \"${USER_TIMEZONE}\",
+    \"recurrence\": \"daily\"
+  }")
+
+echo "$RESPONSE"
+
+# Confirm to user with their LOCAL time, not UTC
+echo "✅ Reminder #${REMINDER_ID} updated to ${NEW_TIME}"
+```
+
+**Optional fields in update request (include only what's changing):**
+- `message`: New reminder text (omit if not changing)
+- `trigger_at`: New UTC time (omit if not changing time)
+- `recurrence`: New recurrence: "none", "daily", "weekly", "monthly" (omit if not changing)
+- `user_timezone`: User's timezone (always include if changing time)
+
+**Example: Update only the message**
+```bash
+RESPONSE=$(curl -s -X POST \
+  "${FASTAPI_URL}/api/v1/reminders/update" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"user_id\": \"${MOLTBOT_USER_ID}\",
+    \"reminder_id\": ${REMINDER_ID},
+    \"message\": \"new reminder text\"
+  }")
+```
+
 ## ❌ CANCEL A REMINDER
 
 When user says: "Cancel my reminder" or "Delete reminder #1" or "Stop the daily medicine reminder"
@@ -236,10 +297,12 @@ After executing API calls:
 ## 🚨 CRITICAL RULES
 
 1. **NEVER use hardcoded values** — ALWAYS extract from user's actual request
-2. **ALWAYS convert to UTC** — Use $USER_TIMEZONE to convert local times to UTC for the API
-3. **ALWAYS confirm actions** — Tell the user what was set, when, and the recurrence
-4. **ASK for missing information** — If the user doesn't specify a time, ask: "What time should I remind you?"
-5. **PARSE natural language** — Understand "tomorrow", "next week", "in 2 hours", "every Monday"
-6. **DISPLAY times in user's timezone** — When showing reminders, convert UTC back to local
-7. **LIST before cancelling** — If user says "cancel my reminder" without an ID, list reminders first
-8. **FORMAT responses** in a user-friendly way with emojis and clear structure
+2. **TIMEZONE CONVERSION IS MANDATORY** — When user says "10am", they mean 10am in $USER_TIMEZONE (NOT UTC). YOU MUST run: `TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ)` to convert to UTC. DO NOT skip this step or you will schedule reminders at the wrong time!
+3. **USE UPDATE ENDPOINT for changes** — When user wants to change a reminder time/message, use `/api/v1/reminders/update` instead of cancelling and recreating
+4. **ALWAYS confirm actions** — Tell the user what was set, when, and the recurrence (in THEIR timezone)
+5. **ASK for missing information** — If the user doesn't specify a time, ask: "What time should I remind you?"
+6. **PARSE natural language** — Understand "tomorrow", "next week", "in 2 hours", "every Monday"
+7. **DISPLAY times in user's timezone** — When showing reminders, convert UTC back to local time for readability
+8. **LIST before cancelling/updating** — If user says "cancel my reminder" or "update my reminder" without an ID, list reminders first to confirm which one
+9. **FORMAT responses** in a user-friendly way with emojis and clear structure
+10. **EXECUTE the bash commands** — DO NOT just describe or acknowledge the commands - ACTUALLY RUN THEM
