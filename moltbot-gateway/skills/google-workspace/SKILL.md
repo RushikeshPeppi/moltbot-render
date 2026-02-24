@@ -226,33 +226,46 @@ if [ -n "$ATTENDEE_EMAIL" ]; then
   JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg email "$ATTENDEE_EMAIL" '. + {attendees: [{email: $email}]}')
 fi
 
-curl -s -X POST \
+RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events")
 
-# IMPORTANT: Always confirm success
+# CRITICAL: Extract the event ID from the response for future updates/deletes
+EVENT_ID=$(echo "$RESPONSE" | jq -r '.id')
+EVENT_LINK=$(echo "$RESPONSE" | jq -r '.htmlLink')
+
+# IMPORTANT: Always confirm success AND include the event ID in your response
+# This allows you to update or delete the event later when the user asks
 echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
+echo "Event ID: ${EVENT_ID}"
 ```
 
 ### Update Event
 
-When user says: "Change my 2 PM meeting to 3 PM" or "Update the Marvin meeting to tomorrow"
+When user says: "Change my 2 PM meeting to 3 PM" or "Update the Marvin meeting to tomorrow" or "Change the time to 9PM"
 
 **CRITICAL: Updating is complex and error-prone. Use the full flow below to ensure success.**
 
+**SMART EVENT ID EXTRACTION:**
+- **If user just created an event** and says "change the time" → Look in YOUR OWN recent responses for "Event ID: xyz" and use that directly (skip search)
+- **If user mentions event by name/time** → Search for it using the Calendar API
+- **ALWAYS check your recent conversation history FIRST** before searching
+
 **Steps:**
-1. **Search for the event** using time/title from user's request
-2. **Show the user what you found** and confirm it's the right event
-3. **Extract the full event data** including EVENT_ID
-4. **Parse what to update** from user's request
-5. **Fetch the current event** to preserve all fields
-6. **Build the update payload** with ONLY the fields that changed
-7. **Update the event** and confirm success
+1. **Get the EVENT_ID** (from recent conversation history OR search)
+2. **Parse what to update** from user's request
+3. **Fetch the current event** to preserve all fields
+4. **Build the update payload** with ONLY the fields that changed
+5. **Update the event** and confirm success
 
 ```bash
-# Step 1: Find the event (search by title or date range)
+# SMART Step 1: Try to find EVENT_ID in recent conversation first
+# If you recently created an event and said "Event ID: abc123xyz", use that!
+# Check your last 3-5 messages for "Event ID: <id>" pattern
+
+# If EVENT_ID not found in history, search for the event:
 # Extract search criteria from user's request
 SEARCH_QUERY="<KEYWORD_FROM_REQUEST>"  # e.g., "Marvin" or "Testing Peppi"
 
