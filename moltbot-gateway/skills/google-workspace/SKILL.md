@@ -33,13 +33,40 @@ Parse user input to extract:
 - **Time**: "at 6pm", "at 14:00", "2 PM", "noon", "morning" (default 9am), "afternoon" (default 2pm)
 - **Duration**: Default 1 hour if not specified. "30 minute meeting" = 30min, "2 hour call" = 2hr
 
-Calculate dates dynamically using `date` command:
-- Today: `$(date -u +%Y-%m-%dT00:00:00Z)`
-- Tomorrow: `$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)`
-- Specific date: `$(date -u -d '2026-02-15' +%Y-%m-%dT00:00:00Z)`
-- Specific datetime: `$(date -u -d 'tomorrow 18:00' +%Y-%m-%dT%H:%M:%SZ)` (for 6 PM tomorrow)
-- Next week: `$(date -u -d '+1 week' +%Y-%m-%dT00:00:00Z)`
-- This week range: `$(date -u -d 'monday this week' +%Y-%m-%dT00:00:00Z)` to `$(date -u -d 'sunday this week' +%Y-%m-%dT23:59:59Z)`
+### 🚨 TIMEZONE HANDLING - CRITICAL RULES
+
+**Rule 1: User speaks in their LOCAL timezone ($USER_TIMEZONE), NOT UTC**
+- When user says "tomorrow at 2pm", they mean 2pm in THEIR timezone
+- You MUST convert this to UTC for the Calendar API
+- Use `TZ="$USER_TIMEZONE"` when parsing user input
+
+**Rule 2: "Tomorrow" depends on when the user is speaking**
+- If conversation happens at 11:30 PM on Monday night:
+  - "Tomorrow" = Tuesday (the next calendar day from their perspective)
+  - "Today" = Monday (even though it might be early Tuesday UTC)
+- Always calculate relative dates from the user's current time in THEIR timezone
+
+**Rule 3: When updating/deleting events, search in the user's timezone context**
+- If user says "my meeting tomorrow", search for events on tomorrow in THEIR timezone
+- Don't search by UTC date - you'll get the wrong day
+
+Calculate dates dynamically using `date` command WITH timezone context:
+
+```bash
+# CORRECT: Use user's timezone for date calculations
+TZ="$USER_TIMEZONE" date -d "tomorrow 14:00"  # → User's tomorrow at 2pm
+TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ  # → Convert to UTC for API
+
+# WRONG: Using UTC for user-facing dates
+date -u -d "tomorrow 14:00"  # ❌ This is tomorrow UTC, not user's tomorrow!
+```
+
+Common date patterns (ALWAYS use `TZ="$USER_TIMEZONE"`):
+- Today: `$(TZ="$USER_TIMEZONE" date -u -d "today" +%Y-%m-%dT00:00:00Z)`
+- Tomorrow: `$(TZ="$USER_TIMEZONE" date -u -d "tomorrow" +%Y-%m-%dT00:00:00Z)`
+- Tomorrow at 2pm: `$(TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ)`
+- Next Tuesday at 6pm: `$(TZ="$USER_TIMEZONE" date -u -d "next Tuesday 18:00" +%Y-%m-%dT%H:%M:%SZ)`
+- In 3 days: `$(TZ="$USER_TIMEZONE" date -u -d "+3 days" +%Y-%m-%dT00:00:00Z)`
 
 Time conversion rules:
 - "6pm" → 18:00
@@ -47,6 +74,21 @@ Time conversion rules:
 - "noon" → 12:00
 - "midnight" → 00:00
 - No time specified → default to 9:00 for morning, 14:00 for afternoon
+
+### 🎯 Example: Handling "tomorrow at 2pm" correctly
+
+```bash
+# User is in Asia/Kolkata (UTC+5:30), it's Monday 11:30 PM
+# They say "create a meeting tomorrow at 2pm"
+
+# CORRECT approach:
+TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ
+# → Output: 2026-02-25T08:30:00Z (Tuesday 2pm IST = Tuesday 8:30am UTC)
+
+# WRONG approach:
+date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ
+# → Output: 2026-02-25T14:00:00Z (Tuesday 2pm UTC, which is 7:30pm IST - WRONG!)
+```
 
 ### List Events (Today/Tomorrow/This Week/Range)
 
@@ -198,39 +240,132 @@ echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_STA
 
 When user says: "Change my 2 PM meeting to 3 PM" or "Update the Marvin meeting to tomorrow"
 
+**CRITICAL: Updating is complex and error-prone. Use the full flow below to ensure success.**
+
 **Steps:**
 1. **Search for the event** using time/title from user's request
-2. **Extract the EVENT_ID** from search results
-3. **Parse what to update** from user's request:
-   - Time change: "2 PM to 3 PM" → update start/end times
-   - Date change: "move to tomorrow" → update date
-   - Title change: "rename to Project Review" → update summary
-4. **Calculate new values dynamically**
+2. **Show the user what you found** and confirm it's the right event
+3. **Extract the full event data** including EVENT_ID
+4. **Parse what to update** from user's request
+5. **Fetch the current event** to preserve all fields
+6. **Build the update payload** with ONLY the fields that changed
+7. **Update the event** and confirm success
 
 ```bash
-# Step 1: Find the event (search by time or title)
-SEARCH_TERM="<FROM_USER_REQUEST>"
+# Step 1: Find the event (search by title or date range)
+# Extract search criteria from user's request
+SEARCH_QUERY="<KEYWORD_FROM_REQUEST>"  # e.g., "Marvin" or "Testing Peppi"
 
-# Step 2: Extract EVENT_ID from search results
-EVENT_ID="<FROM_SEARCH_RESULTS>"
+# Search for the event
+SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime")
 
-# Step 3: Parse what to update
-NEW_TIME="<IF_TIME_CHANGED>"
-NEW_DATE="<IF_DATE_CHANGED>"
-NEW_TITLE="<IF_TITLE_CHANGED>"
-
-# Step 4: Calculate new values
-if [ -n "$NEW_TIME" ] || [ -n "$NEW_DATE" ]; then
-  NEW_START=$(date -u -d "${NEW_DATE} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
-  NEW_END=$(date -u -d "${NEW_DATE} ${NEW_TIME} + 60 minutes" +%Y-%m-%dT%H:%M:%SZ)
+# Check if any events found
+EVENT_COUNT=$(echo "$SEARCH_RESPONSE" | jq '.items | length')
+if [ "$EVENT_COUNT" -eq 0 ]; then
+  echo "❌ No events found matching '${SEARCH_QUERY}'"
+  exit 1
 fi
 
-# Build update payload dynamically
-UPDATE_PAYLOAD="{"
-[ -n "$NEW_TITLE" ] && UPDATE_PAYLOAD="$UPDATE_PAYLOAD\"summary\": \"${NEW_TITLE}\","
-[ -n "$NEW_START" ] && UPDATE_PAYLOAD="$UPDATE_PAYLOAD\"start\": {\"dateTime\": \"${NEW_START}\", \"timeZone\": \"UTC\"},"
-[ -n "$NEW_END" ] && UPDATE_PAYLOAD="$UPDATE_PAYLOAD\"end\": {\"dateTime\": \"${NEW_END}\", \"timeZone\": \"UTC\"}"
-UPDATE_PAYLOAD="$UPDATE_PAYLOAD}"
+# Step 2: Show user what was found and extract EVENT_ID from the first match
+echo "Found ${EVENT_COUNT} matching event(s):"
+echo "$SEARCH_RESPONSE" | jq -r '.items[0] | "- \(.summary) at \(.start.dateTime // .start.date)"'
+
+EVENT_ID=$(echo "$SEARCH_RESPONSE" | jq -r '.items[0].id')
+
+# Step 3: Fetch the full current event to preserve all fields
+CURRENT_EVENT=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
+
+# Step 4: Parse what the user wants to change
+# Extract NEW_DATE and NEW_TIME from user's request
+NEW_DATE="<PARSE_FROM_REQUEST>"  # e.g., "tomorrow", "2026-02-24"
+NEW_TIME="<PARSE_FROM_REQUEST>"  # e.g., "14:00", "2pm"
+
+# Step 5: Calculate new datetime in UTC
+# CRITICAL: User speaks in their local timezone ($USER_TIMEZONE), convert to UTC
+NEW_START=$(TZ="$USER_TIMEZONE" date -u -d "${NEW_DATE} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+
+# Calculate duration from current event to preserve it
+CURRENT_START=$(echo "$CURRENT_EVENT" | jq -r '.start.dateTime')
+CURRENT_END=$(echo "$CURRENT_EVENT" | jq -r '.end.dateTime')
+START_EPOCH=$(date -d "$CURRENT_START" +%s)
+END_EPOCH=$(date -d "$CURRENT_END" +%s)
+DURATION_MINUTES=$(( (END_EPOCH - START_EPOCH) / 60 ))
+
+# Calculate new end time based on original duration
+NEW_END=$(date -u -d "$NEW_START + $DURATION_MINUTES minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+# Step 6: Build update payload using jq for safety
+UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
+  --arg newStart "$NEW_START" \
+  --arg newEnd "$NEW_END" \
+  '{
+    summary: .summary,
+    description: .description,
+    location: .location,
+    attendees: .attendees,
+    start: {
+      dateTime: $newStart,
+      timeZone: "UTC"
+    },
+    end: {
+      dateTime: $newEnd,
+      timeZone: "UTC"
+    },
+    reminders: .reminders
+  }')
+
+# Step 7: Update the event
+UPDATE_RESPONSE=$(curl -s -X PUT \
+  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$UPDATE_PAYLOAD" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
+
+# Step 8: Check for errors
+if echo "$UPDATE_RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
+  ERROR_MSG=$(echo "$UPDATE_RESPONSE" | jq -r '.error.message')
+  echo "❌ Failed to update event: $ERROR_MSG"
+  exit 1
+fi
+
+# IMPORTANT: Always confirm success with details
+UPDATED_SUMMARY=$(echo "$UPDATE_RESPONSE" | jq -r '.summary')
+UPDATED_TIME=$(echo "$UPDATE_RESPONSE" | jq -r '.start.dateTime')
+echo "✅ Calendar event '${UPDATED_SUMMARY}' updated successfully to ${UPDATED_TIME}"
+```
+
+**Alternative: Simple Time-Only Update**
+
+If you ONLY need to change the time (not date), use this simpler approach:
+
+```bash
+# Find today's or tomorrow's events by title
+TITLE_SEARCH="<EVENT_TITLE>"
+TIME_MIN=$(date -u +%Y-%m-%dT00:00:00Z)
+TIME_MAX=$(date -u -d '+2 days' +%Y-%m-%dT23:59:59Z)
+
+EVENTS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_MIN}&timeMax=${TIME_MAX}&q=${TITLE_SEARCH}&singleEvents=true")
+
+EVENT_ID=$(echo "$EVENTS" | jq -r '.items[0].id')
+CURRENT_EVENT=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
+
+# Parse new time from user request
+NEW_TIME_LOCAL="<USER_TIME>"  # e.g., "15:00" for 3 PM
+CURRENT_DATE=$(echo "$CURRENT_EVENT" | jq -r '.start.dateTime' | cut -d'T' -f1)
+
+# Combine current date with new time in user's timezone, then convert to UTC
+NEW_START=$(TZ="$USER_TIMEZONE" date -u -d "${CURRENT_DATE} ${NEW_TIME_LOCAL}" +%Y-%m-%dT%H:%M:%SZ)
+NEW_END=$(TZ="$USER_TIMEZONE" date -u -d "${CURRENT_DATE} ${NEW_TIME_LOCAL} + 60 minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+# Update with jq
+UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
+  --arg start "$NEW_START" \
+  --arg end "$NEW_END" \
+  '.start.dateTime = $start | .end.dateTime = $end')
 
 curl -s -X PUT \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
@@ -238,34 +373,120 @@ curl -s -X PUT \
   -d "$UPDATE_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
 
-# IMPORTANT: Always confirm success
-echo "✅ Calendar event updated successfully"
+echo "✅ Updated to ${NEW_TIME_LOCAL}"
 ```
 
 ### Delete Event
 
 When user says: "Cancel my meeting with Marvin" or "Delete the 2 PM appointment"
 
+**CRITICAL: Always show what you're about to delete before deleting it.**
+
 **Steps:**
 1. **Search for the event** using details from user's request
-2. **Confirm with user** which event to delete (show title, time, date)
+2. **Show the user what you found** (title, time, attendees)
 3. **Extract EVENT_ID** from search results
-4. **Delete the event**
+4. **Delete the event** and handle errors
+5. **Confirm deletion**
 
 ```bash
 # Step 1: Search for event based on user's description
-SEARCH_TERM="<FROM_USER_REQUEST>"
+# Extract search criteria from user's request
+SEARCH_QUERY="<KEYWORD_FROM_REQUEST>"  # e.g., "Marvin" or "Testing Peppi"
 
-# Step 2: Get EVENT_ID from search results
-EVENT_ID="<FROM_SEARCH_RESULTS>"
+# Option A: Search by keyword (works for title, attendee names, etc.)
+SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
 
-# Step 3: Delete
+# Option B: Search by specific date/time if user mentions a time
+# If user says "delete the 2 PM meeting", search for events at that time
+# TIME_SEARCH_START=$(TZ="$USER_TIMEZONE" date -u -d "today 14:00" +%Y-%m-%dT%H:%M:%SZ)
+# TIME_SEARCH_END=$(TZ="$USER_TIMEZONE" date -u -d "today 15:00" +%Y-%m-%dT%H:%M:%SZ)
+# SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+#   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_SEARCH_START}&timeMax=${TIME_SEARCH_END}&singleEvents=true")
+
+# Step 2: Check if any events found
+EVENT_COUNT=$(echo "$SEARCH_RESPONSE" | jq '.items | length')
+if [ "$EVENT_COUNT" -eq 0 ]; then
+  echo "❌ No events found matching '${SEARCH_QUERY}'"
+  exit 1
+fi
+
+# Step 3: Show what was found
+echo "Found ${EVENT_COUNT} matching event(s):"
+FOUND_EVENT=$(echo "$SEARCH_RESPONSE" | jq -r '.items[0]')
+EVENT_TITLE=$(echo "$FOUND_EVENT" | jq -r '.summary')
+EVENT_TIME=$(echo "$FOUND_EVENT" | jq -r '.start.dateTime // .start.date')
+EVENT_ATTENDEES=$(echo "$FOUND_EVENT" | jq -r '.attendees[]?.email // empty' | paste -sd ',' -)
+
+echo "📅 Event: $EVENT_TITLE"
+echo "🕐 Time: $EVENT_TIME"
+[ -n "$EVENT_ATTENDEES" ] && echo "👥 Attendees: $EVENT_ATTENDEES"
+
+# Step 4: Extract EVENT_ID
+EVENT_ID=$(echo "$FOUND_EVENT" | jq -r '.id')
+
+if [ -z "$EVENT_ID" ] || [ "$EVENT_ID" = "null" ]; then
+  echo "❌ Failed to extract event ID"
+  exit 1
+fi
+
+# Step 5: Delete the event
+DELETE_RESPONSE=$(curl -s -w "\n%{http_code}" -X DELETE \
+  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
+
+# Extract HTTP status code (last line)
+HTTP_CODE=$(echo "$DELETE_RESPONSE" | tail -n1)
+RESPONSE_BODY=$(echo "$DELETE_RESPONSE" | sed '$d')
+
+# Step 6: Check for errors
+if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
+  echo "✅ Calendar event '${EVENT_TITLE}' deleted successfully"
+else
+  echo "❌ Failed to delete event (HTTP $HTTP_CODE)"
+  if [ -n "$RESPONSE_BODY" ]; then
+    ERROR_MSG=$(echo "$RESPONSE_BODY" | jq -r '.error.message // empty')
+    [ -n "$ERROR_MSG" ] && echo "Error: $ERROR_MSG"
+  fi
+  exit 1
+fi
+```
+
+**Safer Alternative: Delete by Date + Title**
+
+If you know the approximate date and title, use this more targeted approach:
+
+```bash
+# Search for events on a specific date with a specific title
+TARGET_DATE="<DATE_FROM_REQUEST>"  # e.g., "tomorrow", "2026-02-24"
+EVENT_TITLE_SEARCH="<TITLE_FROM_REQUEST>"  # e.g., "Testing Peppi"
+
+# Calculate date range (whole day in user's timezone)
+DAY_START=$(TZ="$USER_TIMEZONE" date -u -d "$TARGET_DATE 00:00" +%Y-%m-%dT%H:%M:%SZ)
+DAY_END=$(TZ="$USER_TIMEZONE" date -u -d "$TARGET_DATE 23:59" +%Y-%m-%dT%H:%M:%SZ)
+
+# Search for events
+EVENTS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${DAY_START}&timeMax=${DAY_END}&q=${EVENT_TITLE_SEARCH}&singleEvents=true")
+
+# Extract first matching event
+EVENT_ID=$(echo "$EVENTS" | jq -r '.items[0].id')
+EVENT_TITLE=$(echo "$EVENTS" | jq -r '.items[0].summary')
+
+if [ -z "$EVENT_ID" ] || [ "$EVENT_ID" = "null" ]; then
+  echo "❌ No event found with title '${EVENT_TITLE_SEARCH}' on ${TARGET_DATE}"
+  exit 1
+fi
+
+echo "Deleting: $EVENT_TITLE"
+
+# Delete
 curl -s -X DELETE \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
 
-# IMPORTANT: Always confirm success
-echo "✅ Calendar event deleted successfully"
+echo "✅ Event deleted successfully"
 ```
 
 ## 📧 GMAIL API

@@ -10,7 +10,11 @@
       "WebFetch(domain:developers.google.com)",
       "WebFetch(domain:github.com)",
       "Bash(dir:*)",
-      "Bash(git show:*)"
+      "Bash(git show:*)",
+      "WebFetch(domain:zenvanriel.nl)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:lumadock.com)",
+      "WebFetch(domain:www.openclawexperts.io)"
     ]
   }
 }

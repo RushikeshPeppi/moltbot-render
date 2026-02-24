@@ -253,7 +253,25 @@ async def deliver_reminder(request: Request):
             "delivered_at": datetime.utcnow().isoformat(),
         })
 
-        # 6. Push playground notification so the frontend chat window shows the reminder
+        # 6. Create audit log entry so the reminder appears in chat history
+        # This ensures the reminder delivery persists and shows up when user refreshes/logs in again
+        reminder_delivery_message = f"⏰ Reminder: {payload.message}"
+        try:
+            await db.log_action(
+                user_id=payload.user_id,
+                session_id=f"reminder_{payload.reminder_id}",  # Unique session for reminder deliveries
+                action_type="reminder_delivery",
+                request_summary=f"[System] Reminder #{payload.reminder_id} triggered",
+                response_summary=reminder_delivery_message,
+                status="success",
+                tokens_used=0,
+            )
+            logger.info(f"Audit log created for reminder {payload.reminder_id} delivery")
+        except Exception as log_error:
+            logger.warning(f"Could not create audit log for reminder {payload.reminder_id}: {log_error}")
+
+        # 7. Push playground notification so the frontend chat window shows the reminder immediately
+        # (without waiting for history refresh)
         try:
             await redis_client.push_playground_message(payload.user_id, {
                 "type": "reminder_delivery",
