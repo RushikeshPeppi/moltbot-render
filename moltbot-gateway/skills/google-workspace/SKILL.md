@@ -248,26 +248,90 @@ When user says: "Change my 2 PM meeting to 3 PM" or "Update the Marvin meeting t
 
 **CRITICAL: Updating is complex and error-prone. Use the full flow below to ensure success.**
 
-**SMART EVENT ID EXTRACTION:**
-- **If user just created an event** and says "change the time" → Look in YOUR OWN recent responses for "Event ID: xyz" and use that directly (skip search)
-- **If user mentions event by name/time** → Search for it using the Calendar API
-- **ALWAYS check your recent conversation history FIRST** before searching
+**STRATEGY: Smart Search + Disambiguation + Confirmation**
+
+This approach works for ALL scenarios (scalable, multi-tenant):
+- ✅ Immediate update (just created event → use recent Event ID if available)
+- ✅ Later update (created hours ago → search by time/title)
+- ✅ Multiple events (disambiguate by showing options)
+- ✅ Multi-tenant (search scoped to user's calendar automatically)
 
 **Steps:**
-1. **Get the EVENT_ID** (from recent conversation history OR search)
-2. **Parse what to update** from user's request
-3. **Fetch the current event** to preserve all fields
-4. **Build the update payload** with ONLY the fields that changed
-5. **Update the event** and confirm success
+1. **Extract search criteria** from user's request (time, title, date)
+2. **Search for matching events** using smart time-based or keyword-based search
+3. **Handle results**: single match → confirm and proceed, multiple → ask user to clarify
+4. **Once EVENT_ID confirmed**, parse updates, fetch current event, build payload, update
+5. **Confirm success** with updated details
 
 ```bash
-# SMART Step 1: Try to find EVENT_ID in recent conversation first
-# If you recently created an event and said "Event ID: abc123xyz", use that!
-# Check your last 3-5 messages for "Event ID: <id>" pattern
+# Step 1: Extract search criteria from user's request
+# CRITICAL: Parse what the user mentions to build targeted search
+# - "my 4pm meeting" → SEARCH_TIME="16:00"
+# - "the code review" → SEARCH_QUERY="code review"
+# - "meeting with Marvin" → SEARCH_QUERY="Marvin"
+# - "tomorrow's standup" → SEARCH_DATE="tomorrow", SEARCH_QUERY="standup"
 
-# If EVENT_ID not found in history, search for the event:
-# Extract search criteria from user's request
-SEARCH_QUERY="<KEYWORD_FROM_REQUEST>"  # e.g., "Marvin" or "Testing Peppi"
+SEARCH_TIME="<EXTRACTED_TIME_IF_MENTIONED>"  # e.g., "16:00", "14:00" in 24h format
+SEARCH_QUERY="<EXTRACTED_KEYWORDS>"  # e.g., "Marvin", "code review"
+SEARCH_DATE="<EXTRACTED_DATE_OR_TODAY>"  # e.g., "today", "tomorrow"
+
+# Step 2: Search for events based on criteria
+# OPTION A: If user mentioned specific time, search around that time window
+if [ -n "$SEARCH_TIME" ]; then
+  # Convert user's local time to UTC
+  SEARCH_TIME_UTC=$(TZ="$USER_TIMEZONE" date -u -d "$SEARCH_DATE $SEARCH_TIME" +%Y-%m-%dT%H:%M:%SZ)
+
+  # Search ±15 minutes window to catch the event
+  TIME_MIN=$(date -u -d "$SEARCH_TIME_UTC - 15 minutes" +%Y-%m-%dT%H:%M:%SZ)
+  TIME_MAX=$(date -u -d "$SEARCH_TIME_UTC + 15 minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+  SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_MIN}&timeMax=${TIME_MAX}&singleEvents=true&orderBy=startTime")
+
+# OPTION B: If user mentioned keywords (title, attendee), search by query
+elif [ -n "$SEARCH_QUERY" ]; then
+  SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+
+# OPTION C: User said "change my meeting" without specifics - search today's upcoming events
+else
+  SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)&timeMax=$(date -u +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime&maxResults=10")
+fi
+
+# Step 3: Handle search results - disambiguation logic
+EVENT_COUNT=$(echo "$SEARCH_RESPONSE" | jq '.items | length')
+
+if [ "$EVENT_COUNT" -eq 0 ]; then
+  echo "❌ No matching events found. Can you be more specific? (e.g., time, title, or attendee name)"
+  exit 1
+
+elif [ "$EVENT_COUNT" -eq 1 ]; then
+  # Single match - show user and confirm
+  FOUND_EVENT=$(echo "$SEARCH_RESPONSE" | jq -r '.items[0]')
+  EVENT_TITLE=$(echo "$FOUND_EVENT" | jq -r '.summary')
+  EVENT_START=$(echo "$FOUND_EVENT" | jq -r '.start.dateTime // .start.date')
+
+  echo "📅 Found: '${EVENT_TITLE}' at ${EVENT_START}"
+  echo "Updating this event..."
+
+  EVENT_ID=$(echo "$FOUND_EVENT" | jq -r '.id')
+
+else
+  # Multiple matches - show user options and ask to clarify
+  echo "Found ${EVENT_COUNT} events that match:"
+  echo "$SEARCH_RESPONSE" | jq -r '.items[0:5] | .[] | "📅 \(.summary) at \(.start.dateTime // .start.date)"'
+
+  if [ "$EVENT_COUNT" -gt 5 ]; then
+    echo "... and $((EVENT_COUNT - 5)) more"
+  fi
+
+  echo ""
+  echo "Which one do you want to update? Please be more specific (e.g., 'the code review at 4pm' or 'the first one')"
+  exit 1
+fi
+
+# If we reach here, EVENT_ID is set and confirmed
 
 # Search for the event
 SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
