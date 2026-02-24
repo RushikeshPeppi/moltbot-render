@@ -243,7 +243,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Request JSON output
     args.push('--json');
 
-    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --to ${userId ? `agent:main:api:moltbot:dm:user_${userId}` : sessionId} --local --thinking medium --json`);
+    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --to ${userId ? `agent:main:api:moltbot:dm:user_${userId}` : sessionId} --local --thinking high --json`);
 
     const openclaw = spawn('openclaw', args, {
       env: {

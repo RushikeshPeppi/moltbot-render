@@ -82,27 +82,32 @@ class QStashService:
     ) -> str:
         """
         Create a recurring schedule using QStash schedules.
-        
+
         Args:
             reminder_id: DB reminder ID
             user_id: Peppi user ID
             message: Reminder text
             cron_expression: CRON expression (e.g., "30 8 * * *" for daily at 8:30 UTC)
-            
+
         Returns:
             QStash schedule ID
         """
         deliver_url = f"{settings.MOLTBOT_PUBLIC_URL}/api/v1/reminders/deliver"
 
         try:
+            import json
+
+            # QStash schedule.create expects body as JSON string, not dict
+            body_json = json.dumps({
+                "reminder_id": reminder_id,
+                "user_id": user_id,
+                "message": message,
+            })
+
             schedule_id = self.client.schedule.create(
                 destination=deliver_url,
                 cron=cron_expression,
-                body={
-                    "reminder_id": reminder_id,
-                    "user_id": user_id,
-                    "message": message,
-                },
+                body=body_json,
                 retries=3,
             )
             logger.info(
