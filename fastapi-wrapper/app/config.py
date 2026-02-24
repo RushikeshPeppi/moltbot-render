@@ -36,8 +36,9 @@ class Settings(BaseSettings):
     GOOGLE_REDIRECT_URI: str = os.getenv("GOOGLE_REDIRECT_URI", "")
     GOOGLE_SCOPES: List[str] = [
         "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.send"
+        "https://www.googleapis.com/auth/gmail.readonly",   # Read emails, check inbox
+        "https://www.googleapis.com/auth/gmail.modify",     # Modify emails (mark as read, etc.)
+        "https://www.googleapis.com/auth/gmail.send"        # Send emails
     ]
     
     # Rate Limiting

@@ -1,0 +1,59 @@
+Test ID,Type,Skill Used,Test Case Description,Expected Output,Actual Output,Tester Review,Final Review
+GMAIL-001,Chat,google-workspace,Send: "check my inbox","AI shows list of recent emails with sender, subject, and date",,Pass/Fail,Approved/Rejected
+GMAIL-002,Chat,google-workspace,Send: "show me emails from rushikesh","AI searches and shows emails from Rushikesh only",,Pass/Fail,Approved/Rejected
+GMAIL-003,Chat,google-workspace,Send: "search for emails about meeting","AI searches and shows emails with 'meeting' in subject or body",,Pass/Fail,Approved/Rejected
+GMAIL-004,Chat,google-workspace,"First check inbox, then send: ""reply to the first email that I'll attend""","AI replies to first email with message containing 'I'll attend'",,Pass/Fail,Approved/Rejected
+GMAIL-005,Chat,google-workspace,Send: "send an email to rushikesh@peppi.ai about the project update","AI drafts and sends email to rushikesh@peppi.ai with subject and body",,Pass/Fail,Approved/Rejected
+GMAIL-006,Chat,google-workspace,Send: "mark the first email as read","AI marks first email as read",,Pass/Fail,Approved/Rejected
+GMAIL-007,Chat,google-workspace,Send: "show my unread emails","AI shows only unread emails",,Pass/Fail,Approved/Rejected
+GMAIL-008,Chat,google-workspace,Send: "search emails from last week","AI shows emails from past 7 days",,Pass/Fail,Approved/Rejected
+GMAIL-009,Chat,google-workspace,Send: "forward the first email to test@peppi.ai","AI forwards first email to test@peppi.ai",,Pass/Fail,Approved/Rejected
+GMAIL-010,Chat,google-workspace,Send: "send email to john@test.com with subject 'Test' and message 'Hello'","AI sends email with exact subject and message",,Pass/Fail,Approved/Rejected
+GMAIL-011,Chat,google-workspace,User 1 sends: "check my inbox". User 2 sends: "check my inbox","Each user sees only their own emails (not each other's)",,Pass/Fail,Approved/Rejected
+GMAIL-012,Chat,google-workspace,Send: "reply to tanmay's email that I confirm","AI finds tanmay's email and replies with confirmation",,Pass/Fail,Approved/Rejected
+GMAIL-013,Chat,google-workspace,Send: "show me emails with attachments","AI shows emails that have attachments",,Pass/Fail,Approved/Rejected
+GMAIL-014,Chat,google-workspace,Send: "what's my latest email","AI shows the most recent email received",,Pass/Fail,Approved/Rejected
+GMAIL-015,Chat,google-workspace,Send: "send email to multiple people: john@test.com, jane@test.com","AI sends same email to both recipients",,Pass/Fail,Approved/Rejected
+CAL-001,Chat,google-workspace,Send: "show my calendar for today","AI lists all events scheduled for today with times",,Pass/Fail,Approved/Rejected
+CAL-002,Chat,google-workspace,Send: "create a meeting with rushikesh@peppi.ai tomorrow at 3pm for code review","AI creates calendar event for tomorrow 3pm with rushikesh as attendee",,Pass/Fail,Approved/Rejected
+CAL-003,Chat,google-workspace,"Create meeting at 4pm. Then send: ""change the time to 6pm""","AI finds the meeting and updates time to 6pm (NOT creates new event)",,Pass/Fail,Approved/Rejected
+CAL-004,Chat,google-workspace,"Create meeting for code review at 4pm. Then: ""change my code review meeting to 5pm""","AI searches for 'code review' meeting and updates to 5pm",,Pass/Fail,Approved/Rejected
+CAL-005,Chat,google-workspace,Send: "schedule a meeting for Project Discussion on March 1st at 10am","AI creates event on March 1st at 10am with title 'Project Discussion'",,Pass/Fail,Approved/Rejected
+CAL-006,Chat,google-workspace,Send: "what meetings do I have tomorrow","AI shows all calendar events for tomorrow",,Pass/Fail,Approved/Rejected
+CAL-007,Chat,google-workspace,"Create meeting at 2pm. Then: ""cancel that meeting""","AI finds recent meeting and deletes it from calendar",,Pass/Fail,Approved/Rejected
+CAL-008,Chat,google-workspace,Send: "create an all-day event for Team Outing on Friday","AI creates all-day event (no specific time) for Friday",,Pass/Fail,Approved/Rejected
+CAL-009,Chat,google-workspace,Send: "schedule meeting with john@test.com and jane@test.com at 4pm","AI creates meeting with both attendees invited",,Pass/Fail,Approved/Rejected
+CAL-010,Chat,google-workspace,"Create 2 meetings (4pm and 5pm). Then: ""change my meeting to 6pm""","AI shows both meetings and asks which one to update (disambiguation)",,Pass/Fail,Approved/Rejected
+CAL-011,Chat,google-workspace,Send: "create meeting today at 3pm for 1 hour","AI creates 1-hour meeting from 3pm to 4pm",,Pass/Fail,Approved/Rejected
+CAL-012,Chat,google-workspace,User 1 creates meeting. User 2 sends: "show my calendar","User 2 should NOT see User 1's meeting (unless invited)",,Pass/Fail,Approved/Rejected
+CAL-013,Chat,google-workspace,Send: "update my 4pm meeting to 5pm" (timezone IST),"Time updates to 5pm IST (shown as 5pm, not UTC)",,Pass/Fail,Approved/Rejected
+CAL-014,Chat,google-workspace,"Create meeting. Then: ""add jane@test.com to the meeting""","AI updates meeting to include jane@test.com as attendee",,Pass/Fail,Approved/Rejected
+CAL-015,Chat,google-workspace,Send: "find my meeting about standup","AI searches calendar for event with 'standup' in title",,Pass/Fail,Approved/Rejected
+REM-001,Chat,reminders,Send: "remind me tomorrow at 2pm to buy milk","AI creates reminder and confirms: ✅ Reminder set for tomorrow at 2:00 PM",,Pass/Fail,Approved/Rejected
+REM-002,Chat,reminders,Send: "remind me in 30 minutes to check server","AI creates reminder for 30 minutes from now and confirms time",,Pass/Fail,Approved/Rejected
+REM-003,Chat,reminders,Send: "remind me every day at 9am to take medicine","AI creates daily recurring reminder at 9am",,Pass/Fail,Approved/Rejected
+REM-004,Chat,reminders,Send: "remind me every Monday at 10am for standup","AI creates weekly Monday reminder at 10am",,Pass/Fail,Approved/Rejected
+REM-005,Chat,reminders,Send: "show my reminders","AI lists all active reminders with times in readable format",,Pass/Fail,Approved/Rejected
+REM-006,Chat,reminders,"Create: ""remind me at 2pm to buy milk"". Then: ""change my milk reminder to 3pm""","AI finds milk reminder and UPDATES time to 3pm (NOT cancel + recreate)",,Pass/Fail,Approved/Rejected
+REM-007,Chat,reminders,"Create: ""remind me daily at 8am to exercise"". Then: ""change my exercise reminder to 7am""","AI finds exercise reminder and updates time to 7am",,Pass/Fail,Approved/Rejected
+REM-008,Chat,reminders,"Create: ""remind me at 2pm to call John"". Then: ""cancel my call reminder""","AI finds call reminder and cancels it",,Pass/Fail,Approved/Rejected
+REM-009,Chat,reminders,Create 3 reminders. Then: "update my reminder","AI shows all 3 and asks which one to update (disambiguation)",,Pass/Fail,Approved/Rejected
+REM-010,Chat,reminders,Send: "cancel my grocery reminder" (when no grocery reminder exists),"AI says: ❌ No matching reminder found. Shows your active reminders.",,Pass/Fail,Approved/Rejected
+REM-011,Chat,reminders,User 1 creates reminder. User 2 sends: "show my reminders","User 2 should NOT see User 1's reminder (data isolation)",,Pass/Fail,Approved/Rejected
+REM-012,Chat,reminders,User 1: "remind me to buy milk". User 2: "cancel my milk reminder","User 2 cannot cancel User 1's reminder (security)",,Pass/Fail,Approved/Rejected
+REM-013,Chat,reminders,Send: "remind me tomorrow at 10am to test" (timezone IST),"Reminder shows 10:00 AM in confirmation (not UTC time)",,Pass/Fail,Approved/Rejected
+REM-014,Chat,reminders,"Create: ""remind me at 10am to test"". Update to 2pm.","Time updates to 2:00 PM IST (shown in local time, stored as UTC)",,Pass/Fail,Approved/Rejected
+REM-015,Chat,reminders,Send: "don't let me forget to call mom at 5pm","AI creates reminder (understands different phrasing)",,Pass/Fail,Approved/Rejected
+REM-016,Chat,reminders,Send: "remind me at noon tomorrow to have lunch","AI creates reminder for 12:00 PM (understands 'noon')",,Pass/Fail,Approved/Rejected
+REM-017,Chat,reminders,Send: "remind me yesterday at 5pm" (past time),"AI rejects: ⚠️ That time has already passed",,Pass/Fail,Approved/Rejected
+REM-018,Chat,reminders,Send: "remind me tomorrow to buy groceries" (no time),"AI asks: What time should I remind you?",,Pass/Fail,Approved/Rejected
+REM-019,Task,reminders,"Create: ""remind me in 2 minutes to test"". Wait 2 minutes.","Reminder fires at correct time. User gets SMS + see in chat with ⏰ icon",,Pass/Fail,Approved/Rejected
+REM-020,Task,reminders,Create daily reminder. Verify it fires on Day 1 and Day 2.,"Reminder fires on both days (recurring works correctly)",,Pass/Fail,Approved/Rejected
+
+SUMMARY
+Total Test Cases: 50
+Gmail Tests: 15
+Calendar Tests: 15
+Reminder Tests: 20
+Chat Tests: 48
+Task Tests: 2
