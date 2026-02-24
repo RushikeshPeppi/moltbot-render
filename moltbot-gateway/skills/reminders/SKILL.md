@@ -181,44 +181,169 @@ Convert UTC times back to the user's local timezone for display.
 
 ## 🔄 UPDATE A REMINDER
 
-When user says: "Change reminder #1 to 3pm" or "Update my daily reminder to 10am" or "Change the reminder time to 10am"
+When user says: "Change reminder #1 to 3pm" or "Update my daily reminder to 10am" or "Change my claude billing reminder from 10AM to 11AM"
 
 **IMPORTANT: Use the UPDATE endpoint instead of cancelling and recreating!**
 
-**Steps:**
-1. **First list reminders** to find the correct one (if user doesn't provide ID)
-2. **Extract what needs to be updated**: message, time, or recurrence
-3. **Call update API with PROPER TIMEZONE CONVERSION**
+**SCALABLE APPROACH: Smart search + disambiguation (works across sessions and time)**
+
+This approach mirrors the calendar event update strategy - it searches for reminders intelligently and handles ambiguity gracefully.
+
+### Step 1: Parse what user wants to change
+
+Extract from the user's actual request:
+- **Message keywords**: "claude billing", "medicine", "standup", etc.
+- **Time mentioned**: "10am", "2pm", "morning", etc.
+- **Recurrence type**: "daily", "weekly", "monthly"
+- **What to update**: new time, new message, new recurrence
+
+### Step 2: Search for matching reminders
+
+**YOU MUST execute these commands and parse the JSON response. DO NOT just describe - ACTUALLY RUN THEM.**
 
 ```bash
-# Extract reminder ID
-REMINDER_ID=<FROM_LIST_OR_USER_REQUEST>
+# Step 2A: List all pending reminders for the user
+LIST_RESPONSE=$(curl -s \
+  "${FASTAPI_URL}/api/v1/reminders/list/${MOLTBOT_USER_ID}?status=pending")
 
-# CRITICAL: Convert user's local time to UTC (if updating time)
-# When user says "change to 10am", they mean 10am in THEIR timezone
-NEW_TIME="<EXTRACTED_TIME>"  # e.g., "10:00", "14:00"
-DATE_PART="<EXTRACTED_DATE_OR_TOMORROW>"  # e.g., "tomorrow", "next Monday", "today"
+# Step 2B: Parse the reminders array
+REMINDERS=$(echo "$LIST_RESPONSE" | jq -c '.data.reminders[]')
+REMINDER_COUNT=$(echo "$LIST_RESPONSE" | jq '.data.total')
 
-# ALWAYS run this timezone conversion command FIRST
-# This converts user's local time to UTC
-TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+# Check if user has any reminders
+if [ "$REMINDER_COUNT" -eq 0 ]; then
+  echo "📭 You don't have any active reminders to update."
+  exit 0
+fi
 
-# Update the reminder with the UTC time
+# Step 2C: Search for matching reminder based on user's description
+# OPTION A: User mentioned keywords (e.g., "claude billing", "medicine")
+# Extract keywords from user request - e.g., "change my claude billing reminder"
+SEARCH_KEYWORDS="<EXTRACTED_KEYWORDS>"  # e.g., "claude billing", "medicine", "standup"
+
+if [ -n "$SEARCH_KEYWORDS" ]; then
+  # Filter reminders by message content (case-insensitive)
+  MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s --arg keywords "${SEARCH_KEYWORDS,,}" \
+    '[.[] | select(.message | ascii_downcase | contains($keywords))]')
+  MATCH_COUNT=$(echo "$MATCHED_REMINDERS" | jq 'length')
+
+# OPTION B: User mentioned time (e.g., "my 10am reminder")
+# Extract time from user request - e.g., "change my 10am reminder"
+elif [ -n "<EXTRACTED_TIME>" ]; then
+  SEARCH_TIME="<EXTRACTED_TIME>"  # e.g., "10:00", "14:00"
+  # Note: Reminders are stored in UTC, so we need to convert search time to UTC range
+  SEARCH_TIME_UTC=$(TZ="$USER_TIMEZONE" date -u -d "today ${SEARCH_TIME}" +%H:%M)
+
+  # Filter reminders that trigger around this time (±30 min window)
+  MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s --arg time "$SEARCH_TIME_UTC" \
+    '[.[] | select(.trigger_at | match($time))]')
+  MATCH_COUNT=$(echo "$MATCHED_REMINDERS" | jq 'length')
+
+# OPTION C: User mentioned recurrence type (e.g., "my daily reminder")
+elif [ -n "<EXTRACTED_RECURRENCE>" ]; then
+  RECURRENCE_TYPE="<EXTRACTED_RECURRENCE>"  # e.g., "daily", "weekly", "monthly"
+
+  MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s --arg rec "$RECURRENCE_TYPE" \
+    '[.[] | select(.recurrence == $rec)]')
+  MATCH_COUNT=$(echo "$MATCHED_REMINDERS" | jq 'length')
+
+# OPTION D: User didn't provide specifics - show all pending reminders
+else
+  MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s '.')
+  MATCH_COUNT="$REMINDER_COUNT"
+fi
+```
+
+### Step 3: Handle search results - disambiguation logic
+
+```bash
+# Handle different match scenarios
+if [ "$MATCH_COUNT" -eq 0 ]; then
+  # NO MATCHES - Ask user to be more specific
+  echo "❌ I couldn't find a reminder matching that description."
+  echo ""
+  echo "Your active reminders:"
+  echo "$REMINDERS" | jq -r '"📝 #\(.id): \(.message) — \(.recurrence) at \(.trigger_at)"'
+  echo ""
+  echo "Can you be more specific? (Use reminder message or time)"
+  exit 1
+
+elif [ "$MATCH_COUNT" -eq 1 ]; then
+  # EXACTLY ONE MATCH - Perfect! Extract details and confirm
+  FOUND_REMINDER=$(echo "$MATCHED_REMINDERS" | jq '.[0]')
+  REMINDER_ID=$(echo "$FOUND_REMINDER" | jq -r '.id')
+  REMINDER_MESSAGE=$(echo "$FOUND_REMINDER" | jq -r '.message')
+  REMINDER_TIME=$(echo "$FOUND_REMINDER" | jq -r '.trigger_at')
+  REMINDER_RECURRENCE=$(echo "$FOUND_REMINDER" | jq -r '.recurrence')
+
+  # Convert UTC time to user's local timezone for display
+  REMINDER_TIME_LOCAL=$(TZ="$USER_TIMEZONE" date -d "$REMINDER_TIME" '+%I:%M %p on %b %d' 2>/dev/null || echo "$REMINDER_TIME")
+
+  echo "📝 Found: '${REMINDER_MESSAGE}' (${REMINDER_RECURRENCE}) scheduled for ${REMINDER_TIME_LOCAL}"
+  echo ""
+  # Proceed to Step 4 (update)
+
+else
+  # MULTIPLE MATCHES - Ask user to disambiguate
+  echo "Found ${MATCH_COUNT} reminders that match:"
+  echo ""
+  echo "$MATCHED_REMINDERS" | jq -r '.[] | "📝 #\(.id): \(.message) — \(.recurrence) at \(.trigger_at)"'
+  echo ""
+  echo "Which reminder do you want to update? (Tell me the message or ID)"
+  exit 1
+fi
+```
+
+### Step 4: Extract what to update and call API with timezone conversion
+
+```bash
+# Parse what user wants to change
+NEW_MESSAGE="<EXTRACTED_NEW_MESSAGE_IF_CHANGING>"  # Empty if not changing message
+NEW_TIME="<EXTRACTED_NEW_TIME>"  # e.g., "11:00", "14:00"
+NEW_RECURRENCE="<EXTRACTED_NEW_RECURRENCE_IF_CHANGING>"  # Empty if not changing recurrence
+DATE_PART="<EXTRACTED_DATE_OR_TODAY>"  # e.g., "today", "tomorrow", "next Monday"
+
+# Build the update request payload dynamically
+UPDATE_PAYLOAD="{\"user_id\": \"${MOLTBOT_USER_ID}\", \"reminder_id\": ${REMINDER_ID}"
+
+# Add fields only if they're being updated
+if [ -n "$NEW_MESSAGE" ]; then
+  UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"message\": \"${NEW_MESSAGE}\""
+fi
+
+if [ -n "$NEW_TIME" ]; then
+  # CRITICAL: Convert user's local time to UTC
+  # When user says "change to 11am", they mean 11am in THEIR timezone (not UTC)
+  TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+  UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"trigger_at\": \"${TRIGGER_AT}\", \"user_timezone\": \"${USER_TIMEZONE}\""
+fi
+
+if [ -n "$NEW_RECURRENCE" ]; then
+  UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"recurrence\": \"${NEW_RECURRENCE}\""
+fi
+
+UPDATE_PAYLOAD="${UPDATE_PAYLOAD}}"
+
+# Call the update API
 RESPONSE=$(curl -s -X POST \
   "${FASTAPI_URL}/api/v1/reminders/update" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"user_id\": \"${MOLTBOT_USER_ID}\",
-    \"reminder_id\": ${REMINDER_ID},
-    \"trigger_at\": \"${TRIGGER_AT}\",
-    \"user_timezone\": \"${USER_TIMEZONE}\",
-    \"recurrence\": \"daily\"
-  }")
+  -d "$UPDATE_PAYLOAD")
 
 echo "$RESPONSE"
 
-# Confirm to user with their LOCAL time, not UTC
-echo "✅ Reminder #${REMINDER_ID} updated to ${NEW_TIME}"
+# IMPORTANT: Confirm success with clean, user-friendly message in LOCAL time
+# DO NOT show reminder ID - users don't care about technical details
+if [ -n "$NEW_TIME" ]; then
+  NEW_TIME_LOCAL=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART} ${NEW_TIME}" '+%I:%M %p' 2>/dev/null || echo "$NEW_TIME")
+  echo "✅ Reminder updated! '${REMINDER_MESSAGE}' is now scheduled for ${NEW_TIME_LOCAL}"
+elif [ -n "$NEW_MESSAGE" ]; then
+  echo "✅ Reminder message updated to: '${NEW_MESSAGE}'"
+elif [ -n "$NEW_RECURRENCE" ]; then
+  echo "✅ Reminder recurrence changed to: ${NEW_RECURRENCE}"
+else
+  echo "✅ Reminder updated successfully"
+fi
 ```
 
 **Optional fields in update request (include only what's changing):**
@@ -243,15 +368,68 @@ RESPONSE=$(curl -s -X POST \
 
 When user says: "Cancel my reminder" or "Delete reminder #1" or "Stop the daily medicine reminder"
 
-**Steps:**
-1. **First list reminders** to find the correct one (if user doesn't provide ID)
-2. **Confirm with user** which reminder to cancel
-3. **Call cancel API**
+**SCALABLE APPROACH: Use smart search to find the reminder (same as UPDATE)**
+
+### Step 1: Search for the reminder to cancel
 
 ```bash
-# Extract or find the REMINDER_ID
-REMINDER_ID=<FROM_LIST_OR_USER_REQUEST>
+# Step 1A: List all pending reminders
+LIST_RESPONSE=$(curl -s \
+  "${FASTAPI_URL}/api/v1/reminders/list/${MOLTBOT_USER_ID}?status=pending")
 
+REMINDERS=$(echo "$LIST_RESPONSE" | jq -c '.data.reminders[]')
+REMINDER_COUNT=$(echo "$LIST_RESPONSE" | jq '.data.total')
+
+if [ "$REMINDER_COUNT" -eq 0 ]; then
+  echo "📭 You don't have any active reminders to cancel."
+  exit 0
+fi
+
+# Step 1B: Search for matching reminder
+# Extract keywords from user request (e.g., "cancel my medicine reminder")
+SEARCH_KEYWORDS="<EXTRACTED_KEYWORDS>"  # e.g., "medicine", "standup", "billing"
+
+if [ -n "$SEARCH_KEYWORDS" ]; then
+  # Search by message keywords
+  MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s --arg keywords "${SEARCH_KEYWORDS,,}" \
+    '[.[] | select(.message | ascii_downcase | contains($keywords))]')
+  MATCH_COUNT=$(echo "$MATCHED_REMINDERS" | jq 'length')
+else
+  # User said "cancel my reminder" without specifics - show all
+  MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s '.')
+  MATCH_COUNT="$REMINDER_COUNT"
+fi
+
+# Step 1C: Handle search results
+if [ "$MATCH_COUNT" -eq 0 ]; then
+  echo "❌ No reminders found matching that description."
+  echo ""
+  echo "Your active reminders:"
+  echo "$REMINDERS" | jq -r '"📝 \(.message) — \(.recurrence) at \(.trigger_at)"'
+  exit 1
+
+elif [ "$MATCH_COUNT" -eq 1 ]; then
+  # Found exactly one - extract details
+  FOUND_REMINDER=$(echo "$MATCHED_REMINDERS" | jq '.[0]')
+  REMINDER_ID=$(echo "$FOUND_REMINDER" | jq -r '.id')
+  REMINDER_MESSAGE=$(echo "$FOUND_REMINDER" | jq -r '.message')
+
+  echo "📝 Found: '${REMINDER_MESSAGE}'"
+
+else
+  # Multiple matches - ask user to specify
+  echo "Found ${MATCH_COUNT} reminders:"
+  echo ""
+  echo "$MATCHED_REMINDERS" | jq -r '.[] | "📝 \(.message) — \(.recurrence)"'
+  echo ""
+  echo "Which one do you want to cancel? (Be more specific)"
+  exit 1
+fi
+```
+
+### Step 2: Cancel the reminder
+
+```bash
 # Cancel the reminder
 RESPONSE=$(curl -s -X POST \
   "${FASTAPI_URL}/api/v1/reminders/cancel" \
@@ -263,8 +441,8 @@ RESPONSE=$(curl -s -X POST \
 
 echo "$RESPONSE"
 
-# Confirm to user
-echo "✅ Reminder #${REMINDER_ID} cancelled successfully"
+# Confirm to user with clean message (no technical IDs)
+echo "✅ Reminder cancelled! You won't be reminded about '${REMINDER_MESSAGE}' anymore."
 ```
 
 ## 🎯 Response Formatting
@@ -299,10 +477,10 @@ After executing API calls:
 1. **NEVER use hardcoded values** — ALWAYS extract from user's actual request
 2. **TIMEZONE CONVERSION IS MANDATORY** — When user says "10am", they mean 10am in $USER_TIMEZONE (NOT UTC). YOU MUST run: `TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ)` to convert to UTC. DO NOT skip this step or you will schedule reminders at the wrong time!
 3. **USE UPDATE ENDPOINT for changes** — When user wants to change a reminder time/message, use `/api/v1/reminders/update` instead of cancelling and recreating
-4. **ALWAYS confirm actions** — Tell the user what was set, when, and the recurrence (in THEIR timezone)
-5. **ASK for missing information** — If the user doesn't specify a time, ask: "What time should I remind you?"
-6. **PARSE natural language** — Understand "tomorrow", "next week", "in 2 hours", "every Monday"
-7. **DISPLAY times in user's timezone** — When showing reminders, convert UTC back to local time for readability
-8. **LIST before cancelling/updating** — If user says "cancel my reminder" or "update my reminder" without an ID, list reminders first to confirm which one
+4. **USE SMART SEARCH for updates/cancels** — When user says "change my claude billing reminder" or "cancel my daily reminder", use the smart search + disambiguation approach (search by keywords, time, or recurrence, handle 0/1/multiple matches). This works across sessions and time, unlike relying on conversation history.
+5. **ALWAYS confirm actions** — Tell the user what was set, when, and the recurrence (in THEIR timezone). DO NOT show technical IDs to users.
+6. **ASK for missing information** — If the user doesn't specify a time, ask: "What time should I remind you?"
+7. **PARSE natural language** — Understand "tomorrow", "next week", "in 2 hours", "every Monday"
+8. **DISPLAY times in user's timezone** — When showing reminders, convert UTC back to local time for readability
 9. **FORMAT responses** in a user-friendly way with emojis and clear structure
 10. **EXECUTE the bash commands** — DO NOT just describe or acknowledge the commands - ACTUALLY RUN THEM
