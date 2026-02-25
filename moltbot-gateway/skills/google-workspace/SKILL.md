@@ -94,6 +94,34 @@ date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ
 # → Output: 2026-02-25T14:00:00Z (Tuesday 2pm UTC, which is 7:30pm IST - WRONG!)
 ```
 
+### Handling API Response Dates (ISO 8601 with Timezone Offsets)
+
+When using dates FROM Google Calendar API responses (e.g., to calculate "30 minutes before a meeting" for reminders, or to compare event times):
+
+**Problem:** API returns times like `2026-02-26T17:30:00+05:30`. The `+HH:MM` offset format can cause "invalid date" errors on some systems.
+
+**Safe approach — convert via epoch seconds:**
+
+```bash
+# API returns: EVENT_TIME="2026-02-26T17:30:00+05:30"
+EVENT_TIME="<FROM_API_RESPONSE>"
+
+# Convert to epoch (handles timezone offsets reliably)
+# Try direct parsing first, fall back to stripping the colon from offset
+EVENT_EPOCH=$(date -d "$EVENT_TIME" +%s 2>/dev/null || date -d "$(echo $EVENT_TIME | sed 's/+\([0-9][0-9]\):\([0-9][0-9]\)$/+\1\2/')" +%s)
+
+# Calculate 30 minutes before (1800 seconds)
+BEFORE_EPOCH=$((EVENT_EPOCH - 1800))
+
+# Convert back to ISO 8601 UTC
+BEFORE_TIME=$(date -u -d "@$BEFORE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)
+
+# Convert to user's local time for display
+LOCAL_DISPLAY=$(TZ="$USER_TIMEZONE" date -d "@$EVENT_EPOCH" '+%I:%M %p on %b %d')
+```
+
+**Use this pattern whenever you need to do arithmetic on API-returned dates (e.g., setting reminders before meetings, comparing times).**
+
 ### List Events (Today/Tomorrow/This Week/Range)
 
 When user asks: "What meetings do I have today?" or "What's on my schedule tomorrow?" or "what meetings do I have this week?"
@@ -234,7 +262,7 @@ RESPONSE=$(curl -s -X POST \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$JSON_PAYLOAD" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1")
 
 # CRITICAL: Extract the event ID from the response (for internal reference/debugging)
 # We extract it here but DON'T show it to the user (looks messy)
@@ -247,6 +275,79 @@ EVENT_LINK=$(echo "$RESPONSE" | jq -r '.htmlLink')
 # The smart search in Update/Delete sections will handle finding events
 echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
 ```
+
+### Create Event WITH Google Meet Link
+
+When user says: "Create a meet" or "Create a meeting link" or "Send a meet link to X" or "Schedule meeting with Meet link"
+
+**CRITICAL: When user mentions "meet link", "meet", "Google Meet", "video call", or wants to send a meeting link — you MUST include `conferenceData` to auto-generate a Google Meet link.**
+
+```bash
+# PARSE from user's actual request
+MEETING_TITLE="<EXTRACTED_FROM_USER_REQUEST>"
+DATE_PART="<EXTRACTED_DATE>"
+TIME_PART="<EXTRACTED_TIME>"
+DURATION_MINUTES=<EXTRACTED_OR_DEFAULT_60>
+ATTENDEE_EMAIL="<EXTRACTED_OR_EMPTY>"
+
+# Calculate times
+EVENT_START=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
+EVENT_END=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+
+# Generate a unique request ID for Meet link creation
+REQUEST_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "meet-$(date +%s)")
+
+# Build JSON payload WITH conferenceData for Google Meet
+JSON_PAYLOAD=$(cat <<EOF
+{
+  "summary": "${MEETING_TITLE}",
+  "start": {
+    "dateTime": "${EVENT_START}",
+    "timeZone": "$USER_TIMEZONE"
+  },
+  "end": {
+    "dateTime": "${EVENT_END}",
+    "timeZone": "$USER_TIMEZONE"
+  },
+  "conferenceData": {
+    "createRequest": {
+      "requestId": "${REQUEST_ID}",
+      "conferenceSolutionKey": {
+        "type": "hangoutsMeet"
+      }
+    }
+  }
+}
+EOF
+)
+
+# Add attendees if provided
+if [ -n "$ATTENDEE_EMAIL" ]; then
+  JSON_PAYLOAD=$(echo "$JSON_PAYLOAD" | jq --arg email "$ATTENDEE_EMAIL" '. + {attendees: [{email: $email}]}')
+fi
+
+# CRITICAL: Must include ?conferenceDataVersion=1 for Meet link generation
+RESPONSE=$(curl -s -X POST \
+  -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$JSON_PAYLOAD" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1")
+
+# Extract the Google Meet link from the response
+MEET_LINK=$(echo "$RESPONSE" | jq -r '.conferenceData.entryPoints[]? | select(.entryPointType=="video") | .uri' 2>/dev/null)
+EVENT_LINK=$(echo "$RESPONSE" | jq -r '.htmlLink')
+
+if [ -n "$MEET_LINK" ] && [ "$MEET_LINK" != "null" ]; then
+  echo "✅ Meeting created with Google Meet link: ${MEET_LINK}"
+else
+  echo "✅ Meeting created but Meet link was not generated. Calendar link: ${EVENT_LINK}"
+fi
+```
+
+**If user wants to send the Meet link via email**, chain the actions:
+1. Create the event with Meet link (above)
+2. Extract `$MEET_LINK` from the response
+3. Send email using the Gmail Send Email flow with the Meet link in the body
 
 ### Update Event
 
@@ -736,7 +837,8 @@ Subject: ${SUBJECT}
 ${BODY}"
 
 # Base64url encode (required by Gmail API)
-ENCODED=$(echo -n "$EMAIL_CONTENT" | base64 | tr '+/' '-_' | tr -d '=')
+# Use printf + base64 -w 0 for reliable encoding (no line wraps, handles special chars)
+ENCODED=$(printf '%s' "$EMAIL_CONTENT" | base64 -w 0 | tr '+/' '-_' | tr -d '=')
 
 # Send email
 curl -s -X POST \
@@ -811,8 +913,8 @@ References: ${MESSAGE_ID}
 
 ${REPLY_BODY}"
 
-# Base64url encode
-ENCODED=$(echo -n "$REPLY_CONTENT" | base64 | tr '+/' '-_' | tr -d '=')
+# Base64url encode (use printf + base64 -w 0 for reliable encoding)
+ENCODED=$(printf '%s' "$REPLY_CONTENT" | base64 -w 0 | tr '+/' '-_' | tr -d '=')
 
 # Step 5: Send reply with threadId for proper threading
 curl -s -X POST \

@@ -160,7 +160,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   // Key behavioral note
   context += 'You have continuous memory - NEVER say "I just came alive". ';
-  context += `Reminders are FULLY FUNCTIONAL via the reminders skill. CRITICAL TIMEZONE RULE FOR REMINDERS: When user says "10am" or "2pm", they mean ${timezone || 'UTC'} time (NOT UTC). The reminders API expects UTC, so YOU MUST convert using the TZ bash command. CRITICAL INSTRUCTIONS: (1) When user asks to set/update/cancel a reminder, USE the reminders skill immediately. (2) The skill provides $USER_TIMEZONE="${timezone || 'UTC'}", $FASTAPI_URL, and $MOLTBOT_USER_ID. (3) YOU MUST execute the actual bash commands from the skill - do NOT just describe them. (4) TIMEZONE CONVERSION IS MANDATORY: ALWAYS run this command FIRST: TRIGGER_AT=$(TZ="${timezone || 'UTC'}" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ) - this converts ${timezone || 'UTC'} time to UTC. (5) For updates: Use /api/v1/reminders/update endpoint (cancel old + create new schedule). Example flow: User says "remind me at 10am ${timezone || 'UTC'}" → You run: TRIGGER_AT=$(TZ="${timezone || 'UTC'}" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ) → Get UTC result → curl -X POST with that UTC time → Success. DO NOT skip the TZ conversion command! `;
+  context += `Reminders are FULLY FUNCTIONAL via the reminders skill. CRITICAL TIMEZONE RULE FOR REMINDERS: When user says "10am" or "2pm", they mean ${timezone || 'UTC'} time (NOT UTC). CRITICAL INSTRUCTIONS: (1) When user asks to set/update/cancel a reminder, USE the reminders skill immediately. (2) The skill provides $USER_TIMEZONE="${timezone || 'UTC'}", $FASTAPI_URL, and $MOLTBOT_USER_ID. (3) YOU MUST execute the actual bash commands from the skill - do NOT just describe them. (4) TIMEZONE FOR trigger_at: Send LOCAL time WITHOUT -u flag and WITHOUT Z suffix. The backend API converts to UTC automatically. Example: User says "remind me at 10am" → Get date: TARGET_DATE=$(TZ="${timezone || 'UTC'}" date -d "tomorrow" +%Y-%m-%d) → Build: TRIGGER_AT="\${TARGET_DATE}T10:00:00" → curl -X POST with that local time + user_timezone="${timezone || 'UTC'}" → Backend converts to UTC → Success. NEVER use date -u or add Z to trigger_at for specific times! (5) For updates: Use /api/v1/reminders/update endpoint. `;
 
   // Global time parsing — applies to ALL skills (reminders, calendar, etc.)
   context += 'TIME PARSING (GLOBAL): When the user mentions ANY time, normalize it to HH:MM 24-hour format before passing to the date command or any API. Rules: "2pm"/"2 PM"/"2:00pm"=14:00, "9am"/"9 AM"/"9:00am"=09:00, "0700"/"0700hrs"/"0700 hours"=07:00, "1430"=14:30, "2100"=21:00, "7"/"at 7"=07:00, "7.30"/"7:30"/"730"=07:30, "noon"/"midday"=12:00, "midnight"=00:00, "quarter past 2"=14:15, "half past 3"=15:30, "quarter to 5"=16:45, "morning"=09:00, "afternoon"=14:00, "evening"=18:00, "night"=21:00. This applies to reminders, calendar events, email date filters, and any other time-related operation. ';
@@ -168,12 +168,23 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
   // Compound request handling
   context += 'COMPOUND REQUESTS: When user asks multiple things in one message (e.g., "delete my reminder and create a new one", "check my inbox and schedule a meeting", "cancel reminder #5 and set a daily reminder at 7am"), execute each action SEQUENTIALLY: (1) Complete the first action fully (API call + confirm). (2) Then execute the next action (API call + confirm). (3) Report results of ALL actions. You may use DIFFERENT skills for each step (e.g., reminders skill then google-workspace skill). If one step fails, still attempt the remaining steps. ';
 
-  // Recent conversation (limited to 5 messages, truncated)
+  // Smart inference rules — reduce unnecessary questions
+  context += 'SMART INFERENCE RULES (CRITICAL — DO NOT over-ask the user): ';
+  context += '(1) ALWAYS try to infer missing details from context before asking. Only ask if truly ambiguous. ';
+  context += '(2) Email subject: Infer from the user message. "send mail about meeting at 7pm" → Subject: "Meeting at 7 PM". "send mail for discussion" → Subject: "Discussion". ';
+  context += '(3) Email body: Generate a brief, professional message from context. "send mail to X for meet today at 7 pm" → Body: "Hi, let\'s have a meeting today at 7 PM. Looking forward to it." Do NOT ask for body unless user\'s intent is completely unclear. ';
+  context += '(4) Reminder from calendar: If user says "remind me about my meetings" or "set reminders for my events", check calendar FIRST and auto-set reminders for each upcoming event (30 min before). Do NOT ask "what should I remind you about?" ';
+  context += '(5) Meeting title: Infer from context. "create meet with john@x.com" → Title: "Meeting". "create a meet for discussion" → Title: "Discussion". ';
+  context += '(6) When user says "create meet link and send to X" or "send meet link to X", do BOTH: create calendar event with Google Meet link (using conferenceData), then email the Meet link to X. Execute sequentially without asking. ';
+  context += '(7) When user references something from conversation history (e.g., "remind me about THAT", "send that to X"), look at recent history to resolve the reference. ';
+  context += '(8) DEFAULT BEHAVIOR: Act first, confirm after. Do NOT ask 3 questions before doing 1 thing. If you can reasonably infer the answer, just do it. ';
+
+  // Recent conversation (expanded to 10 messages with 250 char truncation for better context)
   if (history && history.length > 0) {
-    const recentHistory = history.slice(-5);
+    const recentHistory = history.slice(-10);
     context += '\nRecent conversation (for context only - these are COMPLETED past actions, do NOT re-execute):\n';
     recentHistory.forEach(msg => {
-      const truncated = msg.content.length > 80 ? msg.content.substring(0, 80) + '...' : msg.content;
+      const truncated = msg.content.length > 250 ? msg.content.substring(0, 250) + '...' : msg.content;
       context += `${msg.role}: ${truncated}\n`;
     });
   }

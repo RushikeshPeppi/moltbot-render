@@ -66,33 +66,41 @@ Parse user input to extract:
 
 ### IMPORTANT: Timezone Handling
 
-**The user speaks in their local time. The API expects UTC.**
+**The user speaks in their local time. Send the time in LOCAL format — the backend API converts to UTC automatically.**
 
-The user's timezone is `$USER_TIMEZONE` (e.g., "Asia/Kolkata" = UTC+5:30).
+The user's timezone is `$USER_TIMEZONE` (e.g., "Asia/Kolkata", "America/New_York").
 
-You MUST convert the user's local time to UTC before calling the API:
-- User says "2pm" in Asia/Kolkata → 2:00 PM IST = 8:30 AM UTC → `trigger_at = "2026-02-19T08:30:00Z"`
-- User says "9am" in America/New_York → 9:00 AM EST = 2:00 PM UTC → `trigger_at = "2026-02-19T14:00:00Z"`
+**CRITICAL: DO NOT use `-u` flag or `Z` suffix when computing trigger_at for specific times!**
+The backend receives the local time + user_timezone and converts to UTC correctly. If you send UTC (with Z), the backend treats it as already-converted and the reminder fires at the WRONG time.
 
-Use the `date` command to calculate UTC times:
-
+**For SPECIFIC times** (user says "at 7am", "at 2pm", etc.):
 ```bash
-# Convert user's local time to UTC ISO 8601
-# Example: Tomorrow at 2pm in user's timezone
-TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ)
+# Get the DATE in user's timezone, then combine with the TIME the user specified
+# DO NOT use -u flag! DO NOT add Z suffix! Send as LOCAL time.
 
-# Example: Today at 6pm in user's timezone
-TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "today 18:00" +%Y-%m-%dT%H:%M:%SZ)
+# Example: Tomorrow at 2pm
+TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d)
+TRIGGER_AT="${TARGET_DATE}T14:00:00"
 
-# Example: Next Monday at 9am in user's timezone
-TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "next Monday 09:00" +%Y-%m-%dT%H:%M:%SZ)
+# Example: Today at 6pm
+TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "today" +%Y-%m-%d)
+TRIGGER_AT="${TARGET_DATE}T18:00:00"
 
-# Example: In 2 hours from now
-TRIGGER_AT=$(date -u -d "+2 hours" +%Y-%m-%dT%H:%M:%SZ)
-
-# Example: In 30 minutes from now
-TRIGGER_AT=$(date -u -d "+30 minutes" +%Y-%m-%dT%H:%M:%SZ)
+# Example: Next Monday at 9am
+TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "next Monday" +%Y-%m-%d)
+TRIGGER_AT="${TARGET_DATE}T09:00:00"
 ```
+
+**For RELATIVE times** (user says "in 5 minutes", "in 2 hours"):
+```bash
+# Relative times: compute in user's timezone too (no -u, no Z)
+TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "+2 hours" +%Y-%m-%dT%H:%M:%S)
+TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "+30 minutes" +%Y-%m-%dT%H:%M:%S)
+```
+
+**WHY this approach?** The backend's `local_to_utc()` function:
+- If it sees NO timezone marker → treats as user's local time → converts to UTC ✓
+- If it sees Z or +00:00 → treats as already UTC → NO conversion (can be WRONG if you forgot TZ)
 
 ### Create One-Time Reminder
 
@@ -104,10 +112,15 @@ When user says: "Remind me tomorrow at 2pm to buy milk" or "Set a reminder for 6
 # PARSE all values from user's actual request - DO NOT use these placeholder values!
 REMINDER_MESSAGE="<EXTRACTED_FROM_USER_REQUEST>"
 DATE_PART="<EXTRACTED_DATE>"  # e.g., "tomorrow", "next Monday", "2026-02-20"
-TIME_PART="<EXTRACTED_TIME>"  # e.g., "14:00", "09:00", "18:00"
+TIME_PART="<EXTRACTED_TIME>"  # e.g., "14:00", "09:00", "18:00" (24-hour format)
 
-# Calculate UTC trigger time from user's local time
-TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
+# Build trigger_at in LOCAL time (NO -u flag, NO Z suffix!)
+# The backend API will convert from user's timezone to UTC
+TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
+TRIGGER_AT="${TARGET_DATE}T${TIME_PART}:00"
+
+# For relative times like "in 5 minutes", "in 2 hours":
+# TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "+5 minutes" +%Y-%m-%dT%H:%M:%S)
 
 # Call the Moltbot FastAPI to create the reminder
 RESPONSE=$(curl -s -X POST \
@@ -135,11 +148,13 @@ When user says: "Remind me every day at 9am to take medicine" or "Set a weekly r
 # PARSE from user's actual request
 REMINDER_MESSAGE="<EXTRACTED_FROM_USER_REQUEST>"
 DATE_PART="<EXTRACTED_DATE_OR_TODAY>"
-TIME_PART="<EXTRACTED_TIME>"
+TIME_PART="<EXTRACTED_TIME>"  # 24-hour format: "07:00", "14:00", "09:00"
 RECURRENCE="<daily|weekdays|weekly|monthly>"  # Use "weekdays" for Mon-Fri
 
-# Calculate the first trigger time in UTC
-TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
+# Build trigger_at in LOCAL time (NO -u flag, NO Z suffix!)
+# The backend API will convert from user's timezone to UTC and build the CRON
+TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
+TRIGGER_AT="${TARGET_DATE}T${TIME_PART}:00"
 
 # Call the API with recurrence
 RESPONSE=$(curl -s -X POST \
@@ -157,6 +172,64 @@ echo "$RESPONSE"
 
 # Confirm to user
 echo "✅ ${RECURRENCE^} reminder set: ${REMINDER_MESSAGE} at ${TIME_PART}"
+```
+
+### Auto-Set Reminders from Calendar Events
+
+When user says: "remind me for my meetings" or "set reminders for all my events" or "remind me before my meetings" or "check my calendar and remind me for meets whenever I have"
+
+**This is a COMPOUND action — you must use BOTH skills:**
+1. First, fetch upcoming calendar events (using google-workspace skill's approach)
+2. Then, for each future event, create a one-time reminder (default: 30 minutes before)
+
+**YOU MUST execute these commands — do NOT ask "what should I remind you about?" when calendar context is available.**
+
+```bash
+# Step 1: Get upcoming events from Google Calendar
+EVENTS_JSON=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)&maxResults=10&singleEvents=true&orderBy=startTime")
+
+EVENT_COUNT=$(echo "$EVENTS_JSON" | jq '.items | length')
+
+if [ "$EVENT_COUNT" -eq 0 ]; then
+  echo "📭 No upcoming events found on your calendar."
+  exit 0
+fi
+
+echo "Found ${EVENT_COUNT} upcoming events. Setting reminders..."
+
+# Step 2: For each event, calculate 30 min before and set a reminder
+echo "$EVENTS_JSON" | jq -c '.items[]' | while read -r EVENT; do
+  EVENT_TITLE=$(echo "$EVENT" | jq -r '.summary')
+  EVENT_TIME=$(echo "$EVENT" | jq -r '.start.dateTime // .start.date')
+
+  # Calculate 30 minutes before the event (safe ISO 8601 parsing)
+  EVENT_EPOCH=$(date -d "$EVENT_TIME" +%s 2>/dev/null || date -d "$(echo $EVENT_TIME | sed 's/+\([0-9][0-9]\):\([0-9][0-9]\)$/+\1\2/')" +%s)
+  REMINDER_EPOCH=$((EVENT_EPOCH - 1800))
+  # Output in LOCAL time (no -u, no Z) — backend converts to UTC
+  TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "@$REMINDER_EPOCH" +%Y-%m-%dT%H:%M:%S)
+
+  # Only set reminder if the reminder time is still in the future
+  NOW_EPOCH=$(date +%s)
+  if [ "$REMINDER_EPOCH" -gt "$NOW_EPOCH" ]; then
+    RESPONSE=$(curl -s -X POST \
+      "${FASTAPI_URL}/api/v1/reminders/create" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"user_id\": \"${MOLTBOT_USER_ID}\",
+        \"message\": \"Upcoming: ${EVENT_TITLE}\",
+        \"trigger_at\": \"${TRIGGER_AT}\",
+        \"user_timezone\": \"${USER_TIMEZONE}\",
+        \"recurrence\": \"none\"
+      }")
+
+    # Display in user's local time
+    LOCAL_TIME=$(TZ="$USER_TIMEZONE" date -d "@$EVENT_EPOCH" '+%I:%M %p on %b %d' 2>/dev/null || echo "$EVENT_TIME")
+    echo "✅ Reminder set for '${EVENT_TITLE}' — 30 min before event at ${LOCAL_TIME}"
+  else
+    echo "⏩ Skipped '${EVENT_TITLE}' — event is too soon or already passed"
+  fi
+done
 ```
 
 ## 📋 LIST REMINDERS
@@ -321,9 +394,9 @@ if [ -n "$NEW_MESSAGE" ]; then
 fi
 
 if [ -n "$NEW_TIME" ]; then
-  # CRITICAL: Convert user's local time to UTC
-  # When user says "change to 11am", they mean 11am in THEIR timezone (not UTC)
-  TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+  # Send LOCAL time (NO -u, NO Z!) — backend converts to UTC
+  TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
+  TRIGGER_AT="${TARGET_DATE}T${NEW_TIME}:00"
   UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"trigger_at\": \"${TRIGGER_AT}\", \"user_timezone\": \"${USER_TIMEZONE}\""
 fi
 
@@ -484,7 +557,7 @@ After executing API calls:
 ## 🚨 CRITICAL RULES
 
 1. **NEVER use hardcoded values** — ALWAYS extract from user's actual request
-2. **TIMEZONE CONVERSION IS MANDATORY** — When user says "10am", they mean 10am in $USER_TIMEZONE (NOT UTC). YOU MUST run: `TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ)` to convert to UTC. DO NOT skip this step or you will schedule reminders at the wrong time!
+2. **SEND LOCAL TIME — NOT UTC** — When user says "10am", send trigger_at as LOCAL time: `TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d) && TRIGGER_AT="${TARGET_DATE}T10:00:00"`. NEVER use `date -u` or add `Z` suffix to trigger_at! The backend API converts local time to UTC automatically using the user_timezone field. If you send Z-suffixed times, the backend treats them as already-UTC and the reminder fires at the WRONG time!
 3. **USE UPDATE ENDPOINT for changes** — When user wants to change a reminder time/message, use `/api/v1/reminders/update` instead of cancelling and recreating
 4. **USE SMART SEARCH for updates/cancels** — When user says "change my claude billing reminder" or "cancel my daily reminder", use the smart search + disambiguation approach (search by keywords, time, or recurrence, handle 0/1/multiple matches). This works across sessions and time, unlike relying on conversation history.
 5. **ALWAYS confirm actions** — Tell the user what was set, when, and the recurrence (in THEIR timezone). DO NOT show technical IDs to users.
