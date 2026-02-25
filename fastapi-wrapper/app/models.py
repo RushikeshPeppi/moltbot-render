@@ -203,7 +203,7 @@ class CreateReminderRequest(BaseModel):
     message: str = Field(..., description="What to remind the user about")
     trigger_at: str = Field(..., description="ISO 8601 datetime for when to fire (UTC)")
     user_timezone: str = Field(..., description="User's timezone (e.g., 'Asia/Kolkata')")
-    recurrence: str = Field(default="none", description="none, daily, weekly, monthly")
+    recurrence: str = Field(default="none", description="none, daily, weekdays, weekly, monthly")
     recurrence_rule: Optional[Dict[str, Any]] = Field(
         None, description="Complex recurrence rules (day_of_week, etc.)"
     )
@@ -215,7 +215,7 @@ class CreateReminderRequest(BaseModel):
         if not v or (isinstance(v, str) and not v.strip()):
             return "none"
         v = v.strip().lower()
-        allowed = {"none", "daily", "weekly", "monthly"}
+        allowed = {"none", "daily", "weekdays", "weekly", "monthly"}
         if v not in allowed:
             return "none"
         return v
@@ -267,7 +267,7 @@ class UpdateReminderRequest(BaseModel):
     message: Optional[str] = Field(None, description="New reminder message (if changing)")
     trigger_at: Optional[str] = Field(None, description="New ISO 8601 datetime for when to fire (UTC)")
     user_timezone: Optional[str] = Field(None, description="User's timezone (e.g., 'Asia/Kolkata')")
-    recurrence: Optional[str] = Field(None, description="New recurrence: none, daily, weekly, monthly")
+    recurrence: Optional[str] = Field(None, description="New recurrence: none, daily, weekdays, weekly, monthly")
 
 
 class DeliverReminderPayload(BaseModel):

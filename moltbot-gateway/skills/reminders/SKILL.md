@@ -43,14 +43,23 @@ Parse user input to extract:
   - "February 20" → parse as 2026-02-20
   - "in 2 hours" → current time + 2 hours
   - "in 30 minutes" → current time + 30 minutes
-- **Time**: What time to fire
-  - "at 2pm" → 14:00
-  - "at 9 AM" → 09:00
-  - "at 18:00" → 18:00
-  - "noon" → 12:00
+- **Time**: What time to fire (convert ALL formats to HH:MM 24-hour for the date command)
+  - "at 2pm" / "2 PM" / "2:00pm" / "2:00 p.m." → 14:00
+  - "9 AM" / "9am" / "9 a.m." / "9:00 AM" → 09:00
+  - "18:00" / "6:00 PM" → 18:00
+  - "0700" / "0700hrs" / "0700 hours" → 07:00 (military without colon)
+  - "7" / "at 7" / "7 o'clock" → 07:00 (assume AM if no context, PM if afternoon context)
+  - "7.30" / "7:30" / "730" → 07:30 (dot notation, colon, or no separator)
+  - "noon" / "12" / "midday" → 12:00
+  - "midnight" → 00:00
+  - "morning" → 09:00, "afternoon" → 14:00, "evening" → 18:00, "night" → 21:00
+  - "quarter past 7" → 07:15, "half past 3" → 15:30, "quarter to 5" → 16:45
+  - "in 30 minutes" / "in half an hour" → current time + 30 min
+  - "in 2 hours" / "in an hour" → current time + N hours
   - Not specified → default to 09:00 (morning)
 - **Recurrence**: How often
   - "every day" / "daily" → recurrence = "daily"
+  - "Monday to Friday" / "Mon-Fri" / "weekdays" → recurrence = "weekdays"
   - "every week" / "weekly" / "every Monday" → recurrence = "weekly"
   - "every month" / "monthly" → recurrence = "monthly"
   - Not specified → recurrence = "none" (one-time)
@@ -120,14 +129,14 @@ echo "✅ Reminder set for ${DATE_PART} at ${TIME_PART}: ${REMINDER_MESSAGE}"
 
 ### Create Recurring Reminder
 
-When user says: "Remind me every day at 9am to take medicine" or "Set a weekly reminder for Monday at 10am"
+When user says: "Remind me every day at 9am to take medicine" or "Set a weekly reminder for Monday at 10am" or "Remind me Mon-Fri at 7am to exercise"
 
 ```bash
 # PARSE from user's actual request
 REMINDER_MESSAGE="<EXTRACTED_FROM_USER_REQUEST>"
 DATE_PART="<EXTRACTED_DATE_OR_TODAY>"
 TIME_PART="<EXTRACTED_TIME>"
-RECURRENCE="<daily|weekly|monthly>"
+RECURRENCE="<daily|weekdays|weekly|monthly>"  # Use "weekdays" for Mon-Fri
 
 # Calculate the first trigger time in UTC
 TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
@@ -484,3 +493,9 @@ After executing API calls:
 8. **DISPLAY times in user's timezone** — When showing reminders, convert UTC back to local time for readability
 9. **FORMAT responses** in a user-friendly way with emojis and clear structure
 10. **EXECUTE the bash commands** — DO NOT just describe or acknowledge the commands - ACTUALLY RUN THEM
+11. **HANDLE COMPOUND REQUESTS** — When user says "delete X and then create Y" or "cancel my reminder and set a new one", execute each step SEQUENTIALLY:
+    - Step A: Complete the first action (e.g., cancel reminder via API, confirm success)
+    - Step B: Then execute the second action (e.g., create new reminder via API, confirm success)
+    - Report results of BOTH actions to the user
+    - If Step A fails, still attempt Step B unless they are dependent
+12. **PARSE MILITARY TIME** — "0700" = 07:00, "1430" = 14:30, "2100" = 21:00. Strip leading zeros for display but use HH:MM for the date command

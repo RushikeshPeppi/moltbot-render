@@ -68,11 +68,15 @@ Common date patterns (ALWAYS use `TZ="$USER_TIMEZONE"`):
 - Next Tuesday at 6pm: `$(TZ="$USER_TIMEZONE" date -u -d "next Tuesday 18:00" +%Y-%m-%dT%H:%M:%SZ)`
 - In 3 days: `$(TZ="$USER_TIMEZONE" date -u -d "+3 days" +%Y-%m-%dT00:00:00Z)`
 
-Time conversion rules:
-- "6pm" → 18:00
-- "2 PM" → 14:00
-- "noon" → 12:00
+Time conversion rules (convert ALL formats to HH:MM 24-hour for the date command):
+- "6pm" / "6 PM" / "6:00pm" / "6:00 p.m." → 18:00
+- "2 PM" / "2pm" / "2:00 PM" → 14:00
+- "0700" / "0700hrs" / "0700 hours" → 07:00 (military without colon)
+- "7" / "at 7" / "7 o'clock" → 07:00 (AM) or 19:00 (PM based on context)
+- "7.30" / "7:30" / "730" → 07:30 (dot, colon, or no separator)
+- "noon" / "midday" → 12:00
 - "midnight" → 00:00
+- "quarter past 2" → 14:15, "half past 3" → 15:30, "quarter to 5" → 16:45
 - No time specified → default to 9:00 for morning, 14:00 for afternoon
 
 ### 🎯 Example: Handling "tomorrow at 2pm" correctly

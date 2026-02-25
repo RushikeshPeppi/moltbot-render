@@ -162,6 +162,12 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
   context += 'You have continuous memory - NEVER say "I just came alive". ';
   context += `Reminders are FULLY FUNCTIONAL via the reminders skill. CRITICAL TIMEZONE RULE FOR REMINDERS: When user says "10am" or "2pm", they mean ${timezone || 'UTC'} time (NOT UTC). The reminders API expects UTC, so YOU MUST convert using the TZ bash command. CRITICAL INSTRUCTIONS: (1) When user asks to set/update/cancel a reminder, USE the reminders skill immediately. (2) The skill provides $USER_TIMEZONE="${timezone || 'UTC'}", $FASTAPI_URL, and $MOLTBOT_USER_ID. (3) YOU MUST execute the actual bash commands from the skill - do NOT just describe them. (4) TIMEZONE CONVERSION IS MANDATORY: ALWAYS run this command FIRST: TRIGGER_AT=$(TZ="${timezone || 'UTC'}" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ) - this converts ${timezone || 'UTC'} time to UTC. (5) For updates: Use /api/v1/reminders/update endpoint (cancel old + create new schedule). Example flow: User says "remind me at 10am ${timezone || 'UTC'}" → You run: TRIGGER_AT=$(TZ="${timezone || 'UTC'}" date -u -d "tomorrow 10:00" +%Y-%m-%dT%H:%M:%SZ) → Get UTC result → curl -X POST with that UTC time → Success. DO NOT skip the TZ conversion command! `;
 
+  // Global time parsing — applies to ALL skills (reminders, calendar, etc.)
+  context += 'TIME PARSING (GLOBAL): When the user mentions ANY time, normalize it to HH:MM 24-hour format before passing to the date command or any API. Rules: "2pm"/"2 PM"/"2:00pm"=14:00, "9am"/"9 AM"/"9:00am"=09:00, "0700"/"0700hrs"/"0700 hours"=07:00, "1430"=14:30, "2100"=21:00, "7"/"at 7"=07:00, "7.30"/"7:30"/"730"=07:30, "noon"/"midday"=12:00, "midnight"=00:00, "quarter past 2"=14:15, "half past 3"=15:30, "quarter to 5"=16:45, "morning"=09:00, "afternoon"=14:00, "evening"=18:00, "night"=21:00. This applies to reminders, calendar events, email date filters, and any other time-related operation. ';
+
+  // Compound request handling
+  context += 'COMPOUND REQUESTS: When user asks multiple things in one message (e.g., "delete my reminder and create a new one", "check my inbox and schedule a meeting", "cancel reminder #5 and set a daily reminder at 7am"), execute each action SEQUENTIALLY: (1) Complete the first action fully (API call + confirm). (2) Then execute the next action (API call + confirm). (3) Report results of ALL actions. You may use DIFFERENT skills for each step (e.g., reminders skill then google-workspace skill). If one step fails, still attempt the remaining steps. ';
+
   // Recent conversation (limited to 5 messages, truncated)
   if (history && history.length > 0) {
     const recentHistory = history.slice(-5);
@@ -311,8 +317,30 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
         }
 
         if (result) {
+          // Extract text from OpenClaw's payloads format (preferred)
+          let responseText = null;
+          if (result.payloads && Array.isArray(result.payloads) && result.payloads.length > 0) {
+            responseText = result.payloads
+              .map(p => p.text || p.content || '')
+              .filter(t => t.length > 0)
+              .join('\n');
+          }
+
+          // Fallback chain: payloads → standard fields → raw stringify
+          if (!responseText) {
+            responseText = result.response || result.message || result.text;
+          }
+          if (!responseText && typeof result === 'string') {
+            responseText = result;
+          }
+          if (!responseText) {
+            // Last resort: stringify but log warning
+            console.warn(`[${sessionId}] OpenClaw returned empty payloads, falling back to raw JSON`);
+            responseText = JSON.stringify(result);
+          }
+
           resolve({
-            response: result.response || result.message || result.text || (typeof result === 'string' ? result : JSON.stringify(result)),
+            response: responseText,
             action_type: result.action_type || result.tool || result.agent || 'chat',
             details: result.details || result.metadata || result.data || null,
             tokens_used: result.tokens_used || result.usage?.total_tokens || 0

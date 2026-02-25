@@ -93,7 +93,11 @@ def recurrence_to_cron(trigger_at: datetime, recurrence: str, timezone: str) -> 
     if recurrence == "daily":
         # Fire every day at the same UTC time
         return f"{minute} {hour} * * *"
-        
+
+    elif recurrence == "weekdays":
+        # Fire Monday through Friday only
+        return f"{minute} {hour} * * 1-5"
+
     elif recurrence == "weekly":
         # Fire on the same day of the week (use local day-of-week)
         # CRON: 0=Sunday, 1=Monday, ..., 6=Saturday
