@@ -231,22 +231,19 @@ EVENT_START=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-
 # Calculate end time (start + duration)
 EVENT_END=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
 
-# Build JSON payload dynamically
-JSON_PAYLOAD=$(cat <<EOF
-{
-  "summary": "${MEETING_TITLE}",
-  "description": "<OPTIONAL_FROM_CONTEXT>",
-  "start": {
-    "dateTime": "${EVENT_START}",
-    "timeZone": "$USER_TIMEZONE"
-  },
-  "end": {
-    "dateTime": "${EVENT_END}",
-    "timeZone": "$USER_TIMEZONE"
-  }
-}
-EOF
-)
+# Build JSON payload safely using jq (handles special chars in titles/descriptions)
+JSON_PAYLOAD=$(jq -n \
+  --arg title "$MEETING_TITLE" \
+  --arg desc "${DESCRIPTION:-}" \
+  --arg start "$EVENT_START" \
+  --arg end "$EVENT_END" \
+  --arg tz "$USER_TIMEZONE" \
+  '{
+    summary: $title,
+    description: $desc,
+    start: {dateTime: $start, timeZone: $tz},
+    end: {dateTime: $end, timeZone: $tz}
+  }')
 
 # Add attendees ONLY if email is provided or extracted
 # If user says "meeting with Marvin" without email, you can either:
@@ -297,29 +294,24 @@ EVENT_END=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART} + ${DURATI
 # Generate a unique request ID for Meet link creation
 REQUEST_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "meet-$(date +%s)")
 
-# Build JSON payload WITH conferenceData for Google Meet
-JSON_PAYLOAD=$(cat <<EOF
-{
-  "summary": "${MEETING_TITLE}",
-  "start": {
-    "dateTime": "${EVENT_START}",
-    "timeZone": "$USER_TIMEZONE"
-  },
-  "end": {
-    "dateTime": "${EVENT_END}",
-    "timeZone": "$USER_TIMEZONE"
-  },
-  "conferenceData": {
-    "createRequest": {
-      "requestId": "${REQUEST_ID}",
-      "conferenceSolutionKey": {
-        "type": "hangoutsMeet"
+# Build JSON payload safely using jq (handles special chars in titles)
+JSON_PAYLOAD=$(jq -n \
+  --arg title "$MEETING_TITLE" \
+  --arg start "$EVENT_START" \
+  --arg end "$EVENT_END" \
+  --arg tz "$USER_TIMEZONE" \
+  --arg reqid "$REQUEST_ID" \
+  '{
+    summary: $title,
+    start: {dateTime: $start, timeZone: $tz},
+    end: {dateTime: $end, timeZone: $tz},
+    conferenceData: {
+      createRequest: {
+        requestId: $reqid,
+        conferenceSolutionKey: {type: "hangoutsMeet"}
       }
     }
-  }
-}
-EOF
-)
+  }')
 
 # Add attendees if provided
 if [ -n "$ATTENDEE_EMAIL" ]; then

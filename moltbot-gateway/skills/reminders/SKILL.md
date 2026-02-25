@@ -122,22 +122,32 @@ TRIGGER_AT="${TARGET_DATE}T${TIME_PART}:00"
 # For relative times like "in 5 minutes", "in 2 hours":
 # TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "+5 minutes" +%Y-%m-%dT%H:%M:%S)
 
+# Build JSON payload safely using jq (handles special chars like apostrophes, quotes, newlines)
+JSON_PAYLOAD=$(jq -n \
+  --arg uid "$MOLTBOT_USER_ID" \
+  --arg msg "$REMINDER_MESSAGE" \
+  --arg trigger "$TRIGGER_AT" \
+  --arg tz "$USER_TIMEZONE" \
+  --arg recur "none" \
+  '{user_id: $uid, message: $msg, trigger_at: $trigger, user_timezone: $tz, recurrence: $recur}')
+
 # Call the Moltbot FastAPI to create the reminder
 RESPONSE=$(curl -s -X POST \
   "${FASTAPI_URL}/api/v1/reminders/create" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"user_id\": \"${MOLTBOT_USER_ID}\",
-    \"message\": \"${REMINDER_MESSAGE}\",
-    \"trigger_at\": \"${TRIGGER_AT}\",
-    \"user_timezone\": \"${USER_TIMEZONE}\",
-    \"recurrence\": \"none\"
-  }")
+  -d "$JSON_PAYLOAD")
 
-echo "$RESPONSE"
+# Extract reminder ID from response for confirmation
+REMINDER_ID=$(echo "$RESPONSE" | jq -r '.data.id // empty')
+ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty')
 
-# IMPORTANT: Always confirm success to user
-echo "✅ Reminder set for ${DATE_PART} at ${TIME_PART}: ${REMINDER_MESSAGE}"
+if [ -n "$ERROR_MSG" ]; then
+  echo "❌ Failed to set reminder: $(echo "$RESPONSE" | jq -r '.message')"
+elif [ -n "$REMINDER_ID" ]; then
+  echo "✅ Reminder #${REMINDER_ID} set for ${DATE_PART} at ${TIME_PART}: ${REMINDER_MESSAGE}"
+else
+  echo "$RESPONSE"
+fi
 ```
 
 ### Create Recurring Reminder
@@ -156,22 +166,32 @@ RECURRENCE="<daily|weekdays|weekly|monthly>"  # Use "weekdays" for Mon-Fri
 TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
 TRIGGER_AT="${TARGET_DATE}T${TIME_PART}:00"
 
+# Build JSON payload safely using jq (handles special chars like apostrophes, quotes, newlines)
+JSON_PAYLOAD=$(jq -n \
+  --arg uid "$MOLTBOT_USER_ID" \
+  --arg msg "$REMINDER_MESSAGE" \
+  --arg trigger "$TRIGGER_AT" \
+  --arg tz "$USER_TIMEZONE" \
+  --arg recur "$RECURRENCE" \
+  '{user_id: $uid, message: $msg, trigger_at: $trigger, user_timezone: $tz, recurrence: $recur}')
+
 # Call the API with recurrence
 RESPONSE=$(curl -s -X POST \
   "${FASTAPI_URL}/api/v1/reminders/create" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"user_id\": \"${MOLTBOT_USER_ID}\",
-    \"message\": \"${REMINDER_MESSAGE}\",
-    \"trigger_at\": \"${TRIGGER_AT}\",
-    \"user_timezone\": \"${USER_TIMEZONE}\",
-    \"recurrence\": \"${RECURRENCE}\"
-  }")
+  -d "$JSON_PAYLOAD")
 
-echo "$RESPONSE"
+# Extract reminder ID from response
+REMINDER_ID=$(echo "$RESPONSE" | jq -r '.data.id // empty')
+ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty')
 
-# Confirm to user
-echo "✅ ${RECURRENCE^} reminder set: ${REMINDER_MESSAGE} at ${TIME_PART}"
+if [ -n "$ERROR_MSG" ]; then
+  echo "❌ Failed to set reminder: $(echo "$RESPONSE" | jq -r '.message')"
+elif [ -n "$REMINDER_ID" ]; then
+  echo "✅ ${RECURRENCE^} reminder #${REMINDER_ID} set: ${REMINDER_MESSAGE} at ${TIME_PART}"
+else
+  echo "$RESPONSE"
+fi
 ```
 
 ### Auto-Set Reminders from Calendar Events
@@ -200,35 +220,52 @@ echo "Found ${EVENT_COUNT} upcoming events. Setting reminders..."
 
 # Step 2: For each event, calculate 30 min before and set a reminder
 echo "$EVENTS_JSON" | jq -c '.items[]' | while read -r EVENT; do
-  EVENT_TITLE=$(echo "$EVENT" | jq -r '.summary')
-  EVENT_TIME=$(echo "$EVENT" | jq -r '.start.dateTime // .start.date')
+  EVENT_TITLE=$(echo "$EVENT" | jq -r '.summary // "Untitled Event"')
+  HAS_TIME=$(echo "$EVENT" | jq -r '.start.dateTime // empty')
+  EVENT_DATE=$(echo "$EVENT" | jq -r '.start.date // empty')
 
-  # Calculate 30 minutes before the event (safe ISO 8601 parsing)
-  EVENT_EPOCH=$(date -d "$EVENT_TIME" +%s 2>/dev/null || date -d "$(echo $EVENT_TIME | sed 's/+\([0-9][0-9]\):\([0-9][0-9]\)$/+\1\2/')" +%s)
-  REMINDER_EPOCH=$((EVENT_EPOCH - 1800))
-  # Output in LOCAL time (no -u, no Z) — backend converts to UTC
-  TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "@$REMINDER_EPOCH" +%Y-%m-%dT%H:%M:%S)
-
-  # Only set reminder if the reminder time is still in the future
-  NOW_EPOCH=$(date +%s)
-  if [ "$REMINDER_EPOCH" -gt "$NOW_EPOCH" ]; then
-    RESPONSE=$(curl -s -X POST \
-      "${FASTAPI_URL}/api/v1/reminders/create" \
-      -H "Content-Type: application/json" \
-      -d "{
-        \"user_id\": \"${MOLTBOT_USER_ID}\",
-        \"message\": \"Upcoming: ${EVENT_TITLE}\",
-        \"trigger_at\": \"${TRIGGER_AT}\",
-        \"user_timezone\": \"${USER_TIMEZONE}\",
-        \"recurrence\": \"none\"
-      }")
-
-    # Display in user's local time
-    LOCAL_TIME=$(TZ="$USER_TIMEZONE" date -d "@$EVENT_EPOCH" '+%I:%M %p on %b %d' 2>/dev/null || echo "$EVENT_TIME")
-    echo "✅ Reminder set for '${EVENT_TITLE}' — 30 min before event at ${LOCAL_TIME}"
+  # Handle all-day events (no dateTime, only date like "2026-02-28")
+  if [ -z "$HAS_TIME" ] && [ -n "$EVENT_DATE" ]; then
+    # All-day event: set reminder for 9:00 AM user's local time on that day
+    TRIGGER_AT="${EVENT_DATE}T08:30:00"
+    LOCAL_TIME="9:00 AM on ${EVENT_DATE} (all-day event)"
+    NOW_EPOCH=$(date +%s)
+    CHECK_EPOCH=$(date -d "${EVENT_DATE} 08:30" +%s 2>/dev/null || echo "0")
+    if [ "$CHECK_EPOCH" -le "$NOW_EPOCH" ]; then
+      echo "⏩ Skipped '${EVENT_TITLE}' — all-day event already passed"
+      continue
+    fi
   else
-    echo "⏩ Skipped '${EVENT_TITLE}' — event is too soon or already passed"
+    EVENT_TIME="$HAS_TIME"
+    # Calculate 30 minutes before the event (safe ISO 8601 parsing)
+    EVENT_EPOCH=$(date -d "$EVENT_TIME" +%s 2>/dev/null || date -d "$(echo $EVENT_TIME | sed 's/+\([0-9][0-9]\):\([0-9][0-9]\)$/+\1\2/')" +%s)
+    REMINDER_EPOCH=$((EVENT_EPOCH - 1800))
+    # Output in LOCAL time (no -u, no Z) — backend converts to UTC
+    TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "@$REMINDER_EPOCH" +%Y-%m-%dT%H:%M:%S)
+
+    # Only set reminder if the reminder time is still in the future
+    NOW_EPOCH=$(date +%s)
+    if [ "$REMINDER_EPOCH" -le "$NOW_EPOCH" ]; then
+      echo "⏩ Skipped '${EVENT_TITLE}' — event is too soon or already passed"
+      continue
+    fi
+    LOCAL_TIME=$(TZ="$USER_TIMEZONE" date -d "@$EVENT_EPOCH" '+%I:%M %p on %b %d' 2>/dev/null || echo "$EVENT_TIME")
   fi
+
+  # Build JSON payload safely (handles special chars in event titles)
+  JSON_PAYLOAD=$(jq -n \
+    --arg uid "$MOLTBOT_USER_ID" \
+    --arg msg "Upcoming: ${EVENT_TITLE}" \
+    --arg trigger "$TRIGGER_AT" \
+    --arg tz "$USER_TIMEZONE" \
+    '{user_id: $uid, message: $msg, trigger_at: $trigger, user_timezone: $tz, recurrence: "none"}')
+
+  RESPONSE=$(curl -s -X POST \
+    "${FASTAPI_URL}/api/v1/reminders/create" \
+    -H "Content-Type: application/json" \
+    -d "$JSON_PAYLOAD")
+
+  echo "✅ Reminder set for '${EVENT_TITLE}' — 30 min before event at ${LOCAL_TIME}"
 done
 ```
 
@@ -385,26 +422,25 @@ NEW_TIME="<EXTRACTED_NEW_TIME>"  # e.g., "11:00", "14:00"
 NEW_RECURRENCE="<EXTRACTED_NEW_RECURRENCE_IF_CHANGING>"  # Empty if not changing recurrence
 DATE_PART="<EXTRACTED_DATE_OR_TODAY>"  # e.g., "today", "tomorrow", "next Monday"
 
-# Build the update request payload dynamically
-UPDATE_PAYLOAD="{\"user_id\": \"${MOLTBOT_USER_ID}\", \"reminder_id\": ${REMINDER_ID}"
-
-# Add fields only if they're being updated
-if [ -n "$NEW_MESSAGE" ]; then
-  UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"message\": \"${NEW_MESSAGE}\""
-fi
-
+# Build the update payload safely using jq (handles special chars in messages)
 if [ -n "$NEW_TIME" ]; then
   # Send LOCAL time (NO -u, NO Z!) — backend converts to UTC
   TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
   TRIGGER_AT="${TARGET_DATE}T${NEW_TIME}:00"
-  UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"trigger_at\": \"${TRIGGER_AT}\", \"user_timezone\": \"${USER_TIMEZONE}\""
 fi
 
+# Start with required fields, then add optional ones
+UPDATE_PAYLOAD=$(jq -n --arg uid "$MOLTBOT_USER_ID" --argjson rid "$REMINDER_ID" '{user_id: $uid, reminder_id: $rid}')
+
+if [ -n "$NEW_MESSAGE" ]; then
+  UPDATE_PAYLOAD=$(echo "$UPDATE_PAYLOAD" | jq --arg msg "$NEW_MESSAGE" '. + {message: $msg}')
+fi
+if [ -n "$NEW_TIME" ]; then
+  UPDATE_PAYLOAD=$(echo "$UPDATE_PAYLOAD" | jq --arg t "$TRIGGER_AT" --arg tz "$USER_TIMEZONE" '. + {trigger_at: $t, user_timezone: $tz}')
+fi
 if [ -n "$NEW_RECURRENCE" ]; then
-  UPDATE_PAYLOAD="${UPDATE_PAYLOAD}, \"recurrence\": \"${NEW_RECURRENCE}\""
+  UPDATE_PAYLOAD=$(echo "$UPDATE_PAYLOAD" | jq --arg r "$NEW_RECURRENCE" '. + {recurrence: $r}')
 fi
-
-UPDATE_PAYLOAD="${UPDATE_PAYLOAD}}"
 
 # Call the update API
 RESPONSE=$(curl -s -X POST \
@@ -512,19 +548,21 @@ fi
 ### Step 2: Cancel the reminder
 
 ```bash
-# Cancel the reminder
+# Cancel the reminder (use jq for safe JSON payload)
+CANCEL_PAYLOAD=$(jq -n --arg uid "$MOLTBOT_USER_ID" --argjson rid "$REMINDER_ID" '{user_id: $uid, reminder_id: $rid}')
+
 RESPONSE=$(curl -s -X POST \
   "${FASTAPI_URL}/api/v1/reminders/cancel" \
   -H "Content-Type: application/json" \
-  -d "{
-    \"user_id\": \"${MOLTBOT_USER_ID}\",
-    \"reminder_id\": ${REMINDER_ID}
-  }")
+  -d "$CANCEL_PAYLOAD")
 
-echo "$RESPONSE"
-
-# Confirm to user with clean message (no technical IDs)
-echo "✅ Reminder cancelled! You won't be reminded about '${REMINDER_MESSAGE}' anymore."
+# Check response and confirm to user
+ERROR_MSG=$(echo "$RESPONSE" | jq -r '.error // empty')
+if [ -n "$ERROR_MSG" ]; then
+  echo "❌ Failed to cancel: $(echo "$RESPONSE" | jq -r '.message')"
+else
+  echo "✅ Reminder cancelled! You won't be reminded about '${REMINDER_MESSAGE}' anymore."
+fi
 ```
 
 ## 🎯 Response Formatting

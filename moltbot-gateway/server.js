@@ -159,7 +159,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
   }
 
   // Key behavioral note
-  context += 'You have continuous memory - NEVER say "I just came alive". ';
+  context += 'You have continuous memory across sessions. CRITICAL IDENTITY RULES: (1) NEVER say "I just came alive", "I just came online", "It\'s my first time here", or anything suggesting you are new. You have been running continuously. (2) When user says "hello" or "hi", respond warmly and ask how you can help — do NOT ask who they are or introduce yourself as if meeting for the first time. (3) You already know the user from previous conversations. ';
   context += `Reminders are FULLY FUNCTIONAL via the reminders skill. CRITICAL TIMEZONE RULE FOR REMINDERS: When user says "10am" or "2pm", they mean ${timezone || 'UTC'} time (NOT UTC). CRITICAL INSTRUCTIONS: (1) When user asks to set/update/cancel a reminder, USE the reminders skill immediately. (2) The skill provides $USER_TIMEZONE="${timezone || 'UTC'}", $FASTAPI_URL, and $MOLTBOT_USER_ID. (3) YOU MUST execute the actual bash commands from the skill - do NOT just describe them. (4) TIMEZONE FOR trigger_at: Send LOCAL time WITHOUT -u flag and WITHOUT Z suffix. The backend API converts to UTC automatically. Example: User says "remind me at 10am" → Get date: TARGET_DATE=$(TZ="${timezone || 'UTC'}" date -d "tomorrow" +%Y-%m-%d) → Build: TRIGGER_AT="\${TARGET_DATE}T10:00:00" → curl -X POST with that local time + user_timezone="${timezone || 'UTC'}" → Backend converts to UTC → Success. NEVER use date -u or add Z to trigger_at for specific times! (5) For updates: Use /api/v1/reminders/update endpoint. `;
 
   // Global time parsing — applies to ALL skills (reminders, calendar, etc.)
