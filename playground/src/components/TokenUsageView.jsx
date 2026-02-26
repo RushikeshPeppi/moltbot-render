@@ -1,6 +1,43 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { getTokenUsage, getPlaygroundUsers, getTokenUsageCsvUrl } from '../services/api';
+
+/*
+ * Gemini 2.5 Pro Pricing (as of Feb 2026):
+ *   Input:  $1.25 per 1M tokens  (prompts <= 200K context)
+ *   Output: $10.00 per 1M tokens (includes thinking tokens)
+ *
+ * With --thinking high, typical split is ~15% input, 85% output+thinking.
+ * Blended rate: 0.15 * $1.25 + 0.85 * $10.00 = ~$8.69 per 1M tokens
+ *
+ * Token estimation method: Google states ~4 chars = 1 token for Gemini.
+ * Accuracy: +/- 10-15% for English text (per Google docs).
+ * For exact counts, usageMetadata from Gemini API is needed.
+ */
+const GEMINI_INPUT_RATE  = 1.25;   // $ per 1M input tokens
+const GEMINI_OUTPUT_RATE = 10.00;  // $ per 1M output tokens (includes thinking)
+const INPUT_RATIO  = 0.15;         // ~15% of total tokens are input
+const OUTPUT_RATIO = 0.85;         // ~85% are output+thinking
+const BLENDED_RATE = INPUT_RATIO * GEMINI_INPUT_RATE + OUTPUT_RATIO * GEMINI_OUTPUT_RATE; // ~$8.69/1M
+
+// Dark-theme select styles (shared between dropdowns)
+const selectStyle = {
+    padding: '8px 12px',
+    background: '#1a1b23',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm)',
+    color: 'var(--text-primary)',
+    fontSize: '13px',
+    fontFamily: 'var(--font)',
+    cursor: 'pointer',
+    minWidth: '160px',
+    appearance: 'none',
+    WebkitAppearance: 'none',
+    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E")`,
+    backgroundRepeat: 'no-repeat',
+    backgroundPosition: 'right 10px center',
+    paddingRight: '32px',
+};
 
 export default function TokenUsageView() {
     const { user } = useAuth();
@@ -11,7 +48,7 @@ export default function TokenUsageView() {
 
     // Filters
     const [selectedUser, setSelectedUser] = useState('all');
-    const [dateFilter, setDateFilter] = useState('all'); // 'all', 'today', 'week', 'custom'
+    const [dateFilter, setDateFilter] = useState('all');
     const [customFrom, setCustomFrom] = useState('');
     const [customTo, setCustomTo] = useState('');
     const [actionFilter, setActionFilter] = useState('all');
@@ -104,18 +141,24 @@ export default function TokenUsageView() {
     };
 
     const formatTokens = (n) => {
-        if (!n) return '0';
+        if (!n || n === 0) return '--';
         if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
         if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-        return n.toString();
+        return n.toLocaleString();
     };
 
-    // Estimate cost: ~$0.0025 per 1K tokens (Gemini 2.5 Pro blended avg)
+    // Cost calculation using Gemini 2.5 Pro blended rate
     const estimateCost = (tokens) => {
-        const cost = (tokens / 1000) * 0.0025;
-        if (cost < 0.01) return '<$0.01';
-        return `$${cost.toFixed(2)}`;
+        if (!tokens || tokens === 0) return '--';
+        const cost = (tokens / 1_000_000) * BLENDED_RATE;
+        if (cost < 0.001) return '<$0.001';
+        if (cost < 0.01) return `$${cost.toFixed(4)}`;
+        return `$${cost.toFixed(3)}`;
     };
+
+    // Count rows that actually have token data
+    const trackedRows = rows.filter(r => (r.tokens_used || 0) > 0);
+    const untrackedRows = rows.length - trackedRows.length;
 
     return (
         <div className="stats-container" style={{ padding: '24px' }}>
@@ -123,13 +166,23 @@ export default function TokenUsageView() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
                 <div>
                     <h1 className="stats-title">Token Usage</h1>
-                    <p className="stats-subtitle">Monitor AI token consumption and estimate costs</p>
+                    <p className="stats-subtitle" style={{ color: 'var(--text-secondary)' }}>
+                        Gemini 2.5 Pro &middot; Input $1.25/1M &middot; Output $10.00/1M &middot; Blended ~${BLENDED_RATE.toFixed(2)}/1M
+                    </p>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn btn-secondary" onClick={fetchUsage} style={{ width: 'auto', padding: '8px 16px', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '13px', fontFamily: 'var(--font)' }}>
+                    <button onClick={fetchUsage} style={{
+                        padding: '8px 16px', background: 'var(--bg-card)', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)', color: 'var(--text-secondary)', cursor: 'pointer',
+                        fontSize: '13px', fontFamily: 'var(--font)',
+                    }}>
                         Refresh
                     </button>
-                    <button onClick={handleDownloadCsv} style={{ width: 'auto', padding: '8px 16px', background: 'var(--accent-gradient)', border: 'none', borderRadius: 'var(--radius-sm)', color: 'white', cursor: 'pointer', fontSize: '13px', fontFamily: 'var(--font)', fontWeight: '500' }}>
+                    <button onClick={handleDownloadCsv} style={{
+                        padding: '8px 16px', background: 'var(--accent-gradient)', border: 'none',
+                        borderRadius: 'var(--radius-sm)', color: 'white', cursor: 'pointer',
+                        fontSize: '13px', fontFamily: 'var(--font)', fontWeight: '500',
+                    }}>
                         Download CSV
                     </button>
                 </div>
@@ -138,43 +191,49 @@ export default function TokenUsageView() {
             {/* Summary Cards */}
             <div className="stats-grid" style={{ marginBottom: '20px' }}>
                 <div className="stat-card">
-                    <div className="stat-icon">{'#'}</div>
+                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--accent-light)' }}>#</div>
                     <div className="stat-value">{totalMessages}</div>
                     <div className="stat-label">Total Requests</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-icon" style={{ fontFamily: 'monospace' }}>Tk</div>
+                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--accent-light)' }}>Tk</div>
                     <div className="stat-value">{formatTokens(totalTokens)}</div>
                     <div className="stat-label">Total Tokens</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-icon">~</div>
+                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--warning)' }}>$</div>
                     <div className="stat-value">{estimateCost(totalTokens)}</div>
                     <div className="stat-label">Est. Cost</div>
                 </div>
                 <div className="stat-card">
-                    <div className="stat-icon" style={{ fontFamily: 'monospace' }}>Avg</div>
-                    <div className="stat-value">{totalMessages > 0 ? formatTokens(Math.round(totalTokens / totalMessages)) : '0'}</div>
+                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--success)' }}>Avg</div>
+                    <div className="stat-value">{trackedRows.length > 0 ? formatTokens(Math.round(totalTokens / trackedRows.length)) : '--'}</div>
                     <div className="stat-label">Avg Tokens/Req</div>
                 </div>
             </div>
 
+            {/* Untracked data notice */}
+            {untrackedRows > 0 && (
+                <div style={{
+                    padding: '10px 16px', marginBottom: '16px', borderRadius: 'var(--radius-sm)',
+                    background: 'rgba(245, 158, 11, 0.08)', border: '1px solid rgba(245, 158, 11, 0.2)',
+                    fontSize: '12px', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '8px',
+                }}>
+                    <span style={{ fontWeight: '600' }}>{untrackedRows} request{untrackedRows > 1 ? 's' : ''}</span>
+                    <span style={{ color: 'var(--text-secondary)' }}>
+                        have no token data (pre-tracking). Tokens are tracked for all new requests after Feb 26 deploy.
+                    </span>
+                </div>
+            )}
+
             {/* Filters */}
-            <div className="usage-filters" style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '12px', marginBottom: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
                 {/* User Filter */}
-                <select
-                    value={selectedUser}
-                    onChange={(e) => setSelectedUser(e.target.value)}
-                    style={{
-                        padding: '8px 12px', background: 'var(--bg-input)', border: '1px solid var(--border)',
-                        borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '13px',
-                        fontFamily: 'var(--font)', cursor: 'pointer', minWidth: '160px',
-                    }}
-                >
+                <select value={selectedUser} onChange={(e) => setSelectedUser(e.target.value)} style={selectStyle}>
                     <option value="all">All Users</option>
                     {allUsers.map((u) => (
                         <option key={u.user_id} value={u.user_id}>
-                            {u.name} ({u.user_id.slice(0, 8)}...)
+                            {u.name} ({u.user_id.slice(0, 8)})
                         </option>
                     ))}
                 </select>
@@ -208,40 +267,16 @@ export default function TokenUsageView() {
                 {/* Custom date inputs */}
                 {dateFilter === 'custom' && (
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                        <input
-                            type="date"
-                            value={customFrom}
-                            onChange={(e) => setCustomFrom(e.target.value)}
-                            style={{
-                                padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border)',
-                                borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '12px',
-                                fontFamily: 'var(--font)',
-                            }}
-                        />
+                        <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+                            style={{ padding: '6px 10px', background: '#1a1b23', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '12px', fontFamily: 'var(--font)', colorScheme: 'dark' }} />
                         <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>to</span>
-                        <input
-                            type="date"
-                            value={customTo}
-                            onChange={(e) => setCustomTo(e.target.value)}
-                            style={{
-                                padding: '6px 10px', background: 'var(--bg-input)', border: '1px solid var(--border)',
-                                borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '12px',
-                                fontFamily: 'var(--font)',
-                            }}
-                        />
+                        <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+                            style={{ padding: '6px 10px', background: '#1a1b23', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '12px', fontFamily: 'var(--font)', colorScheme: 'dark' }} />
                     </div>
                 )}
 
                 {/* Action Type Filter */}
-                <select
-                    value={actionFilter}
-                    onChange={(e) => setActionFilter(e.target.value)}
-                    style={{
-                        padding: '8px 12px', background: 'var(--bg-input)', border: '1px solid var(--border)',
-                        borderRadius: 'var(--radius-sm)', color: 'var(--text-primary)', fontSize: '13px',
-                        fontFamily: 'var(--font)', cursor: 'pointer',
-                    }}
-                >
+                <select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} style={{ ...selectStyle, minWidth: '140px' }}>
                     <option value="all">All Actions</option>
                     <option value="execute_action">Chat / Task</option>
                     <option value="reminder_delivery">Reminder Delivery</option>
@@ -252,22 +287,21 @@ export default function TokenUsageView() {
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
                 {/* Table Header */}
                 <div style={{
-                    display: 'grid',
-                    gridTemplateColumns: '140px 100px 1fr 90px 100px',
-                    gap: '12px', padding: '12px 20px',
-                    borderBottom: '1px solid var(--border)',
-                    fontSize: '11px', fontWeight: '600',
-                    color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px',
+                    display: 'grid', gridTemplateColumns: '130px 90px 1fr 80px 90px 80px',
+                    gap: '10px', padding: '12px 20px', borderBottom: '1px solid var(--border)',
+                    fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)',
+                    textTransform: 'uppercase', letterSpacing: '0.5px',
                 }}>
                     <span>Timestamp</span>
                     <span>User</span>
                     <span>Request / Response</span>
                     <span>Status</span>
                     <span style={{ textAlign: 'right' }}>Tokens</span>
+                    <span style={{ textAlign: 'right' }}>Cost</span>
                 </div>
 
                 {/* Table Body */}
-                <div style={{ maxHeight: 'calc(100vh - 420px)', overflowY: 'auto' }}>
+                <div style={{ maxHeight: 'calc(100vh - 480px)', overflowY: 'auto' }}>
                     {loading ? (
                         <div style={{ display: 'flex', justifyContent: 'center', padding: '40px' }}>
                             <div className="oauth-spinner" style={{ width: '24px', height: '24px' }} />
@@ -278,95 +312,116 @@ export default function TokenUsageView() {
                         </div>
                     ) : (
                         <>
-                            {rows.map((row) => (
-                                <div key={row.id}>
-                                    <div
-                                        onClick={() => setExpandedRow(expandedRow === row.id ? null : row.id)}
-                                        style={{
-                                            display: 'grid',
-                                            gridTemplateColumns: '140px 100px 1fr 90px 100px',
-                                            gap: '12px', padding: '12px 20px',
-                                            borderBottom: '1px solid var(--border)',
-                                            cursor: 'pointer',
-                                            transition: 'background 0.15s ease',
-                                            background: expandedRow === row.id ? 'var(--bg-card-hover)' : 'transparent',
-                                        }}
-                                        onMouseEnter={(e) => { if (expandedRow !== row.id) e.currentTarget.style.background = 'var(--bg-card)'; }}
-                                        onMouseLeave={(e) => { if (expandedRow !== row.id) e.currentTarget.style.background = 'transparent'; }}
-                                    >
-                                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                                            {new Date(row.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
-                                        </span>
-                                        <span style={{ fontSize: '12px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                            {row.user_name || row.user_id?.slice(0, 10)}
-                                        </span>
-                                        <div style={{ overflow: 'hidden' }}>
-                                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                                                <span className={`stats-history-type ${getActionBadge(row.action_type)}`} style={{ width: 'fit-content', flexShrink: 0 }}>
-                                                    {getActionBadge(row.action_type)}
-                                                </span>
-                                                <span style={{ fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                                    {row.request_summary || 'No summary'}
-                                                </span>
+                            {rows.map((row) => {
+                                const tokens = row.tokens_used || 0;
+                                const hasTokens = tokens > 0;
+                                return (
+                                    <div key={row.id}>
+                                        <div
+                                            onClick={() => setExpandedRow(expandedRow === row.id ? null : row.id)}
+                                            style={{
+                                                display: 'grid', gridTemplateColumns: '130px 90px 1fr 80px 90px 80px',
+                                                gap: '10px', padding: '11px 20px', borderBottom: '1px solid var(--border)',
+                                                cursor: 'pointer', transition: 'background 0.15s ease',
+                                                background: expandedRow === row.id ? 'var(--bg-card-hover)' : 'transparent',
+                                            }}
+                                            onMouseEnter={(e) => { if (expandedRow !== row.id) e.currentTarget.style.background = 'var(--bg-card)'; }}
+                                            onMouseLeave={(e) => { if (expandedRow !== row.id) e.currentTarget.style.background = 'transparent'; }}
+                                        >
+                                            <span style={{ fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
+                                                {new Date(row.created_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                            </span>
+                                            <span style={{ fontSize: '12px', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', lineHeight: '1.6' }}>
+                                                {row.user_name || row.user_id?.slice(0, 10)}
+                                            </span>
+                                            <div style={{ overflow: 'hidden' }}>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                    <span className={`stats-history-type ${getActionBadge(row.action_type)}`} style={{ width: 'fit-content', flexShrink: 0 }}>
+                                                        {getActionBadge(row.action_type)}
+                                                    </span>
+                                                    <span style={{ fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                        {row.request_summary || (row.action_type === 'reminder_delivery' ? 'Reminder delivery' : 'No summary')}
+                                                    </span>
+                                                </div>
                                             </div>
+                                            <span style={{ fontSize: '12px', fontWeight: '600', color: getStatusColor(row.status), lineHeight: '1.6' }}>
+                                                {row.status?.toUpperCase()}
+                                            </span>
+                                            <span style={{
+                                                fontSize: '12px', fontWeight: '600', textAlign: 'right', fontFamily: 'monospace', lineHeight: '1.6',
+                                                color: hasTokens ? 'var(--text-primary)' : 'var(--text-muted)',
+                                            }}>
+                                                {hasTokens ? formatTokens(tokens) : '--'}
+                                            </span>
+                                            <span style={{
+                                                fontSize: '11px', textAlign: 'right', fontFamily: 'monospace', lineHeight: '1.6',
+                                                color: hasTokens ? 'var(--text-secondary)' : 'var(--text-muted)',
+                                            }}>
+                                                {hasTokens ? estimateCost(tokens) : '--'}
+                                            </span>
                                         </div>
-                                        <span style={{ fontSize: '12px', fontWeight: '600', color: getStatusColor(row.status) }}>
-                                            {row.status?.toUpperCase()}
-                                        </span>
-                                        <span style={{ fontSize: '13px', fontWeight: '600', color: row.tokens_used ? 'var(--text-primary)' : 'var(--text-muted)', textAlign: 'right', fontFamily: 'monospace' }}>
-                                            {formatTokens(row.tokens_used || 0)}
-                                        </span>
-                                    </div>
 
-                                    {/* Expanded Detail */}
-                                    {expandedRow === row.id && (
-                                        <div style={{
-                                            padding: '16px 20px', background: 'rgba(37, 99, 235, 0.04)',
-                                            borderBottom: '1px solid var(--border)',
-                                        }}>
-                                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-                                                <div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600' }}>Request</div>
-                                                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5', wordBreak: 'break-word' }}>
-                                                        {row.request_summary || 'N/A'}
+                                        {/* Expanded Detail */}
+                                        {expandedRow === row.id && (
+                                            <div style={{ padding: '16px 20px', background: 'rgba(37, 99, 235, 0.04)', borderBottom: '1px solid var(--border)' }}>
+                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                                                    <div>
+                                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600' }}>Request</div>
+                                                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5', wordBreak: 'break-word' }}>
+                                                            {row.request_summary || 'N/A'}
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600' }}>Response</div>
+                                                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5', wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto' }}>
+                                                            {row.response_summary || 'N/A'}
+                                                        </div>
                                                     </div>
                                                 </div>
-                                                <div>
-                                                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '6px', fontWeight: '600' }}>Response</div>
-                                                    <div style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: '1.5', wordBreak: 'break-word', maxHeight: '200px', overflowY: 'auto' }}>
-                                                        {row.response_summary || 'N/A'}
-                                                    </div>
+                                                <div style={{ display: 'flex', gap: '20px', marginTop: '12px', fontSize: '11px', color: 'var(--text-muted)', flexWrap: 'wrap' }}>
+                                                    <span>ID: {row.id}</span>
+                                                    <span>Session: {row.session_id?.slice(0, 16)}</span>
+                                                    {hasTokens && <>
+                                                        <span>Tokens: {tokens.toLocaleString()}</span>
+                                                        <span>Est. input: ~{formatTokens(Math.round(tokens * INPUT_RATIO))}</span>
+                                                        <span>Est. output+thinking: ~{formatTokens(Math.round(tokens * OUTPUT_RATIO))}</span>
+                                                        <span>Cost: {estimateCost(tokens)}</span>
+                                                    </>}
+                                                    {!hasTokens && <span style={{ color: 'var(--warning)' }}>No token data (pre-tracking)</span>}
                                                 </div>
                                             </div>
-                                            <div style={{ display: 'flex', gap: '24px', marginTop: '12px', fontSize: '11px', color: 'var(--text-muted)' }}>
-                                                <span>ID: {row.id}</span>
-                                                <span>Session: {row.session_id?.slice(0, 12)}...</span>
-                                                <span>Tokens: {(row.tokens_used || 0).toLocaleString()}</span>
-                                                <span>Est: {estimateCost(row.tokens_used || 0)}</span>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-                            ))}
+                                        )}
+                                    </div>
+                                );
+                            })}
 
                             {/* Summary Footer Row */}
                             <div style={{
-                                display: 'grid',
-                                gridTemplateColumns: '140px 100px 1fr 90px 100px',
-                                gap: '12px', padding: '14px 20px',
-                                background: 'rgba(37, 99, 235, 0.08)',
-                                borderTop: '2px solid var(--accent)',
-                                fontWeight: '600', fontSize: '13px',
+                                display: 'grid', gridTemplateColumns: '130px 90px 1fr 80px 90px 80px',
+                                gap: '10px', padding: '14px 20px', background: 'rgba(37, 99, 235, 0.08)',
+                                borderTop: '2px solid var(--accent)', fontWeight: '600', fontSize: '13px',
                             }}>
                                 <span style={{ color: 'var(--accent-light)' }}>TOTAL</span>
-                                <span style={{ color: 'var(--text-muted)' }}>{selectedUser === 'all' ? `${allUsers.length} users` : ''}</span>
-                                <span style={{ color: 'var(--text-secondary)' }}>{totalMessages} messages</span>
-                                <span style={{ color: 'var(--text-muted)' }}>{estimateCost(totalTokens)}</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>{selectedUser === 'all' ? `${allUsers.length} users` : ''}</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>
+                                    {totalMessages} messages{untrackedRows > 0 ? ` (${trackedRows.length} tracked)` : ''}
+                                </span>
+                                <span></span>
                                 <span style={{ color: 'var(--accent-light)', textAlign: 'right', fontFamily: 'monospace' }}>{formatTokens(totalTokens)}</span>
+                                <span style={{ color: 'var(--warning)', textAlign: 'right', fontFamily: 'monospace' }}>{estimateCost(totalTokens)}</span>
                             </div>
                         </>
                     )}
                 </div>
+            </div>
+
+            {/* Methodology Note */}
+            <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)', border: '1px solid var(--border)', fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
+                <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Methodology: </span>
+                Token counts are estimated at ~4 characters per token (per Google's documentation, accurate within 10-15% for English).
+                Cost uses Gemini 2.5 Pro rates: $1.25/1M input, $10.00/1M output (incl. thinking).
+                With --thinking high, ~85% of tokens are output+thinking. Blended rate: ~${BLENDED_RATE.toFixed(2)}/1M tokens.
+                For exact billing, use Google Cloud Console.
             </div>
         </div>
     );

@@ -1895,3 +1895,20 @@ body {
     align-items: center;
   }
 }
+
+/* ---------- Dark-theme Select / Option Overrides ---------- */
+select option {
+  background: #1a1b23;
+  color: #f8fafc;
+  padding: 8px 12px;
+}
+
+select option:checked {
+  background: #2563eb;
+  color: white;
+}
+
+/* Force dark color scheme on date inputs */
+input[type="date"] {
+  color-scheme: dark;
+}

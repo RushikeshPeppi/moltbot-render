@@ -286,6 +286,19 @@ async def get_token_usage(
         )
 
 
+# Gemini 2.5 Pro pricing constants
+GEMINI_INPUT_RATE = 1.25     # $ per 1M input tokens
+GEMINI_OUTPUT_RATE = 10.00   # $ per 1M output tokens (includes thinking)
+INPUT_RATIO = 0.15           # ~15% of total tokens are input
+OUTPUT_RATIO = 0.85          # ~85% are output+thinking
+BLENDED_RATE = INPUT_RATIO * GEMINI_INPUT_RATE + OUTPUT_RATIO * GEMINI_OUTPUT_RATE
+
+
+def _estimate_cost(tokens: int) -> float:
+    """Estimate cost using Gemini 2.5 Pro blended rate."""
+    return (tokens / 1_000_000) * BLENDED_RATE
+
+
 @router.get("/token-usage/csv")
 async def download_token_usage_csv(
     user_id: Optional[str] = Query(None),
@@ -312,12 +325,16 @@ async def download_token_usage_csv(
         writer.writerow([
             "ID", "Timestamp", "User ID", "User Name", "Action Type",
             "Request", "Response", "Status", "Tokens Used",
+            "Est. Input Tokens", "Est. Output Tokens", "Est. Cost ($)",
         ])
 
         total_tokens = 0
+        total_cost = 0.0
         for row in rows:
             tokens = row.get("tokens_used", 0) or 0
             total_tokens += tokens
+            cost = _estimate_cost(tokens)
+            total_cost += cost
             writer.writerow([
                 row.get("id", ""),
                 row.get("created_at", ""),
@@ -327,12 +344,24 @@ async def download_token_usage_csv(
                 (row.get("request_summary") or "")[:200],
                 (row.get("response_summary") or "")[:200],
                 row.get("status", ""),
-                tokens,
+                tokens if tokens else "",
+                round(tokens * INPUT_RATIO) if tokens else "",
+                round(tokens * OUTPUT_RATIO) if tokens else "",
+                f"{cost:.4f}" if tokens else "",
             ])
 
         # Summary row
         writer.writerow([])
-        writer.writerow(["TOTAL", "", "", "", "", "", "", f"{len(rows)} messages", total_tokens])
+        writer.writerow([
+            "TOTAL", "", "", "", "", "", "",
+            f"{len(rows)} messages", total_tokens,
+            round(total_tokens * INPUT_RATIO),
+            round(total_tokens * OUTPUT_RATIO),
+            f"{total_cost:.4f}",
+        ])
+        writer.writerow([])
+        writer.writerow(["PRICING", f"Gemini 2.5 Pro: Input ${GEMINI_INPUT_RATE}/1M, Output ${GEMINI_OUTPUT_RATE}/1M, Blended ~${BLENDED_RATE:.2f}/1M"])
+        writer.writerow(["METHOD", "Token estimation: ~4 chars/token (Google docs), +/- 10-15% for English text"])
 
         output.seek(0)
         return StreamingResponse(
@@ -349,6 +378,68 @@ async def download_token_usage_csv(
                 code=ResponseCode.INTERNAL_ERROR,
                 message="Failed to generate CSV",
                 error="CSV_ERROR",
+                exception=str(e),
+            ),
+        )
+
+
+@router.post("/token-usage/backfill")
+async def backfill_token_estimates():
+    """
+    One-time backfill: Estimate tokens for historical rows that have tokens_used=0.
+    Uses stored request_summary + response_summary character lengths (~4 chars/token).
+    Note: Summaries are truncated to 500 chars, so estimates are lower bounds.
+    """
+    try:
+        # Get all rows with 0 tokens
+        rows = await db.get_token_usage(limit=1000)
+        zero_rows = [r for r in rows if not r.get("tokens_used")]
+
+        if not zero_rows:
+            return create_response(
+                code=ResponseCode.SUCCESS,
+                message="No rows to backfill — all rows already have token data",
+                data={"updated": 0},
+            )
+
+        updated = 0
+        for row in zero_rows:
+            req_len = len(row.get("request_summary") or "")
+            resp_len = len(row.get("response_summary") or "")
+
+            if req_len == 0 and resp_len == 0:
+                continue
+
+            # Estimate: chars/4 + overhead for system prompt (~500 tokens)
+            # Note: summaries are truncated to 500 chars, so this is a lower bound
+            estimated = max(1, round((req_len + resp_len) / 4) + 500)
+
+            success = await db.update_action_log(
+                log_id=row["id"],
+                status=row.get("status", "success"),
+                tokens_used=estimated,
+            )
+            if success:
+                updated += 1
+
+        return create_response(
+            code=ResponseCode.SUCCESS,
+            message=f"Backfilled {updated} of {len(zero_rows)} rows with token estimates",
+            data={
+                "total_zero_rows": len(zero_rows),
+                "updated": updated,
+                "note": "Estimates are lower bounds (summaries truncated to 500 chars). Accuracy: +/- 10-15% for full text.",
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"Error backfilling token estimates: {e}")
+        return JSONResponse(
+            status_code=500,
+            content=create_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to backfill token estimates",
+                error="BACKFILL_ERROR",
                 exception=str(e),
             ),
         )
