@@ -163,11 +163,11 @@ export default function TokenUsageView() {
     return (
         <div className="stats-container" style={{ padding: '24px' }}>
             {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '24px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
                 <div>
-                    <h1 className="stats-title">Token Usage</h1>
-                    <p className="stats-subtitle" style={{ color: 'var(--text-secondary)' }}>
-                        Gemini 2.5 Pro &middot; Input $1.25/1M &middot; Output $10.00/1M &middot; Blended ~${BLENDED_RATE.toFixed(2)}/1M
+                    <h1 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>Token Usage</h1>
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
+                        Gemini 2.5 Pro &middot; $1.25/1M in &middot; $10/1M out &middot; ~${BLENDED_RATE.toFixed(2)}/1M blended
                     </p>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -188,28 +188,23 @@ export default function TokenUsageView() {
                 </div>
             </div>
 
-            {/* Summary Cards */}
-            <div className="stats-grid" style={{ marginBottom: '20px' }}>
-                <div className="stat-card">
-                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--accent-light)' }}>#</div>
-                    <div className="stat-value">{totalMessages}</div>
-                    <div className="stat-label">Total Requests</div>
-                </div>
-                <div className="stat-card">
-                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--accent-light)' }}>Tk</div>
-                    <div className="stat-value">{formatTokens(totalTokens)}</div>
-                    <div className="stat-label">Total Tokens</div>
-                </div>
-                <div className="stat-card">
-                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--warning)' }}>$</div>
-                    <div className="stat-value">{estimateCost(totalTokens)}</div>
-                    <div className="stat-label">Est. Cost</div>
-                </div>
-                <div className="stat-card">
-                    <div className="stat-icon" style={{ fontSize: '20px', color: 'var(--success)' }}>Avg</div>
-                    <div className="stat-value">{trackedRows.length > 0 ? formatTokens(Math.round(totalTokens / trackedRows.length)) : '--'}</div>
-                    <div className="stat-label">Avg Tokens/Req</div>
-                </div>
+            {/* Summary Metrics Bar */}
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+                {[
+                    { label: 'Requests', value: totalMessages, color: 'var(--accent-light)' },
+                    { label: 'Tokens', value: formatTokens(totalTokens), color: 'var(--accent-light)' },
+                    { label: 'Est. Cost', value: estimateCost(totalTokens), color: 'var(--warning)' },
+                    { label: 'Avg/Req', value: trackedRows.length > 0 ? formatTokens(Math.round(totalTokens / trackedRows.length)) : '--', color: 'var(--success)' },
+                ].map((m, i) => (
+                    <div key={i} style={{
+                        flex: 1, display: 'flex', alignItems: 'center', gap: '10px',
+                        padding: '10px 16px', background: 'var(--bg-card)', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-sm)',
+                    }}>
+                        <span style={{ fontSize: '20px', fontWeight: '700', color: m.color, fontFamily: 'monospace' }}>{m.value}</span>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{m.label}</span>
+                    </div>
+                ))}
             </div>
 
             {/* Untracked data notice */}
