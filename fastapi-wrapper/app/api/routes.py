@@ -231,6 +231,9 @@ async def execute_action(request: ExecuteActionRequest):
         # 7. Parse and clean the response
         raw_response = openclaw_response.get('response', 'Action completed')
 
+        # Get token usage from the gateway (it extracts from OpenClaw CLI output)
+        tokens_used = openclaw_response.get('tokens_used', 0) or 0
+
         # Try to parse the stringified JSON response from OpenClaw
         try:
             import json
@@ -244,16 +247,29 @@ async def execute_action(request: ExecuteActionRequest):
             else:
                 clean_response = raw_response
 
-            # Extract token usage from meta if available
-            meta = parsed_response.get('meta', {})
-            agent_meta = meta.get('agentMeta', {})
-            usage = agent_meta.get('usage', {})
-            tokens_used = usage.get('total', 0)
+            # If gateway didn't provide tokens, try extracting from parsed response
+            if not tokens_used:
+                meta = parsed_response.get('meta', {})
+                agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
+                usage = agent_meta.get('usage', meta.get('usage', {}))
+                tokens_used = (
+                    usage.get('totalTokenCount', 0)
+                    or usage.get('total_token_count', 0)
+                    or usage.get('total_tokens', 0)
+                    or usage.get('total', 0)
+                )
 
         except (json.JSONDecodeError, AttributeError, KeyError):
             # If parsing fails, use the raw response
             clean_response = raw_response
-            tokens_used = 0
+
+        # Final fallback: Estimate tokens from character count (~4 chars/token for Gemini)
+        if not tokens_used:
+            input_chars = len(request.message or '')
+            output_chars = len(clean_response or '')
+            # Add ~500 tokens for system prompt/context overhead
+            tokens_used = max(1, round((input_chars + output_chars) / 4) + 500)
+            logger.info(f"Token estimation: input={input_chars}c output={output_chars}c → ~{tokens_used} tokens")
 
         # Add assistant response to history
         await session_manager.add_message(session_id, user_id, "assistant", clean_response)

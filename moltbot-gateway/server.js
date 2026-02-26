@@ -350,11 +350,45 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
             responseText = JSON.stringify(result);
           }
 
+          // ── Token Usage Extraction ──
+          // Try every known path where OpenClaw / Gemini might report tokens
+          let tokensUsed = 0;
+          const meta = result.meta || {};
+          const agentMeta = meta.agentMeta || meta.agent_meta || {};
+          const usage = agentMeta.usage || meta.usage || result.usage || {};
+
+          // Gemini-style field names
+          tokensUsed = usage.totalTokenCount
+            || usage.total_token_count
+            || usage.total_tokens
+            || usage.total
+            // Input + output breakdown
+            || ((usage.promptTokenCount || usage.prompt_token_count || usage.input_tokens || 0)
+              + (usage.candidatesTokenCount || usage.candidates_token_count || usage.output_tokens || 0))
+            // Top-level fields
+            || result.tokens_used
+            || result.total_tokens
+            || 0;
+
+          // Log actual structure for debugging (first 500 chars of keys)
+          const topKeys = Object.keys(result).join(', ');
+          const metaKeys = meta ? Object.keys(meta).join(', ') : 'none';
+          const usageKeys = usage ? Object.keys(usage).join(', ') : 'none';
+          console.log(`[${sessionId}] Token extraction: tokens=${tokensUsed}, top=[${topKeys}], meta=[${metaKeys}], usage=[${usageKeys}]`);
+
+          // Fallback: Estimate tokens from text (~4 chars/token for Gemini)
+          if (!tokensUsed && responseText) {
+            const inputChars = (message || '').length + (context || '').length;
+            const outputChars = responseText.length;
+            tokensUsed = Math.round((inputChars + outputChars) / 4);
+            console.log(`[${sessionId}] Token estimation fallback: input=${inputChars}chars output=${outputChars}chars → ~${tokensUsed} tokens`);
+          }
+
           resolve({
             response: responseText,
             action_type: result.action_type || result.tool || result.agent || 'chat',
             details: result.details || result.metadata || result.data || null,
-            tokens_used: result.tokens_used || result.usage?.total_tokens || 0
+            tokens_used: tokensUsed
           });
         } else {
           // Fallback if no JSON found
@@ -365,11 +399,17 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
         // Remove the ASCII config table if present
         let cleanResponse = stdout.trim();
 
+        // Estimate tokens even for non-JSON responses
+        const inputChars = (message || '').length + (context || '').length;
+        const outputChars = cleanResponse.length;
+        const estimatedTokens = Math.round((inputChars + outputChars) / 4);
+        console.log(`[${sessionId}] Plain text fallback, estimated ~${estimatedTokens} tokens`);
+
         resolve({
           response: cleanResponse,
           action_type: 'chat',
           details: null,
-          tokens_used: 0
+          tokens_used: estimatedTokens
         });
       }
     });
