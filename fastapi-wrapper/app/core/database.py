@@ -283,6 +283,49 @@ class Database:
             logger.error(f"Error getting action history: {e}")
             return []
     
+    # ==================== Token Usage ====================
+
+    async def get_token_usage(
+        self,
+        user_id: str = None,
+        date_from: str = None,
+        date_to: str = None,
+        action_type: str = None,
+        limit: int = 500,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get token usage data from audit log with optional filters.
+        Supports cross-user queries (user_id=None returns all users).
+        """
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return []
+
+            query = self._client.table("tbl_clawdbot_audit_log").select(
+                "id, user_id, session_id, action_type, request_summary, response_summary, status, tokens_used, created_at"
+            )
+
+            if user_id:
+                query = query.eq("user_id", user_id)
+
+            if date_from:
+                query = query.gte("created_at", date_from)
+
+            if date_to:
+                query = query.lte("created_at", date_to)
+
+            if action_type and action_type != "all":
+                query = query.eq("action_type", action_type)
+
+            response = query.order("created_at", desc=True).limit(limit).execute()
+
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Error getting token usage: {e}")
+            return []
+
     # ==================== Rate Limit Functions ====================
     # Note: Rate limiting is handled by Peppi (Laravel), not here.
     # These functions are kept as stubs for potential future use.

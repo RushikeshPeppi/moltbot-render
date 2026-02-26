@@ -10,6 +10,7 @@ export default function Sidebar({ activeView, onNavigate, onOpenSettings }) {
         { id: 'chat', icon: '💬', label: 'Chat' },
         { id: 'stats', icon: '📊', label: 'Stats' },
         { id: 'logs', icon: '📋', label: 'Logs' },
+        { id: 'usage', icon: '🔢', label: 'Usage' },
     ];
 
     const handleLogout = () => {

@@ -5,6 +5,7 @@ import Sidebar from '../components/Sidebar';
 import ChatInterface from '../components/ChatInterface';
 import StatsView from '../components/StatsView';
 import LogsView from '../components/LogsView';
+import TokenUsageView from '../components/TokenUsageView';
 import SettingsModal from '../components/SettingsModal';
 
 export default function MainPage({ activeView = 'chat' }) {
@@ -22,6 +23,7 @@ export default function MainPage({ activeView = 'chat' }) {
             {activeView === 'chat' && <ChatInterface />}
             {activeView === 'stats' && <StatsView />}
             {activeView === 'logs' && <LogsView />}
+            {activeView === 'usage' && <TokenUsageView />}
 
             {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
         </div>

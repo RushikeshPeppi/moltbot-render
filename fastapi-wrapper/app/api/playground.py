@@ -4,10 +4,12 @@ Provides user listing and account creation for the playground UI.
 """
 
 import logging
+import csv
+import io
 import secrets
 from typing import Optional
-from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from datetime import datetime
 
@@ -222,6 +224,131 @@ async def get_playground_messages(user_id: str):
                 code=ResponseCode.INTERNAL_ERROR,
                 message="Failed to fetch messages",
                 error="PLAYGROUND_MESSAGES_ERROR",
+                exception=str(e),
+            ),
+        )
+
+
+@router.get("/token-usage")
+async def get_token_usage(
+    user_id: Optional[str] = Query(None, description="Filter by user ID (omit for all users)"),
+    date_from: Optional[str] = Query(None, description="Start date ISO format"),
+    date_to: Optional[str] = Query(None, description="End date ISO format"),
+    action_type: Optional[str] = Query(None, description="Filter by action type"),
+    limit: int = Query(500, description="Max rows to return"),
+):
+    """
+    Get token usage data for the PM dashboard.
+    Supports filtering by user, date range, and action type.
+    Returns per-request token usage + aggregate totals.
+    """
+    try:
+        rows = await db.get_token_usage(
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            action_type=action_type,
+            limit=limit,
+        )
+
+        # Compute aggregates
+        total_tokens = sum(r.get("tokens_used", 0) or 0 for r in rows)
+        total_messages = len(rows)
+
+        # Get user names for display
+        users = await db.get_all_users()
+        user_map = {u["user_id"]: u["name"] for u in users}
+
+        # Enrich rows with user names
+        for row in rows:
+            row["user_name"] = user_map.get(row.get("user_id"), "Unknown")
+
+        return create_response(
+            code=ResponseCode.SUCCESS,
+            message=f"Found {total_messages} actions with {total_tokens} total tokens",
+            data={
+                "rows": rows,
+                "total_messages": total_messages,
+                "total_tokens": total_tokens,
+            },
+        )
+
+    except Exception as e:
+        logger.error(f"Error fetching token usage: {e}")
+        return JSONResponse(
+            status_code=500,
+            content=create_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to fetch token usage",
+                error="TOKEN_USAGE_ERROR",
+                exception=str(e),
+            ),
+        )
+
+
+@router.get("/token-usage/csv")
+async def download_token_usage_csv(
+    user_id: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    action_type: Optional[str] = Query(None),
+    limit: int = Query(500),
+):
+    """Download token usage data as CSV."""
+    try:
+        rows = await db.get_token_usage(
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            action_type=action_type,
+            limit=limit,
+        )
+
+        users = await db.get_all_users()
+        user_map = {u["user_id"]: u["name"] for u in users}
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            "ID", "Timestamp", "User ID", "User Name", "Action Type",
+            "Request", "Response", "Status", "Tokens Used",
+        ])
+
+        total_tokens = 0
+        for row in rows:
+            tokens = row.get("tokens_used", 0) or 0
+            total_tokens += tokens
+            writer.writerow([
+                row.get("id", ""),
+                row.get("created_at", ""),
+                row.get("user_id", ""),
+                user_map.get(row.get("user_id"), "Unknown"),
+                row.get("action_type", ""),
+                (row.get("request_summary") or "")[:200],
+                (row.get("response_summary") or "")[:200],
+                row.get("status", ""),
+                tokens,
+            ])
+
+        # Summary row
+        writer.writerow([])
+        writer.writerow(["TOTAL", "", "", "", "", "", "", f"{len(rows)} messages", total_tokens])
+
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=token_usage.csv"},
+        )
+
+    except Exception as e:
+        logger.error(f"Error generating CSV: {e}")
+        return JSONResponse(
+            status_code=500,
+            content=create_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to generate CSV",
+                error="CSV_ERROR",
                 exception=str(e),
             ),
         )

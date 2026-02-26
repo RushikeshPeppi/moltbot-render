@@ -124,3 +124,32 @@ export async function getChatHistory(userId, limit = 200) {
 export async function getPlaygroundMessages(userId) {
     return request(`/playground/messages/${userId}`);
 }
+
+/* =================== Token Usage =================== */
+
+/**
+ * Get token usage data for PM dashboard.
+ * @param {Object} filters - { user_id, date_from, date_to, action_type, limit }
+ */
+export async function getTokenUsage(filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.user_id) params.set('user_id', filters.user_id);
+    if (filters.date_from) params.set('date_from', filters.date_from);
+    if (filters.date_to) params.set('date_to', filters.date_to);
+    if (filters.action_type) params.set('action_type', filters.action_type);
+    if (filters.limit) params.set('limit', filters.limit);
+    return request(`/playground/token-usage?${params.toString()}`);
+}
+
+/**
+ * Get CSV download URL for token usage data.
+ */
+export function getTokenUsageCsvUrl(filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.user_id) params.set('user_id', filters.user_id);
+    if (filters.date_from) params.set('date_from', filters.date_from);
+    if (filters.date_to) params.set('date_to', filters.date_to);
+    if (filters.action_type) params.set('action_type', filters.action_type);
+    if (filters.limit) params.set('limit', filters.limit);
+    return `${BASE}/playground/token-usage/csv?${params.toString()}`;
+}

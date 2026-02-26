@@ -45,6 +45,14 @@ function AppRoutes() {
                     </ProtectedRoute>
                 }
             />
+            <Route
+                path="/usage"
+                element={
+                    <ProtectedRoute>
+                        <MainPage activeView="usage" />
+                    </ProtectedRoute>
+                }
+            />
         </Routes>
     );
 }
