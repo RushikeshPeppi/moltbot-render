@@ -66,50 +66,49 @@ def utc_to_local(dt: datetime, timezone: str) -> datetime:
 def recurrence_to_cron(trigger_at: datetime, recurrence: str, timezone: str) -> str:
     """
     Build a CRON expression from recurrence type and trigger time.
-    
-    The trigger_at should be in UTC. The CRON expression will fire at that
-    UTC time according to the recurrence pattern.
-    
+
+    Uses CRON_TZ= prefix so QStash fires at the correct local time,
+    automatically handling DST transitions. The trigger_at is in UTC
+    but we convert to local time for the CRON fields.
+
     Args:
         trigger_at: UTC datetime for when to fire
-        recurrence: One of 'daily', 'weekly', 'monthly'
-        timezone: User's timezone (used for weekly/monthly day-of-week calculation)
-        
+        recurrence: One of 'daily', 'weekly', 'monthly', 'weekdays'
+        timezone: User's IANA timezone (e.g., 'America/New_York')
+
     Returns:
-        5-field CRON expression string
-        
+        CRON expression string with CRON_TZ prefix
+
     Examples:
-        - daily at 2pm IST → trigger_at=8:30 UTC → "30 8 * * *"
-        - weekly on Monday at 9am IST → trigger_at=3:30 UTC → "30 3 * * 1"
-        - monthly on 15th at 10am IST → trigger_at=4:30 UTC → "30 4 15 * *"
+        - daily at 9am EST → "CRON_TZ=America/New_York 0 9 * * *"
+        - weekly on Monday at 9am IST → "CRON_TZ=Asia/Kolkata 0 9 * * 1"
+        - monthly on 15th at 10am IST → "CRON_TZ=Asia/Kolkata 0 10 15 * *"
     """
-    # Use the UTC time components for the CRON expression
-    minute = trigger_at.minute
-    hour = trigger_at.hour
-    
-    # Convert trigger_at to local time for day-of-week/day-of-month context
+    # Convert UTC trigger_at to user's local time for CRON fields
     local_dt = utc_to_local(trigger_at, timezone)
-    
+    minute = local_dt.minute
+    hour = local_dt.hour
+
+    # CRON_TZ prefix tells QStash to interpret the schedule in the user's timezone
+    # This automatically handles DST transitions
+    tz_prefix = f"CRON_TZ={timezone} "
+
     if recurrence == "daily":
-        # Fire every day at the same UTC time
-        return f"{minute} {hour} * * *"
+        return f"{tz_prefix}{minute} {hour} * * *"
 
     elif recurrence == "weekdays":
-        # Fire Monday through Friday only
-        return f"{minute} {hour} * * 1-5"
+        return f"{tz_prefix}{minute} {hour} * * 1-5"
 
     elif recurrence == "weekly":
-        # Fire on the same day of the week (use local day-of-week)
         # CRON: 0=Sunday, 1=Monday, ..., 6=Saturday
         # Python: 0=Monday, ..., 6=Sunday
         python_dow = local_dt.weekday()
-        cron_dow = (python_dow + 1) % 7  # Convert Python to CRON day-of-week
-        return f"{minute} {hour} * * {cron_dow}"
-        
+        cron_dow = (python_dow + 1) % 7
+        return f"{tz_prefix}{minute} {hour} * * {cron_dow}"
+
     elif recurrence == "monthly":
-        # Fire on the same day of the month
         day = local_dt.day
-        return f"{minute} {hour} {day} * *"
-        
+        return f"{tz_prefix}{minute} {hour} {day} * *"
+
     else:
         raise ValueError(f"Unsupported recurrence type: {recurrence}")
