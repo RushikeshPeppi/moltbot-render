@@ -144,6 +144,25 @@ export default function ChatInterface() {
         return () => clearInterval(pollRef.current);
     }, [user?.user_id, appendReminderMessage]);
 
+    // ── Build context with recent chat history ─────────────────────────────
+    const buildContextWithHistory = (currentMessages, newUserMsg) => {
+        // Combine existing messages + the new user message being sent
+        const allMessages = [...currentMessages, { role: 'user', content: newUserMsg }];
+        // Take the last 30 messages for context
+        const recentMessages = allMessages.slice(-30);
+
+        const formattedHistory = recentMessages
+            .map((m) => {
+                const content = m.content?.length > 500
+                    ? m.content.slice(0, 500) + '…'
+                    : m.content || '';
+                return `[${m.role}]: ${content}`;
+            })
+            .join('\n');
+
+        return `${PEPPI_CONTEXT}\n\n<recent_conversation>\n${formattedHistory}\n</recent_conversation>`;
+    };
+
     // ── Send message ─────────────────────────────────────────────────────────
     const sendMessage = async (text) => {
         const msg = text || input.trim();
@@ -152,6 +171,9 @@ export default function ChatInterface() {
         setInput('');
         setLastActionType(null);
         setRequestId((prev) => prev + 1);
+
+        // Build context BEFORE adding the new message to state
+        const contextWithHistory = buildContextWithHistory(messages, msg);
 
         const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() };
         setMessages((prev) => [...prev, userMsg]);
@@ -162,7 +184,7 @@ export default function ChatInterface() {
                 user.user_id,
                 msg,
                 user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-                PEPPI_CONTEXT
+                contextWithHistory
             );
 
             const aiContent =
