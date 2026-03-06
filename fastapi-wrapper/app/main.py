@@ -79,6 +79,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Middleware to fix raw control characters (newlines, tabs) in JSON string values.
+# Python's json.loads(strict=False) accepts them; we re-serialize with proper escaping
+# so FastAPI/Pydantic's stricter parser doesn't choke.
+import json as _json
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+
+
+class JsonControlCharMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method in ("POST", "PUT", "PATCH") and \
+           "application/json" in (request.headers.get("content-type") or ""):
+            body = await request.body()
+            try:
+                parsed = _json.loads(body.decode("utf-8"), strict=False)
+                fixed = _json.dumps(parsed).encode("utf-8")
+
+                async def receive():
+                    return {"type": "http.request", "body": fixed}
+                request._receive = receive
+            except (_json.JSONDecodeError, UnicodeDecodeError):
+                pass  # let FastAPI handle the original error
+        return await call_next(request)
+
+
+app.add_middleware(JsonControlCharMiddleware)
+
+
 # Include routes
 app.include_router(routes.router, prefix=f"/api/{settings.API_VERSION}")
 app.include_router(oauth.router, prefix=f"/api/{settings.API_VERSION}")
