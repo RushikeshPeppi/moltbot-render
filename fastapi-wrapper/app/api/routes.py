@@ -149,6 +149,17 @@ async def execute_action(request: ExecuteActionRequest):
     lock_acquired = False
     
     try:
+        # 0. Validate user_id exists in database
+        existing_user = await db.get_user(user_id)
+        if not existing_user:
+            logger.warning(f"Unknown user_id: {user_id}")
+            return create_error_response(
+                code=ResponseCode.NOT_FOUND,
+                message=f"User '{user_id}' not found. Please register the user first.",
+                error="USER_NOT_FOUND",
+                exception=None
+            )
+
         # 1. Acquire user lock to prevent concurrent processing
         lock_acquired = await session_manager.acquire_user_lock(user_id)
         if not lock_acquired:
@@ -198,70 +209,119 @@ async def execute_action(request: ExecuteActionRequest):
         # 5. Add user message to history
         await session_manager.add_message(session_id, user_id, "user", request.message)
         
-        # 6. Call OpenClaw with retry logic
-        try:
-            openclaw_response = await openclaw_client.send_message(
-                session_id=session_id,
-                message=request.message,
-                user_id=user_id,  # Pass user_id for OAuth token bridge
-                timezone=request.timezone,  # Pass user's timezone
-                user_credentials=user_credentials,
-                conversation_history=session_data.get('conversation_history', []),
-                user_context=user_context,  # Pass user-specific context
-                context=request.context  # Transient behavioral rules from Peppi
+        # 6. Call OpenClaw with retry logic (+ retry on empty payloads)
+        MAX_EMPTY_RETRIES = 2
+        clean_response = None
+        tokens_used = 0
+        openclaw_response = None
+
+        for attempt in range(1, MAX_EMPTY_RETRIES + 1):
+            try:
+                openclaw_response = await openclaw_client.send_message(
+                    session_id=session_id,
+                    message=request.message,
+                    user_id=user_id,
+                    timezone=request.timezone,
+                    user_credentials=user_credentials,
+                    conversation_history=session_data.get('conversation_history', []),
+                    user_context=user_context,
+                    context=request.context
+                )
+            except OpenClawClientError as e:
+                logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")
+                
+                if log_id:
+                    await db.update_action_log(
+                        log_id=log_id,
+                        status="failed",
+                        error_message=e.message
+                    )
+                
+                return create_error_response(
+                    code=ResponseCode.SERVICE_UNAVAILABLE if e.retryable else ResponseCode.INTERNAL_ERROR,
+                    message="Failed to process your request. Please try again.",
+                    error=e.error_type,
+                    exception=e.message
+                )
+
+            # 7. Parse and clean the response
+            raw_response = openclaw_response.get('response', 'Action completed')
+            tokens_used = openclaw_response.get('tokens_used', 0) or 0
+
+            try:
+                import json
+                parsed_response = json.loads(raw_response)
+
+                # Extract just the text from payloads
+                payloads = parsed_response.get('payloads', [])
+                if payloads and len(payloads) > 0:
+                    clean_response = payloads[0].get('text', '')
+                else:
+                    clean_response = None  # empty payloads — may trigger retry
+
+                # Extract token usage from meta if gateway didn't provide it
+                if not tokens_used:
+                    meta = parsed_response.get('meta', {})
+                    agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
+                    usage = agent_meta.get('usage', meta.get('usage', {}))
+                    tokens_used = (
+                        usage.get('totalTokenCount', 0)
+                        or usage.get('total_token_count', 0)
+                        or usage.get('total_tokens', 0)
+                        or usage.get('total', 0)
+                    )
+
+            except (json.JSONDecodeError, AttributeError, KeyError):
+                clean_response = raw_response
+
+            # If we got a valid non-empty response, break out of retry loop
+            if clean_response and clean_response.strip():
+                break
+
+            # --- Smart retry: only retry for chat-like actions ---
+            # If the agent performed a side-effect action (gmail, calendar, etc.),
+            # retrying would double-execute it. Use a fallback message instead.
+            detected_action = (openclaw_response.get('action_type') or '').lower()
+            SIDE_EFFECT_ACTIONS = (
+                'gmail', 'calendar', 'reminder', 'email', 'send', 'create',
+                'delete', 'update', 'schedule', 'compose', 'draft',
             )
-        except OpenClawClientError as e:
-            # OpenClaw call failed after retries
-            logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")
-            
+            has_side_effects = any(kw in detected_action for kw in SIDE_EFFECT_ACTIONS)
+
+            if has_side_effects:
+                # Action already executed — don't retry, use fallback
+                clean_response = "Done! Your request has been processed."
+                logger.warning(
+                    f"[{session_id}] Empty payloads but action '{detected_action}' "
+                    f"likely already executed — using fallback response"
+                )
+                break
+
+            # Chat-like action — safe to retry
+            if attempt < MAX_EMPTY_RETRIES:
+                logger.warning(
+                    f"[{session_id}] Empty payloads on attempt {attempt}/{MAX_EMPTY_RETRIES}, retrying..."
+                )
+            else:
+                logger.error(
+                    f"[{session_id}] Empty payloads after {MAX_EMPTY_RETRIES} attempts — returning error"
+                )
+
+        # If still empty after all retries, return 500 error
+        if not clean_response or not clean_response.strip():
             if log_id:
                 await db.update_action_log(
                     log_id=log_id,
                     status="failed",
-                    error_message=e.message
+                    error_message="Agent returned empty response (empty payloads)",
+                    tokens_used=tokens_used
                 )
-            
             return create_error_response(
-                code=ResponseCode.SERVICE_UNAVAILABLE if e.retryable else ResponseCode.INTERNAL_ERROR,
-                message="Failed to process your request. Please try again.",
-                error=e.error_type,
-                exception=e.message
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Agent returned an empty response. Please try again.",
+                error="EMPTY_RESPONSE",
+                exception=f"OpenClaw returned empty payloads after {MAX_EMPTY_RETRIES} attempts"
             )
-        
-        # 7. Parse and clean the response
-        raw_response = openclaw_response.get('response', 'Action completed')
-
-        # Get token usage from the gateway (it extracts from OpenClaw CLI output)
-        tokens_used = openclaw_response.get('tokens_used', 0) or 0
-
-        # Try to parse the stringified JSON response from OpenClaw
-        try:
-            import json
-            parsed_response = json.loads(raw_response)
-
-            # Extract just the text from payloads
-            payloads = parsed_response.get('payloads', [])
-            if payloads and len(payloads) > 0:
-                # Get the text content from the first payload
-                clean_response = payloads[0].get('text', raw_response)
-            else:
-                clean_response = raw_response
-
-            # If gateway didn't provide tokens, try extracting from parsed response
-            if not tokens_used:
-                meta = parsed_response.get('meta', {})
-                agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
-                usage = agent_meta.get('usage', meta.get('usage', {}))
-                tokens_used = (
-                    usage.get('totalTokenCount', 0)
-                    or usage.get('total_token_count', 0)
-                    or usage.get('total_tokens', 0)
-                    or usage.get('total', 0)
-                )
-
-        except (json.JSONDecodeError, AttributeError, KeyError):
-            # If parsing fails, use the raw response
-            clean_response = raw_response
 
         # Final fallback: Estimate tokens from character count (~4 chars/token for Gemini)
         if not tokens_used:
