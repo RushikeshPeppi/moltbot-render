@@ -520,15 +520,13 @@ async function startOpenClaw() {
     if (process.env.ANTHROPIC_API_KEY) {
       console.log('Creating OpenClaw configuration files...');
 
-      // 1. Create openclaw.json - sets default model, API mode, and session isolation
+      // 1. Create openclaw.json - sets default model and session isolation
       const openclawConfig = {
         agents: {
           defaults: {
             model: {
               primary: "anthropic/claude-haiku-4-5-20251001"
-            },
-            // Use Anthropic native message format for proper tool calling / skill execution
-            api: "anthropic-messages"
+            }
           }
         },
         session: {
