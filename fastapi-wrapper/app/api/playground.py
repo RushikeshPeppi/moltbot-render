@@ -286,16 +286,16 @@ async def get_token_usage(
         )
 
 
-# Gemini 2.5 Pro pricing constants
-GEMINI_INPUT_RATE = 1.25     # $ per 1M input tokens
-GEMINI_OUTPUT_RATE = 10.00   # $ per 1M output tokens (includes thinking)
+# Claude 3.5 Haiku pricing constants
+HAIKU_INPUT_RATE = 0.80      # $ per 1M input tokens
+HAIKU_OUTPUT_RATE = 4.00     # $ per 1M output tokens
 INPUT_RATIO = 0.15           # ~15% of total tokens are input
 OUTPUT_RATIO = 0.85          # ~85% are output+thinking
-BLENDED_RATE = INPUT_RATIO * GEMINI_INPUT_RATE + OUTPUT_RATIO * GEMINI_OUTPUT_RATE
+BLENDED_RATE = INPUT_RATIO * HAIKU_INPUT_RATE + OUTPUT_RATIO * HAIKU_OUTPUT_RATE
 
 
 def _estimate_cost(tokens: int) -> float:
-    """Estimate cost using Gemini 2.5 Pro blended rate."""
+    """Estimate cost using Claude 3.5 Haiku blended rate."""
     return (tokens / 1_000_000) * BLENDED_RATE
 
 
@@ -360,8 +360,8 @@ async def download_token_usage_csv(
             f"{total_cost:.4f}",
         ])
         writer.writerow([])
-        writer.writerow(["PRICING", f"Gemini 2.5 Pro: Input ${GEMINI_INPUT_RATE}/1M, Output ${GEMINI_OUTPUT_RATE}/1M, Blended ~${BLENDED_RATE:.2f}/1M"])
-        writer.writerow(["METHOD", "Token estimation: ~4 chars/token (Google docs), +/- 10-15% for English text"])
+        writer.writerow(["PRICING", f"Claude 3.5 Haiku: Input ${HAIKU_INPUT_RATE}/1M, Output ${HAIKU_OUTPUT_RATE}/1M, Blended ~${BLENDED_RATE:.2f}/1M"])
+        writer.writerow(["METHOD", "Token estimation: ~3.5 chars/token (Anthropic docs), +/- 10-15% for English text"])
 
         output.seek(0)
         return StreamingResponse(
