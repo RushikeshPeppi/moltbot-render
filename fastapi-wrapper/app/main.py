@@ -26,6 +26,10 @@ logging.basicConfig(
     ]
 )
 
+# Disable uvicorn's default access logger to avoid duplicate log lines.
+# Our RequestLoggingMiddleware already logs requests with more detail (payloads, timing).
+logging.getLogger("uvicorn.access").disabled = True
+
 logger = logging.getLogger(__name__)
 
 
@@ -113,8 +117,10 @@ def _redact_payload(obj, max_str_len=500):
     return obj
 
 
-# Paths to skip logging for (health checks, static, docs)
+# Paths to skip logging for (health checks, docs)
 _SKIP_LOG_PATHS = {"/health", "/", "/docs", "/openapi.json", "/redoc", "/favicon.ico"}
+# Prefix patterns to skip (polling endpoints that fire every few seconds)
+_SKIP_LOG_PREFIXES = ("/api/v1/playground/messages/",)
 
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
@@ -145,8 +151,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             except (_json.JSONDecodeError, UnicodeDecodeError):
                 pass  # let FastAPI handle the original error
 
-        # Log the request (skip health checks and docs)
-        if path not in _SKIP_LOG_PATHS:
+        # Log the request (skip health checks, polling, and docs)
+        skip = path in _SKIP_LOG_PATHS or path.startswith(_SKIP_LOG_PREFIXES)
+        if not skip:
             log_parts = [f"→ {method} {path}"]
 
             # Add query params if present
@@ -165,7 +172,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         # Log the response status and timing
         duration_ms = (_time.monotonic() - start) * 1000
-        if path not in _SKIP_LOG_PATHS:
+        if not skip:
             _req_logger.info(f"← {method} {path} → {response.status_code} ({duration_ms:.0f}ms)")
 
         return response

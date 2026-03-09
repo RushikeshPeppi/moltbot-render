@@ -223,7 +223,9 @@ async def execute_action(request: ExecuteActionRequest):
                     user_id=user_id,
                     timezone=request.timezone,
                     user_credentials=user_credentials,
-                    conversation_history=session_data.get('conversation_history', []),
+                    # Only include Redis history for playground (no Peppi context).
+                    # External apps like Peppi already embed chat history in their context field.
+                    conversation_history=session_data.get('conversation_history', []) if not request.context else [],
                     user_context=user_context,
                     context=request.context
                 )
