@@ -23,7 +23,7 @@ app.get('/health', (req, res) => {
 // Diagnostic check
 app.get('/diagnose', (req, res) => {
   const envCheck = {
-    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ? 'Set (starts with ' + process.env.ANTHROPIC_API_KEY.substring(0, 5) + '...)' : 'MISSING',
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ? 'Set (starts with ' + process.env.GEMINI_API_KEY.substring(0, 5) + '...)' : 'MISSING',
     BRAVE_API_KEY: process.env.BRAVE_API_KEY ? 'Set (starts with ' + process.env.BRAVE_API_KEY.substring(0, 5) + '...)' : 'Not set (using built-in search)',
     NODE_VERSION: process.version,
     PATH: process.env.PATH
@@ -252,8 +252,8 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     const openclaw = spawn('openclaw', args, {
       env: {
         ...process.env,
-        // OpenClaw supports Anthropic via ANTHROPIC_API_KEY env var
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+        // OpenClaw supports Gemini via GEMINI_API_KEY env var
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY,
         // SearXNG URL for free web search (NO API keys needed)
         SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
         // Google OAuth tokens for skills
@@ -361,11 +361,11 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
           const usageKeys = usage ? Object.keys(usage).join(', ') : 'none';
           console.log(`[${sessionId}] Token extraction: tokens=${tokensUsed}, top=[${topKeys}], meta=[${metaKeys}], usage=[${usageKeys}]`);
 
-          // Fallback: Estimate tokens from text (~3.5 chars/token for Claude)
+          // Fallback: Estimate tokens from text (~4 chars/token for Gemini)
           if (!tokensUsed && responseText) {
             const inputChars = (message || '').length + (context || '').length;
             const outputChars = responseText.length;
-            tokensUsed = Math.round((inputChars + outputChars) / 3.5);
+            tokensUsed = Math.round((inputChars + outputChars) / 4);
             console.log(`[${sessionId}] Token estimation fallback: input=${inputChars}chars output=${outputChars}chars → ~${tokensUsed} tokens`);
           }
 
@@ -517,7 +517,7 @@ async function startOpenClaw() {
     }
 
     // Create OpenClaw configuration files per official docs
-    if (process.env.ANTHROPIC_API_KEY) {
+    if (process.env.GEMINI_API_KEY) {
       console.log('Creating OpenClaw configuration files...');
 
       // 1. Create openclaw.json - sets default model and session isolation
@@ -525,7 +525,7 @@ async function startOpenClaw() {
         agents: {
           defaults: {
             model: {
-              primary: "anthropic/claude-haiku-4-5-20251001"
+              primary: "google/gemini-2.5-pro"
             }
           }
         },
@@ -542,13 +542,13 @@ async function startOpenClaw() {
       const authProfilePath = path.join(agentDir, 'auth-profiles.json');
       const authConfig = {
         profiles: {
-          "anthropic:api_key": {
-            provider: "anthropic",
+          "google:api_key": {
+            provider: "google",
             mode: "api_key"
           }
         },
         order: {
-          anthropic: ["anthropic:api_key"]
+          google: ["google:api_key"]
         }
       };
       fs.writeFileSync(authProfilePath, JSON.stringify(authConfig, null, 2));
@@ -556,16 +556,16 @@ async function startOpenClaw() {
 
       // Display configuration summary
       console.log('\nConfiguration Summary:');
-      console.log(`- Provider: Anthropic (via ANTHROPIC_API_KEY env var)`);
-      console.log(`- Model: anthropic/claude-haiku-4-5-20251001`);
+      console.log(`- Provider: Google Gemini (via GEMINI_API_KEY env var)`);
+      console.log(`- Model: google/gemini-2.5-pro`);
       console.log(`- Web Search: SearXNG (${process.env.SEARXNG_BASE_URL || 'Not configured'})`);
       console.log(`- Session Isolation: per-peer (multi-tenant)`);
       console.log(`- Config: ${configPath}`);
       console.log(`- Auth: ${authProfilePath}`);
 
     } else {
-      console.warn('⚠ WARNING: ANTHROPIC_API_KEY not set. OpenClaw will not work!');
-      console.warn('Please set ANTHROPIC_API_KEY environment variable.');
+      console.warn('⚠ WARNING: GEMINI_API_KEY not set. OpenClaw will not work!');
+      console.warn('Please set GEMINI_API_KEY environment variable.');
     }
 
   } catch (err) {
@@ -586,10 +586,10 @@ async function startOpenClaw() {
     // Verify environment variables
     console.log('\nEnvironment Variables Check:');
 
-    if (process.env.ANTHROPIC_API_KEY) {
-      console.log('✓ ANTHROPIC_API_KEY is configured');
+    if (process.env.GEMINI_API_KEY) {
+      console.log('✓ GEMINI_API_KEY is configured');
     } else {
-      console.error('❌ ANTHROPIC_API_KEY not set - OpenClaw will NOT work!');
+      console.error('❌ GEMINI_API_KEY not set - OpenClaw will NOT work!');
     }
 
     console.log('✓ Web Search configured (using OpenClaw built-in search)');
@@ -611,7 +611,7 @@ async function startOpenClaw() {
       console.log('  ✓ Memory/Context persistence');
       console.log('  ✓ Browser automation');
       console.log('\nMode: Local execution (--local flag)');
-      console.log('Model: Anthropic Claude 3.5 Haiku');
+      console.log('Model: Google Gemini 2.5 Pro');
       console.log('========================================\n');
 
       isReady = true;
