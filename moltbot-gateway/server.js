@@ -197,7 +197,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
       fullMessage = `${context}\n\nTask: ${message}`;
     }
 
-    const args = ['agent', '--message', fullMessage];
+    const args = ['agent', '--message', fullMessage, '--thinking', 'high'];
 
     // CRITICAL FIX: Multi-tenant isolation using OpenClaw session key format
     // Session key format: agent:{agentId}:{channel}:{accountId}:dm:{peerId}
@@ -335,31 +335,38 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
             responseText = JSON.stringify(result);
           }
 
-          // ── Token Usage Extraction ──
-          // Try every known path where OpenClaw / Claude might report tokens
+          // ── Token Usage Extraction (BILLABLE tokens only) ──
           let tokensUsed = 0;
           const meta = result.meta || {};
           const agentMeta = meta.agentMeta || meta.agent_meta || {};
           const usage = agentMeta.usage || meta.usage || result.usage || {};
 
-          // Claude / Gemini-style field names
-          tokensUsed = usage.totalTokenCount
-            || usage.total_token_count
-            || usage.total_tokens
-            || usage.total
-            // Input + output breakdown
-            || ((usage.promptTokenCount || usage.prompt_token_count || usage.input_tokens || 0)
-              + (usage.candidatesTokenCount || usage.candidates_token_count || usage.output_tokens || 0))
-            // Top-level fields
-            || result.tokens_used
-            || result.total_tokens
-            || 0;
+          // Extract individual components
+          const inputTokens = usage.promptTokenCount || usage.prompt_token_count || usage.input_tokens || usage.input || 0;
+          const outputTokens = usage.candidatesTokenCount || usage.candidates_token_count || usage.output_tokens || usage.output || 0;
+          const cacheRead = usage.cacheRead || usage.cache_read_input_tokens || usage.cachedContentTokenCount || 0;
+          const cacheWrite = usage.cacheWrite || usage.cache_creation_input_tokens || 0;
+          const totalReported = usage.totalTokenCount || usage.total_token_count || usage.total_tokens || usage.total || 0;
 
-          // Log actual structure for debugging (first 500 chars of keys)
+          // BILLABLE = input + output only (cache reads are billed at 90% discount,
+          // but we report just input+output as the "tokens used" for simplicity)
+          if (inputTokens || outputTokens) {
+            tokensUsed = inputTokens + outputTokens;
+          } else {
+            // Fallback: use total but subtract cache reads (they inflate the count)
+            tokensUsed = totalReported > 0 ? Math.max(totalReported - cacheRead, 0) : 0;
+          }
+
+          // If still nothing, try top-level fields
+          if (!tokensUsed) {
+            tokensUsed = result.tokens_used || result.total_tokens || 0;
+          }
+
+          // Log full breakdown for debugging
           const topKeys = Object.keys(result).join(', ');
           const metaKeys = meta ? Object.keys(meta).join(', ') : 'none';
           const usageKeys = usage ? Object.keys(usage).join(', ') : 'none';
-          console.log(`[${sessionId}] Token extraction: tokens=${tokensUsed}, top=[${topKeys}], meta=[${metaKeys}], usage=[${usageKeys}]`);
+          console.log(`[${sessionId}] Tokens: billable=${tokensUsed} (in=${inputTokens} out=${outputTokens} cacheRead=${cacheRead} cacheWrite=${cacheWrite} total=${totalReported})`);
 
           // Fallback: Estimate tokens from text (~4 chars/token for Gemini)
           if (!tokensUsed && responseText) {
@@ -526,7 +533,10 @@ async function startOpenClaw() {
           defaults: {
             model: {
               primary: "google/gemini-2.5-pro"
-            }
+            },
+            // Enable prompt caching: "long" = 1 hour TTL
+            // Caches SOUL.md + skill docs (~24.8K tokens) at 90% discount on Gemini
+            cacheRetention: "long"
           }
         },
         session: {
