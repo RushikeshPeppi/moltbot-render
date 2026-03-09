@@ -187,7 +187,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}, 
  */
 function executeOpenClaw(sessionId, message, context, credentials, userId, timezone) {
   return new Promise((resolve, reject) => {
-    const timeout = 120000; // 120 second timeout (skills need more time to execute bash commands)
+    const timeout = 180000; // 180 second timeout (3 min — Gemini with thinking needs more time for complex skills)
 
     // Build the command
     // OpenClaw CLI: openclaw agent --message "message" --thinking high
@@ -542,7 +542,11 @@ async function startOpenClaw() {
         session: {
           // Multi-tenant isolation: per-peer isolates DMs by sender ID across channels
           // This ensures each user gets their own private session with isolated memory
-          dmScope: "per-peer"
+          dmScope: "per-peer",
+          // Performance: auto-compact history after 50 turns (prevents token bloat)
+          maxTasks: 50,
+          // Performance: recycle idle sessions after 2 min (frees resources)
+          idleTimeout: 120
         }
       };
       fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
