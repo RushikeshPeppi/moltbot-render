@@ -286,7 +286,7 @@ async def get_token_usage(
         )
 
 
-# Claude 3.5 Haiku pricing constants
+# Claude Haiku 4.5 pricing constants
 HAIKU_INPUT_RATE = 0.80      # $ per 1M input tokens
 HAIKU_OUTPUT_RATE = 4.00     # $ per 1M output tokens
 INPUT_RATIO = 0.15           # ~15% of total tokens are input
@@ -295,7 +295,7 @@ BLENDED_RATE = INPUT_RATIO * HAIKU_INPUT_RATE + OUTPUT_RATIO * HAIKU_OUTPUT_RATE
 
 
 def _estimate_cost(tokens: int) -> float:
-    """Estimate cost using Claude 3.5 Haiku blended rate."""
+    """Estimate cost using Claude Haiku 4.5 blended rate."""
     return (tokens / 1_000_000) * BLENDED_RATE
 
 
@@ -360,7 +360,7 @@ async def download_token_usage_csv(
             f"{total_cost:.4f}",
         ])
         writer.writerow([])
-        writer.writerow(["PRICING", f"Claude 3.5 Haiku: Input ${HAIKU_INPUT_RATE}/1M, Output ${HAIKU_OUTPUT_RATE}/1M, Blended ~${BLENDED_RATE:.2f}/1M"])
+        writer.writerow(["PRICING", f"Claude Haiku 4.5: Input ${HAIKU_INPUT_RATE}/1M, Output ${HAIKU_OUTPUT_RATE}/1M, Blended ~${BLENDED_RATE:.2f}/1M"])
         writer.writerow(["METHOD", "Token estimation: ~3.5 chars/token (Anthropic docs), +/- 10-15% for English text"])
 
         output.seek(0)

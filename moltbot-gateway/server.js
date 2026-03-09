@@ -528,7 +528,7 @@ async function startOpenClaw() {
         agents: {
           defaults: {
             model: {
-              primary: "anthropic/claude-3-5-haiku-latest"
+              primary: "anthropic/claude-haiku-4-5-20251001"
             }
           }
         },
@@ -560,7 +560,7 @@ async function startOpenClaw() {
       // Display configuration summary
       console.log('\nConfiguration Summary:');
       console.log(`- Provider: Anthropic (via ANTHROPIC_API_KEY env var)`);
-      console.log(`- Model: anthropic/claude-3-5-haiku-latest`);
+      console.log(`- Model: anthropic/claude-haiku-4-5-20251001`);
       console.log(`- Web Search: SearXNG (${process.env.SEARXNG_BASE_URL || 'Not configured'})`);
       console.log(`- Session Isolation: per-peer (multi-tenant)`);
       console.log(`- Config: ${configPath}`);
