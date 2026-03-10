@@ -533,20 +533,13 @@ async function startOpenClaw() {
           defaults: {
             model: {
               primary: "google/gemini-2.5-pro"
-            },
-            // Enable prompt caching: "long" = 1 hour TTL
-            // Caches SOUL.md + skill docs (~24.8K tokens) at 90% discount on Gemini
-            cacheRetention: "long"
+            }
           }
         },
         session: {
           // Multi-tenant isolation: per-peer isolates DMs by sender ID across channels
           // This ensures each user gets their own private session with isolated memory
-          dmScope: "per-peer",
-          // Performance: auto-compact history after 50 turns (prevents token bloat)
-          maxTasks: 50,
-          // Performance: recycle idle sessions after 2 min (frees resources)
-          idleTimeout: 120
+          dmScope: "per-peer"
         }
       };
       fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
