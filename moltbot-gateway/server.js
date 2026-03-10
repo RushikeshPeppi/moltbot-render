@@ -197,24 +197,10 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
       fullMessage = `${context}\n\nTask: ${message}`;
     }
 
+    // Stateless execution: Peppi's context already provides conversation history,
+    // so we don't use --to or --session-id (which caused token bloat: 33K→292K).
+    // Each request is independent — OpenClaw gets context from the message.
     const args = ['agent', '--message', fullMessage, '--thinking', 'high'];
-
-    // CRITICAL FIX: Multi-tenant isolation using OpenClaw session key format
-    // Session key format: agent:{agentId}:{channel}:{accountId}:dm:{peerId}
-    // This works with dmScope: "per-peer" to isolate sessions per user
-    // Ref: https://docs.openclaw.ai/concepts/session
-    if (userId) {
-      const sessionKey = `agent:main:api:moltbot:dm:user_${userId}`;
-      args.push('--to', sessionKey);
-      console.log(`[${sessionId}] Using isolated session key for user ${userId}: ${sessionKey}`);
-    } else {
-      // Fallback for requests without user_id
-      args.push('--session-id', sessionId || 'api-session');
-    }
-
-    // Use --local to run the embedded agent directly with shell env vars.
-    // This avoids the "gateway closed" errors seen with the background daemon.
-    args.push('--local');
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
     const extraEnv = {};
@@ -247,7 +233,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Request JSON output
     args.push('--json');
 
-    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --to ${userId ? `agent:main:api:moltbot:dm:user_${userId}` : sessionId} --local --json`);
+    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --json`);
 
     const openclaw = spawn('openclaw', args, {
       env: {

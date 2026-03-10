@@ -206,8 +206,8 @@ async def execute_action(request: ExecuteActionRequest):
             status="pending"
         )
         
-        # 5. Add user message to history
-        await session_manager.add_message(session_id, user_id, "user", request.message)
+        # Note: We skip saving to Redis conversation_history — Peppi already
+        # provides full chat history in context. Redis is only used for session_id mapping.
         
         # 6. Call OpenClaw with retry logic (+ retry on empty payloads)
         MAX_EMPTY_RETRIES = 2
@@ -223,9 +223,9 @@ async def execute_action(request: ExecuteActionRequest):
                     user_id=user_id,
                     timezone=request.timezone,
                     user_credentials=user_credentials,
-                    # Only include Redis history for playground (no Peppi context).
-                    # External apps like Peppi already embed chat history in their context field.
-                    conversation_history=session_data.get('conversation_history', []) if not request.context else [],
+                    # Peppi sends full context; playground has no context so would use Redis history.
+                    # Gateway ignores the history field anyway, so always send empty.
+                    conversation_history=[],
                     user_context=user_context,
                     context=request.context
                 )
@@ -349,8 +349,7 @@ async def execute_action(request: ExecuteActionRequest):
             tokens_used = max(1, round((input_chars + output_chars) / 4) + 500)
             logger.info(f"Token estimation: input={input_chars}c output={output_chars}c → ~{tokens_used} tokens")
 
-        # Add assistant response to history
-        await session_manager.add_message(session_id, user_id, "assistant", clean_response)
+        # Skip saving assistant response to Redis — Peppi manages its own history
 
         # 8. Update session context
         await session_manager.update_context(session_id, user_id, {
