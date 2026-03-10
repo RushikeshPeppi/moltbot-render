@@ -259,7 +259,23 @@ async def execute_action(request: ExecuteActionRequest):
                 if payloads and len(payloads) > 0:
                     clean_response = payloads[0].get('text', '')
                 else:
-                    clean_response = None  # empty payloads — may trigger retry
+                    # Gemini/OpenClaw may return in different formats — try all known fields
+                    clean_response = (
+                        parsed_response.get('response')
+                        or parsed_response.get('message')
+                        or parsed_response.get('text')
+                        or parsed_response.get('output')
+                        or parsed_response.get('content')
+                        or None
+                    )
+                    if clean_response:
+                        logger.info(f"[{session_id}] Used fallback field (no payloads)")
+                    else:
+                        logger.warning(
+                            f"[{session_id}] No text found in response. "
+                            f"Keys: {list(parsed_response.keys())[:10]}, "
+                            f"Preview: {raw_response[:300]}"
+                        )
 
                 # Extract token usage from meta if gateway didn't provide it
                 if not tokens_used:

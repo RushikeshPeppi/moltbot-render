@@ -313,6 +313,11 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
         }
 
         if (result) {
+          // DEBUG: Log the actual structure Gemini/OpenClaw returns
+          const resultPreview = JSON.stringify(result).substring(0, 500);
+          console.log(`[${sessionId}] OpenClaw raw result keys: [${Object.keys(result).join(', ')}]`);
+          console.log(`[${sessionId}] OpenClaw raw result (first 500c): ${resultPreview}`);
+
           // Extract text from OpenClaw's payloads format (preferred)
           let responseText = null;
           if (result.payloads && Array.isArray(result.payloads) && result.payloads.length > 0) {
