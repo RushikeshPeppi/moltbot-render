@@ -341,12 +341,12 @@ async def execute_action(request: ExecuteActionRequest):
                 exception=f"OpenClaw returned empty payloads after {MAX_EMPTY_RETRIES} attempts"
             )
 
-        # Final fallback: Estimate tokens from character count (~4 chars/token for Gemini)
+        # Final fallback: Estimate tokens from character count (~3.5 chars/token for Claude)
         if not tokens_used:
             input_chars = len(request.message or '')
             output_chars = len(clean_response or '')
             # Add ~500 tokens for system prompt/context overhead
-            tokens_used = max(1, round((input_chars + output_chars) / 4) + 500)
+            tokens_used = max(1, round((input_chars + output_chars) / 3.5) + 500)
             logger.info(f"Token estimation: input={input_chars}c output={output_chars}c → ~{tokens_used} tokens")
 
         # Skip saving assistant response to Redis — Peppi manages its own history

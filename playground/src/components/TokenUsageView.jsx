@@ -3,22 +3,22 @@ import { useAuth } from '../context/AuthContext';
 import { getTokenUsage, getPlaygroundUsers, getTokenUsageCsvUrl } from '../services/api';
 
 /*
- * Gemini 2.5 Pro Pricing (as of Feb 2026):
- *   Input:  $1.25 per 1M tokens  (prompts <= 200K context)
- *   Output: $10.00 per 1M tokens (includes thinking tokens)
+ * Claude Haiku 4.5 Pricing (as of Mar 2026):
+ *   Input:  $1.00 per 1M tokens  (via Anthropic API)
+ *   Output: $5.00 per 1M tokens
  *
- * With --thinking high, typical split is ~15% input, 85% output+thinking.
- * Blended rate: 0.15 * $1.25 + 0.85 * $10.00 = ~$8.69 per 1M tokens
+ * Without --thinking high, output is proportional to actual response length.
+ * Typical split: ~40% input, ~60% output for chat + skill execution.
+ * Blended rate: 0.40 * $1.00 + 0.60 * $5.00 = ~$3.40 per 1M tokens
  *
- * Token estimation method: Google states ~4 chars = 1 token for Gemini.
- * Accuracy: +/- 10-15% for English text (per Google docs).
- * For exact counts, usageMetadata from Gemini API is needed.
+ * Token estimation method: Anthropic uses ~3.5 chars per token.
+ * For exact counts, usageMetadata from the API is needed.
  */
-const GEMINI_INPUT_RATE  = 1.25;   // $ per 1M input tokens
-const GEMINI_OUTPUT_RATE = 10.00;  // $ per 1M output tokens (includes thinking)
-const INPUT_RATIO  = 0.15;         // ~15% of total tokens are input
-const OUTPUT_RATIO = 0.85;         // ~85% are output+thinking
-const BLENDED_RATE = INPUT_RATIO * GEMINI_INPUT_RATE + OUTPUT_RATIO * GEMINI_OUTPUT_RATE; // ~$8.69/1M
+const GEMINI_INPUT_RATE  = 1.00;   // $ per 1M input tokens (Claude Haiku)
+const GEMINI_OUTPUT_RATE = 5.00;   // $ per 1M output tokens (Claude Haiku)
+const INPUT_RATIO  = 0.40;         // ~40% of total tokens are input
+const OUTPUT_RATIO = 0.60;         // ~60% are output
+const BLENDED_RATE = INPUT_RATIO * GEMINI_INPUT_RATE + OUTPUT_RATIO * GEMINI_OUTPUT_RATE; // ~$3.40/1M
 
 // Dark-theme select styles (shared between dropdowns)
 const selectStyle = {
@@ -167,7 +167,7 @@ export default function TokenUsageView() {
                 <div>
                     <h1 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>Token Usage</h1>
                     <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                        Gemini 2.5 Pro &middot; $1.25/1M in &middot; $10/1M out &middot; ~${BLENDED_RATE.toFixed(2)}/1M blended
+                        Claude Haiku 4.5 &middot; $1.00/1M in &middot; $5.00/1M out &middot; ~${BLENDED_RATE.toFixed(2)}/1M blended
                     </p>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -413,10 +413,10 @@ export default function TokenUsageView() {
             {/* Methodology Note */}
             <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)', border: '1px solid var(--border)', fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
                 <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Methodology: </span>
-                Token counts are estimated at ~4 characters per token (per Google's documentation, accurate within 10-15% for English).
-                Cost uses Gemini 2.5 Pro rates: $1.25/1M input, $10.00/1M output (incl. thinking).
-                With --thinking high, ~85% of tokens are output+thinking. Blended rate: ~${BLENDED_RATE.toFixed(2)}/1M tokens.
-                For exact billing, use Google Cloud Console.
+                Token counts are estimated at ~3.5 characters per token (per Anthropic documentation).
+                Cost uses Claude Haiku 4.5 rates: $1.00/1M input, $5.00/1M output.
+                Estimated split: ~40% input, ~60% output. Blended rate: ~${BLENDED_RATE.toFixed(2)}/1M tokens.
+                For exact billing, use Anthropic Console.
             </div>
         </div>
     );
