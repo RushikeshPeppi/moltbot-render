@@ -5,10 +5,21 @@ user-invocable: true
 metadata: {"openclaw": {"emoji": "⏰"}}
 ---
 
+<tool_execution_directive>
+CRITICAL: When this skill is triggered, you MUST execute the bash commands directly using the bash tool.
+DO NOT describe what you would do. DO NOT explain the steps you plan to take.
+DO NOT ask for confirmation unless disambiguation is genuinely required (e.g., multiple matching reminders).
+EXECUTE the bash command immediately, parse the API response, and report the result to the user.
+You are an agent — act, don't narrate.
+</tool_execution_directive>
+
+<skill_description>
 # Reminders — Set, List, Update & Cancel via Moltbot API
 
 🎯 **Manages reminders by calling the Moltbot FastAPI backend. Supports one-time and recurring reminders (daily, weekly, monthly). Can update existing reminders.**
+</skill_description>
 
+<trigger_patterns>
 ## ⚡ When to Use This Skill
 
 Use this skill when the user asks about:
@@ -17,14 +28,18 @@ Use this skill when the user asks about:
 - **Updating reminders**: "change reminder to 10am", "update my daily reminder", "modify the reminder time", "change that reminder to 3pm"
 - **Cancelling reminders**: "cancel my reminder", "delete reminder", "stop the reminder", "remove reminder"
 - **Recurring reminders**: "remind me every day at 9am", "set a daily reminder", "weekly reminder every Monday"
+</trigger_patterns>
 
+<environment_variables>
 ## 🔑 Environment Variables
 
 The following are automatically available:
 - `$FASTAPI_URL` — The Moltbot FastAPI backend URL (e.g., `https://moltbot-fastapi.onrender.com`)
 - `$MOLTBOT_USER_ID` — The current user's ID from Peppi
 - `$USER_TIMEZONE` — The user's timezone (e.g., `Asia/Kolkata`, `America/New_York`)
+</environment_variables>
 
+<operation name="create_reminder">
 ## 📝 CREATE A REMINDER
 
 ### CRITICAL: Parameter Extraction Instructions
@@ -269,6 +284,9 @@ echo "$EVENTS_JSON" | jq -c '.items[]' | while read -r EVENT; do
 done
 ```
 
+</operation>
+
+<operation name="list_reminders">
 ## 📋 LIST REMINDERS
 
 When user asks: "Show my reminders" or "What reminders do I have?" or "List my reminders"
@@ -298,6 +316,9 @@ echo "$RESPONSE"
 
 Convert UTC times back to the user's local timezone for display.
 
+</operation>
+
+<operation name="update_reminder">
 ## 🔄 UPDATE A REMINDER
 
 When user says: "Change reminder #1 to 3pm" or "Update my daily reminder to 10am" or "Change my claude billing reminder from 10AM to 11AM"
@@ -482,6 +503,9 @@ RESPONSE=$(curl -s -X POST \
   }")
 ```
 
+</operation>
+
+<operation name="cancel_reminder">
 ## ❌ CANCEL A REMINDER
 
 When user says: "Cancel my reminder" or "Delete reminder #1" or "Stop the daily medicine reminder"
@@ -565,6 +589,9 @@ else
 fi
 ```
 
+</operation>
+
+<response_formatting>
 ## 🎯 Response Formatting
 
 After executing API calls:
@@ -592,6 +619,9 @@ After executing API calls:
    - QStash not configured → "⚠️ Reminder saved but scheduling is not available right now."
    - No reminders found → "📭 You don't have any reminders set."
 
+</response_formatting>
+
+<rules priority="critical">
 ## 🚨 CRITICAL RULES
 
 1. **NEVER use hardcoded values** — ALWAYS extract from user's actual request
@@ -610,3 +640,4 @@ After executing API calls:
     - Report results of BOTH actions to the user
     - If Step A fails, still attempt Step B unless they are dependent
 12. **PARSE MILITARY TIME** — "0700" = 07:00, "1430" = 14:30, "2100" = 21:00. Strip leading zeros for display but use HH:MM for the date command
+</rules>

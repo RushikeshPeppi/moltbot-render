@@ -529,7 +529,10 @@ async function startOpenClaw() {
             model: {
               primary: "anthropic/claude-haiku-4-5-20251001",
               fallbacks: ["google/gemini-2.5-pro"]
-            }
+            },
+            // Claude Haiku thinking level: medium = "think harder" (quality over token savings)
+            // Levels: minimal | low | medium | high | xhigh | adaptive
+            thinkingDefault: "medium"
           }
         },
         session: {
@@ -540,6 +543,31 @@ async function startOpenClaw() {
       };
       fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
       console.log(`✓ Created openclaw.json at ${configPath}`);
+
+      // 1b. Create agent.md - Claude Haiku optimization: default_to_action directive
+      // This is the agent identity file that OpenClaw auto-injects into the system prompt.
+      // The <default_to_action> tag is an Anthropic-recognized directive that biases
+      // smaller Claude models toward immediate tool execution instead of narrating.
+      const agentMdPath = path.join(agentDir, 'agent.md');
+      const agentMdContent = `# Moltbot Agent
+
+<default_to_action>
+You are an action-oriented assistant. When a skill is available for the user's request:
+1. IMMEDIATELY execute the appropriate bash command — do not describe what you would do
+2. Parse the API response and present results in a user-friendly format
+3. Only ask for clarification when genuinely missing required information (e.g., email address, ambiguous time)
+4. Never explain the technical steps — just do them and report the outcome
+</default_to_action>
+
+<response_style>
+- Keep responses concise and conversational
+- Use emojis for visual feedback (✅ ❌ 📅 📧 ⏰ 📝)
+- Show results, not process
+- When multiple tools are needed, chain them sequentially without explaining each step
+</response_style>
+`;
+      fs.writeFileSync(agentMdPath, agentMdContent);
+      console.log(`✓ Created agent.md at ${agentMdPath}`);
 
       // 2. Create auth-profiles.json - CORRECT FORMAT per docs
       const authProfilePath = path.join(agentDir, 'auth-profiles.json');

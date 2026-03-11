@@ -5,21 +5,36 @@ user-invocable: true
 metadata: {"openclaw": {"emoji": "📧"}}
 ---
 
+<tool_execution_directive>
+CRITICAL: When this skill is triggered, you MUST execute the bash commands directly using the bash tool.
+DO NOT describe what you would do. DO NOT explain the steps you plan to take.
+DO NOT ask for confirmation unless disambiguation is genuinely required (e.g., multiple matching events).
+EXECUTE the curl/bash command immediately, parse the API response, and report the result to the user.
+You are an agent — act, don't narrate.
+</tool_execution_directive>
+
+<skill_description>
 # Google Workspace - Calendar & Gmail
 
 🎯 **Comprehensive Google Calendar and Gmail integration using OAuth tokens and direct API calls.**
+</skill_description>
 
+<trigger_patterns>
 ## ⚡ When to Use This Skill
 
 Use this skill when the user asks about:
 - **Calendar**: list meetings, view schedule, check calendar, what meetings, create/update/delete events, appointments
 - **Gmail**: read emails, check inbox, send email, search messages, mark read/unread
+</trigger_patterns>
 
+<environment_variables>
 ## 🔑 Environment Variables
 
 The OAuth access token is automatically available:
 - `$GOOGLE_ACCESS_TOKEN` - OAuth 2.0 bearer token (auto-refreshed by FastAPI backend)
+</environment_variables>
 
+<operation name="calendar">
 ## 📅 GOOGLE CALENDAR API
 
 Base URL: `https://www.googleapis.com/calendar/v3`
@@ -664,7 +679,9 @@ curl -s -X DELETE \
 
 echo "✅ Event deleted successfully"
 ```
+</operation>
 
+<operation name="gmail">
 ## 📧 GMAIL API
 
 Base URL: `https://gmail.googleapis.com/gmail/v1`
@@ -955,7 +972,9 @@ curl -s -X DELETE \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MESSAGE_ID}"
 ```
+</operation>
 
+<response_formatting>
 ## 🎯 Response Formatting
 
 After executing API calls:
@@ -983,6 +1002,9 @@ After executing API calls:
    - After creating event: "✅ Created: Meeting with Marvin on Feb 7 at 6:00 PM"
    - After sending email: "✅ Email sent to marvin@example.com"
 
+</response_formatting>
+
+<rules priority="critical">
 ## 🚨 CRITICAL RULES
 
 1. **NEVER use hardcoded values** - ALWAYS extract from user's actual request
@@ -992,10 +1014,12 @@ After executing API calls:
 5. **CALCULATE dates dynamically** using `date` command
 6. **CONFIRM actions** before deleting or modifying events
 7. **FORMAT responses** in user-friendly way with emojis/structure
+</rules>
 
-## 📚 Reference
+<references>
 
 - [Google Calendar API v3](https://developers.google.com/workspace/calendar/api/v3/reference)
 - [Gmail API v1](https://developers.google.com/gmail/api/reference/rest)
 - [Calendar Events](https://developers.google.com/workspace/calendar/api/v3/reference/events)
 - [Gmail Messages](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages)
+</references>
