@@ -522,7 +522,9 @@ async function startOpenClaw() {
     if (process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY) {
       console.log('Creating OpenClaw configuration files...');
 
-      // 1. Create openclaw.json - sets default model and session isolation
+      // 1. Create openclaw.json - sets default model, session isolation, and TOOL PERMISSIONS
+      // CRITICAL: Without tools.exec config, OpenClaw's security blocks bash execution
+      // and Haiku falls back to chatting about actions instead of executing them.
       const openclawConfig = {
         agents: {
           defaults: {
@@ -535,6 +537,20 @@ async function startOpenClaw() {
             thinkingDefault: "medium"
           }
         },
+        // CRITICAL: Tool execution permissions — without this, bash skills are silently blocked
+        tools: {
+          // Allow all tools including exec (bash)
+          profile: "full",
+          allow: ["*"],
+          exec: {
+            // "off" = don't ask for human approval before running bash commands
+            // Without this, OpenClaw hangs waiting for approval in CLI mode, 
+            // and Haiku falls back to chatting about the action instead
+            ask: "off",
+            // "full" = allow all bash operations (curl, jq, date, etc.)
+            security: "full"
+          }
+        },
         session: {
           // Multi-tenant isolation: per-peer isolates DMs by sender ID across channels
           // This ensures each user gets their own private session with isolated memory
@@ -542,29 +558,79 @@ async function startOpenClaw() {
         }
       };
       fs.writeFileSync(configPath, JSON.stringify(openclawConfig, null, 2));
-      console.log(`✓ Created openclaw.json at ${configPath}`);
+      console.log(`✓ Created openclaw.json at ${configPath} (with exec permissions enabled)`);
 
-      // 1b. Create agent.md - Claude Haiku optimization: default_to_action directive
+      // 1b. Create exec-approvals.json — pre-approve common skill commands
+      // This prevents OpenClaw from blocking curl, jq, date, etc.
+      const execApprovalsPath = path.join(openClawDir, 'exec-approvals.json');
+      const execApprovals = {
+        approvals: [
+          { command: "curl", approved: true },
+          { command: "jq", approved: true },
+          { command: "date", approved: true },
+          { command: "echo", approved: true },
+          { command: "cat", approved: true },
+          { command: "grep", approved: true },
+          { command: "printf", approved: true },
+          { command: "base64", approved: true },
+          { command: "tr", approved: true },
+          { command: "head", approved: true },
+          { command: "tail", approved: true },
+          { command: "sed", approved: true },
+          { command: "paste", approved: true }
+        ]
+      };
+      fs.writeFileSync(execApprovalsPath, JSON.stringify(execApprovals, null, 2));
+      console.log(`✓ Created exec-approvals.json (pre-approved: curl, jq, date, etc.)`);
+
+      // 1c. Create agent.md - Claude Haiku optimization: default_to_action directive
       // This is the agent identity file that OpenClaw auto-injects into the system prompt.
       // The <default_to_action> tag is an Anthropic-recognized directive that biases
       // smaller Claude models toward immediate tool execution instead of narrating.
       const agentMdPath = path.join(agentDir, 'agent.md');
       const agentMdContent = `# Moltbot Agent
 
-<default_to_action>
-You are an action-oriented assistant. When a skill is available for the user's request:
-1. IMMEDIATELY execute the appropriate bash command — do not describe what you would do
-2. Parse the API response and present results in a user-friendly format
-3. Only ask for clarification when genuinely missing required information (e.g., email address, ambiguous time)
-4. Never explain the technical steps — just do them and report the outcome
-</default_to_action>
+<execution_protocol>
+You are an action-oriented agent with access to bash tools. You have skills installed that define how to perform tasks. Your job is to EXECUTE, not discuss.
 
-<response_style>
-- Keep responses concise and conversational
-- Use emojis for visual feedback (✅ ❌ 📅 📧 ⏰ 📝)
-- Show results, not process
-- When multiple tools are needed, chain them sequentially without explaining each step
-</response_style>
+MANDATORY RULES:
+1. When the user requests any action, IDENTIFY the matching skill and READ its SKILL.md for the exact bash commands and API calls to use.
+2. EXECUTE the bash commands from the skill immediately. Do not describe, summarize, or narrate what you plan to do.
+3. NEVER claim you performed an action without actually executing the bash tool. If you did not run a command, you did not do the action.
+4. NEVER fabricate, hallucinate, or assume the outcome of an action. Only report results you received from actual command execution.
+5. If a command fails or the bash tool is unavailable, tell the user plainly. Do not pretend it succeeded.
+6. If the user's request is missing critical information, ask for it. Do not guess or use placeholder values.
+7. For multi-step tasks, execute each step sequentially. Report the final outcome, not each intermediate step.
+8. All environment variables referenced in skills ($FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN, etc.) are pre-configured and available in your bash environment.
+
+EXECUTION FLOW:
+User request → Match skill → Read SKILL.md instructions → Execute bash command → Parse response → Report actual result to user
+
+WHAT NOT TO DO:
+- Do not say "I'll handle that" or "on it" or "done" without having executed the command first.
+- Do not roleplay performing an action. Actually perform it.
+- Do not explain bash commands to the user. Just run them silently and show the result.
+- Do not re-execute past actions from conversation history. Only act on the current request.
+</execution_protocol>
+
+<skill_discovery>
+Your skills are defined in SKILL.md files. Each skill contains:
+- Trigger patterns: phrases that indicate when to use the skill
+- Environment variables: what credentials and config are available
+- Operations: the exact bash commands (curl, jq, date, etc.) to execute
+- Response formatting: how to present results to the user
+- Critical rules: constraints and edge cases to handle
+
+When you detect a user request matching a skill's trigger patterns, follow that skill's SKILL.md instructions precisely.
+</skill_discovery>
+
+<response_guidelines>
+- Be concise and conversational in tone
+- Use emojis for visual feedback on outcomes (✅ ❌ 📅 📧 ⏰ 📝 📭)
+- Report outcomes and results, not process or steps
+- When the user asks for something outside your skills, respond naturally as a helpful assistant
+- Maintain the persona and personality defined in the conversation context
+</response_guidelines>
 `;
       fs.writeFileSync(agentMdPath, agentMdContent);
       console.log(`✓ Created agent.md at ${agentMdPath}`);
