@@ -249,6 +249,8 @@ async def execute_action(request: ExecuteActionRequest):
             # 7. Parse and clean the response
             raw_response = openclaw_response.get('response', 'Action completed')
             tokens_used = openclaw_response.get('tokens_used', 0) or 0
+            input_tokens = openclaw_response.get('input_tokens', 0) or 0
+            output_tokens = openclaw_response.get('output_tokens', 0) or 0
 
             try:
                 import json
@@ -390,6 +392,8 @@ async def execute_action(request: ExecuteActionRequest):
                 "response": clean_response,
                 "action_performed": openclaw_response.get('action_type'),
                 "tokens_used": tokens_used if tokens_used > 0 else None,
+                "input_tokens": input_tokens if input_tokens > 0 else None,
+                "output_tokens": output_tokens if output_tokens > 0 else None,
                 "reminder_trigger_at": reminder_trigger_at,
             },
             "error": None,

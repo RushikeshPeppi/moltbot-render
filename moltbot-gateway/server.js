@@ -122,7 +122,9 @@ app.post('/execute', async (req, res) => {
       response: result.response,
       action_type: result.action_type,
       details: result.details,
-      tokens_used: result.tokens_used || 0
+      tokens_used: result.tokens_used || 0,
+      input_tokens: result.input_tokens || 0,
+      output_tokens: result.output_tokens || 0
     });
 
   } catch (error) {
@@ -375,7 +377,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
             response: responseText,
             action_type: result.action_type || result.tool || result.agent || 'chat',
             details: result.details || result.metadata || result.data || null,
-            tokens_used: tokensUsed
+            tokens_used: tokensUsed,
+            input_tokens: inputTokens,
+            output_tokens: outputTokens
           });
         } else {
           // Fallback if no JSON found
@@ -396,7 +400,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
           response: cleanResponse,
           action_type: 'chat',
           details: null,
-          tokens_used: estimatedTokens
+          tokens_used: estimatedTokens,
+          input_tokens: Math.round(inputChars / 3.5),
+          output_tokens: Math.round(outputChars / 3.5)
         });
       }
     });
