@@ -4,21 +4,20 @@ import { getTokenUsage, getPlaygroundUsers, getTokenUsageCsvUrl } from '../servi
 
 /*
  * Claude Haiku 4.5 Pricing (as of Mar 2026):
- *   Input:  $1.00 per 1M tokens  (via Anthropic API)
- *   Output: $5.00 per 1M tokens
+ *   Input (non-cached): $1.00 per 1M tokens
+ *   Output:             $5.00 per 1M tokens
+ *   Cache Read:         $0.10 per 1M tokens (90% discount)
+ *   Cache Write:        $1.25 per 1M tokens (25% premium)
  *
- * Without --thinking high, output is proportional to actual response length.
- * Typical split: ~40% input, ~60% output for chat + skill execution.
- * Blended rate: 0.40 * $1.00 + 0.60 * $5.00 = ~$3.40 per 1M tokens
- *
- * Token estimation method: Anthropic uses ~3.5 chars per token.
- * For exact counts, usageMetadata from the API is needed.
+ * Token counts come from OpenClaw's usage metadata (Anthropic API).
+ * Cache read/write are reported separately for accurate cost calculation.
  */
-const GEMINI_INPUT_RATE  = 1.00;   // $ per 1M input tokens (Claude Haiku)
-const GEMINI_OUTPUT_RATE = 5.00;   // $ per 1M output tokens (Claude Haiku)
-const INPUT_RATIO  = 0.40;         // ~40% of total tokens are input
-const OUTPUT_RATIO = 0.60;         // ~60% are output
-const BLENDED_RATE = INPUT_RATIO * GEMINI_INPUT_RATE + OUTPUT_RATIO * GEMINI_OUTPUT_RATE; // ~$3.40/1M
+const HAIKU_INPUT_RATE      = 1.00;   // $ per 1M non-cached input tokens
+const HAIKU_OUTPUT_RATE     = 5.00;   // $ per 1M output tokens
+const HAIKU_CACHE_READ_RATE = 0.10;   // $ per 1M cache read tokens
+const HAIKU_CACHE_WRITE_RATE = 1.25;  // $ per 1M cache write tokens
+// Blended fallback for rows without detailed breakdown
+const BLENDED_RATE = 0.40 * HAIKU_INPUT_RATE + 0.60 * HAIKU_OUTPUT_RATE;
 
 // Dark-theme select styles (shared between dropdowns)
 const selectStyle = {
@@ -147,10 +146,25 @@ export default function TokenUsageView() {
         return n.toLocaleString();
     };
 
-    // Cost calculation using Gemini 2.5 Pro blended rate
-    const estimateCost = (tokens) => {
+    // Cost calculation using Anthropic tiered pricing
+    const estimateCost = (tokens, row = null) => {
         if (!tokens || tokens === 0) return '--';
-        const cost = (tokens / 1_000_000) * BLENDED_RATE;
+        let cost;
+        if (row && (row.input_tokens || row.output_tokens)) {
+            // Use detailed pricing when we have the breakdown
+            const inp = row.input_tokens || 0;
+            const out = row.output_tokens || 0;
+            const cr = row.cache_read || 0;
+            const cw = row.cache_write || 0;
+            const nonCached = Math.max(0, inp - cr - cw);
+            cost = (nonCached / 1_000_000) * HAIKU_INPUT_RATE +
+                   (cr / 1_000_000) * HAIKU_CACHE_READ_RATE +
+                   (cw / 1_000_000) * HAIKU_CACHE_WRITE_RATE +
+                   (out / 1_000_000) * HAIKU_OUTPUT_RATE;
+        } else {
+            // Fallback: blended rate
+            cost = (tokens / 1_000_000) * BLENDED_RATE;
+        }
         if (cost < 0.001) return '<$0.001';
         if (cost < 0.01) return `$${cost.toFixed(4)}`;
         return `$${cost.toFixed(3)}`;
@@ -377,10 +391,12 @@ export default function TokenUsageView() {
                                                     <span>ID: {row.id}</span>
                                                     <span>Session: {row.session_id?.slice(0, 16)}</span>
                                                     {hasTokens && <>
-                                                        <span>Tokens: {tokens.toLocaleString()}</span>
-                                                        <span>Est. input: ~{formatTokens(Math.round(tokens * INPUT_RATIO))}</span>
-                                                        <span>Est. output+thinking: ~{formatTokens(Math.round(tokens * OUTPUT_RATIO))}</span>
-                                                        <span>Cost: {estimateCost(tokens)}</span>
+                                                        <span>Total: {tokens.toLocaleString()}</span>
+                                                        <span style={{ color: '#60a5fa' }}>Input: {formatTokens(row.input_tokens || 0)}</span>
+                                                        <span style={{ color: '#f59e0b' }}>Output: {formatTokens(row.output_tokens || 0)}</span>
+                                                        {(row.cache_read > 0) && <span style={{ color: '#34d399' }}>Cache Read: {formatTokens(row.cache_read)}</span>}
+                                                        {(row.cache_write > 0) && <span style={{ color: '#a78bfa' }}>Cache Write: {formatTokens(row.cache_write)}</span>}
+                                                        <span>Cost: {estimateCost(tokens, row)}</span>
                                                     </>}
                                                     {!hasTokens && <span style={{ color: 'var(--warning)' }}>No token data (pre-tracking)</span>}
                                                 </div>
@@ -413,9 +429,8 @@ export default function TokenUsageView() {
             {/* Methodology Note */}
             <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)', border: '1px solid var(--border)', fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
                 <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Methodology: </span>
-                Token counts are estimated at ~3.5 characters per token (per Anthropic documentation).
-                Cost uses Claude Haiku 4.5 rates: $1.00/1M input, $5.00/1M output.
-                Estimated split: ~40% input, ~60% output. Blended rate: ~${BLENDED_RATE.toFixed(2)}/1M tokens.
+                Token counts are from Anthropic's API via OpenClaw.
+                Cost uses Claude Haiku 4.5 rates: $1.00/1M input, $5.00/1M output, $0.10/1M cache read, $1.25/1M cache write.
                 For exact billing, use Anthropic Console.
             </div>
         </div>

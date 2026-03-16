@@ -77,7 +77,7 @@ async function fetchOAuthTokenFromFastAPI(userId) {
  * }
  */
 app.post('/execute', async (req, res) => {
-  const { session_id, message, user_id, credentials, history, timezone, user_context, context: peppiContext } = req.body;
+  const { session_id, message, user_id, credentials, history, timezone, user_context } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -108,8 +108,7 @@ app.post('/execute', async (req, res) => {
       history,
       user_id,
       timezone || 'UTC',
-      userContext,
-      peppiContext
+      userContext
     );
 
     // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
@@ -124,7 +123,9 @@ app.post('/execute', async (req, res) => {
       details: result.details,
       tokens_used: result.tokens_used || 0,
       input_tokens: result.input_tokens || 0,
-      output_tokens: result.output_tokens || 0
+      output_tokens: result.output_tokens || 0,
+      cache_read: result.cache_read || 0,
+      cache_write: result.cache_write || 0
     });
 
   } catch (error) {
@@ -141,9 +142,9 @@ app.post('/execute', async (req, res) => {
  * Build dynamic context for OpenClaw.
  * Static behavioral rules (identity, inference, timezone, etc.) are now in SOUL.md,
  * which OpenClaw auto-injects into the system prompt every turn.
- * This function only provides per-request dynamic data: capabilities, user info, history, and Peppi context.
+ * This function only provides per-request dynamic data: capabilities, user info, and history.
  */
-function buildContext(credentials, history, userId, timezone, userContext = {}, peppiContext = '') {
+function buildContext(credentials, history, userId, timezone, userContext = {}) {
   let context = '';
 
   // Dynamic user info
@@ -166,10 +167,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}, 
 
   context += '\n';
 
-  // Peppi's per-request behavioral context (transient rules from the Peppi platform)
-  if (peppiContext) {
-    context += `\n${peppiContext}\n`;
-  }
+
 
   // Recent conversation history (dynamic per-request)
   if (history && history.length > 0) {
@@ -332,27 +330,30 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
             responseText = JSON.stringify(result);
           }
 
-          // ── Token Usage Extraction (BILLABLE tokens only) ──
+          // ── Token Usage Extraction ──
+          // Anthropic uses prompt caching, which splits input into 3 fields:
+          //   input: non-cached input (often just ~10 tokens)
+          //   cacheRead: tokens served from cache (90% cheaper)
+          //   cacheWrite: tokens written to cache for future use
+          // The "total" field from OpenClaw is the accurate grand total.
           let tokensUsed = 0;
           const meta = result.meta || {};
           const agentMeta = meta.agentMeta || meta.agent_meta || {};
           const usage = agentMeta.usage || meta.usage || result.usage || {};
 
-          // Extract individual components
-          const inputTokens = usage.promptTokenCount || usage.prompt_token_count || usage.input_tokens || usage.input || 0;
-          const outputTokens = usage.candidatesTokenCount || usage.candidates_token_count || usage.output_tokens || usage.output || 0;
+          // Extract raw components from OpenClaw/Anthropic
+          const rawInput = usage.promptTokenCount || usage.prompt_token_count || usage.input_tokens || usage.input || 0;
+          const rawOutput = usage.candidatesTokenCount || usage.candidates_token_count || usage.output_tokens || usage.output || 0;
           const cacheRead = usage.cacheRead || usage.cache_read_input_tokens || usage.cachedContentTokenCount || 0;
           const cacheWrite = usage.cacheWrite || usage.cache_creation_input_tokens || 0;
           const totalReported = usage.totalTokenCount || usage.total_token_count || usage.total_tokens || usage.total || 0;
 
-          // BILLABLE = input + output only (cache reads are billed at 90% discount,
-          // but we report just input+output as the "tokens used" for simplicity)
-          if (inputTokens || outputTokens) {
-            tokensUsed = inputTokens + outputTokens;
-          } else {
-            // Fallback: use total but subtract cache reads (they inflate the count)
-            tokensUsed = totalReported > 0 ? Math.max(totalReported - cacheRead, 0) : 0;
-          }
+          // TRUE input = non-cached + cache read + cache write (all tokens sent TO the model)
+          const inputTokens = rawInput + cacheRead + cacheWrite;
+          const outputTokens = rawOutput;
+
+          // Total: prefer OpenClaw's reported total, fallback to computed sum
+          tokensUsed = totalReported > 0 ? totalReported : (inputTokens + outputTokens);
 
           // If still nothing, try top-level fields
           if (!tokensUsed) {
@@ -360,10 +361,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
           }
 
           // Log full breakdown for debugging
-          const topKeys = Object.keys(result).join(', ');
-          const metaKeys = meta ? Object.keys(meta).join(', ') : 'none';
-          const usageKeys = usage ? Object.keys(usage).join(', ') : 'none';
-          console.log(`[${sessionId}] Tokens: billable=${tokensUsed} (in=${inputTokens} out=${outputTokens} cacheRead=${cacheRead} cacheWrite=${cacheWrite} total=${totalReported})`);
+          console.log(`[${sessionId}] Tokens: total=${tokensUsed} input=${inputTokens} [raw=${rawInput} cacheRead=${cacheRead} cacheWrite=${cacheWrite}] output=${outputTokens}`);
 
           // Fallback: Estimate tokens from text (~3.5 chars/token for Claude)
           if (!tokensUsed && responseText) {
@@ -379,7 +377,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
             details: result.details || result.metadata || result.data || null,
             tokens_used: tokensUsed,
             input_tokens: inputTokens,
-            output_tokens: outputTokens
+            output_tokens: outputTokens,
+            cache_read: cacheRead,
+            cache_write: cacheWrite
           });
         } else {
           // Fallback if no JSON found
@@ -402,7 +402,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
           details: null,
           tokens_used: estimatedTokens,
           input_tokens: Math.round(inputChars / 3.5),
-          output_tokens: Math.round(outputChars / 3.5)
+          output_tokens: Math.round(outputChars / 3.5),
+          cache_read: 0,
+          cache_write: 0
         });
       }
     });

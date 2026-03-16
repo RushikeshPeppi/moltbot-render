@@ -71,14 +71,13 @@ export async function getOAuthStatus(userId) {
 
 /* =================== Chat / Execute =================== */
 
-export async function executeAction(userId, message, timezone = 'UTC', context = '') {
+export async function executeAction(userId, message, timezone = 'UTC') {
     return request('/execute-action', {
         method: 'POST',
         body: JSON.stringify({
             user_id: userId,
             message,
             timezone,
-            context,
         }),
     });
 }

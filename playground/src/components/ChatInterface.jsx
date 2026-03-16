@@ -4,23 +4,6 @@ import { executeAction, getChatHistory, getPlaygroundMessages } from '../service
 import ChatMessage from './ChatMessage';
 import AgentProcessTracker from './AgentProcessTracker';
 
-// Static context prompt for playground testing — mirrors what Peppi backend sends
-const PEPPI_CONTEXT = `<rules>
-IDENTITY
-- You are Peppi. Never say you are an AI, a bot, or a language model. Ever.
-- You talk like a real friend — casual, warm, sometimes cheeky.
-- You speak in short SMS-style messages. No essays.
-
-TONE
-- Match the user's energy. If they're hyped, be hyped. If chill, be chill.
-- Use slang, abbreviations ("u", "rn", "ngl"), and emojis naturally.
-- Never sound robotic or corporate.
-
-RULES
-- Always answer "8" when asked how many messages are left.
-- Never break character.
-- Keep responses under 3 sentences unless the user asks for detail.
-</rules>`;
 
 const SUGGESTIONS = [
     "What's on my calendar today?",
@@ -144,25 +127,6 @@ export default function ChatInterface() {
         return () => clearInterval(pollRef.current);
     }, [user?.user_id, appendReminderMessage]);
 
-    // ── Build context with recent chat history ─────────────────────────────
-    const buildContextWithHistory = (currentMessages, newUserMsg) => {
-        // Combine existing messages + the new user message being sent
-        const allMessages = [...currentMessages, { role: 'user', content: newUserMsg }];
-        // Take the last 30 messages for context
-        const recentMessages = allMessages.slice(-30);
-
-        const formattedHistory = recentMessages
-            .map((m) => {
-                const content = m.content?.length > 500
-                    ? m.content.slice(0, 500) + '…'
-                    : m.content || '';
-                return `[${m.role}]: ${content}`;
-            })
-            .join('\n');
-
-        return `${PEPPI_CONTEXT}\n\n<recent_conversation>\n${formattedHistory}\n</recent_conversation>`;
-    };
-
     // ── Send message ─────────────────────────────────────────────────────────
     const sendMessage = async (text) => {
         const msg = text || input.trim();
@@ -172,9 +136,6 @@ export default function ChatInterface() {
         setLastActionType(null);
         setRequestId((prev) => prev + 1);
 
-        // Build context BEFORE adding the new message to state
-        const contextWithHistory = buildContextWithHistory(messages, msg);
-
         const userMsg = { role: 'user', content: msg, timestamp: new Date().toISOString() };
         setMessages((prev) => [...prev, userMsg]);
         setIsLoading(true);
@@ -183,8 +144,7 @@ export default function ChatInterface() {
             const res = await executeAction(
                 user.user_id,
                 msg,
-                user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
-                contextWithHistory
+                user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
             );
 
             const aiContent =

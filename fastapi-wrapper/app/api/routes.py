@@ -226,8 +226,7 @@ async def execute_action(request: ExecuteActionRequest):
                     # Peppi sends full context; playground has no context so would use Redis history.
                     # Gateway ignores the history field anyway, so always send empty.
                     conversation_history=[],
-                    user_context=user_context,
-                    context=request.context
+                    user_context=user_context
                 )
             except OpenClawClientError as e:
                 logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")
@@ -251,6 +250,8 @@ async def execute_action(request: ExecuteActionRequest):
             tokens_used = openclaw_response.get('tokens_used', 0) or 0
             input_tokens = openclaw_response.get('input_tokens', 0) or 0
             output_tokens = openclaw_response.get('output_tokens', 0) or 0
+            cache_read = openclaw_response.get('cache_read', 0) or 0
+            cache_write = openclaw_response.get('cache_write', 0) or 0
 
             try:
                 import json
@@ -334,7 +335,11 @@ async def execute_action(request: ExecuteActionRequest):
                     log_id=log_id,
                     status="failed",
                     error_message="Agent returned empty response (empty payloads)",
-                    tokens_used=tokens_used
+                    tokens_used=tokens_used,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read=cache_read,
+                    cache_write=cache_write
                 )
             return create_error_response(
                 code=ResponseCode.INTERNAL_ERROR,
@@ -365,7 +370,11 @@ async def execute_action(request: ExecuteActionRequest):
                 log_id=log_id,
                 status="success",
                 response_summary=clean_response[:2000] if clean_response else "Action completed",
-                tokens_used=tokens_used
+                tokens_used=tokens_used,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read=cache_read,
+                cache_write=cache_write
             )
 
         # 10. If reminder action, fetch the most recently created pending reminder's trigger_at
@@ -394,6 +403,8 @@ async def execute_action(request: ExecuteActionRequest):
                 "tokens_used": tokens_used if tokens_used > 0 else None,
                 "input_tokens": input_tokens if input_tokens > 0 else None,
                 "output_tokens": output_tokens if output_tokens > 0 else None,
+                "cache_read": cache_read if cache_read > 0 else None,
+                "cache_write": cache_write if cache_write > 0 else None,
                 "reminder_trigger_at": reminder_trigger_at,
             },
             "error": None,

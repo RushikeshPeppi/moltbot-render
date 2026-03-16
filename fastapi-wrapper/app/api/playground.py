@@ -286,16 +286,31 @@ async def get_token_usage(
         )
 
 
-# Claude Haiku 4.5 pricing constants
-HAIKU_INPUT_RATE = 0.80      # $ per 1M input tokens
-HAIKU_OUTPUT_RATE = 4.00     # $ per 1M output tokens
-INPUT_RATIO = 0.15           # ~15% of total tokens are input
-OUTPUT_RATIO = 0.85          # ~85% are output+thinking
+# Anthropic Claude Haiku 4.5 pricing (per 1M tokens)
+HAIKU_INPUT_RATE = 1.00        # $ per 1M non-cached input tokens
+HAIKU_OUTPUT_RATE = 5.00       # $ per 1M output tokens
+HAIKU_CACHE_READ_RATE = 0.10   # $ per 1M cache read tokens (90% discount)
+HAIKU_CACHE_WRITE_RATE = 1.25  # $ per 1M cache write tokens (25% premium)
+# Blended rate fallback for rows without detailed breakdown
+INPUT_RATIO = 0.15
+OUTPUT_RATIO = 0.85
 BLENDED_RATE = INPUT_RATIO * HAIKU_INPUT_RATE + OUTPUT_RATIO * HAIKU_OUTPUT_RATE
 
 
+def _estimate_cost_detailed(input_tokens: int, output_tokens: int, cache_read: int, cache_write: int) -> float:
+    """Calculate actual cost using Anthropic's tiered pricing."""
+    # Subtract cache from input to get non-cached input
+    non_cached_input = max(0, input_tokens - cache_read - cache_write)
+    return (
+        (non_cached_input / 1_000_000) * HAIKU_INPUT_RATE +
+        (cache_read / 1_000_000) * HAIKU_CACHE_READ_RATE +
+        (cache_write / 1_000_000) * HAIKU_CACHE_WRITE_RATE +
+        (output_tokens / 1_000_000) * HAIKU_OUTPUT_RATE
+    )
+
+
 def _estimate_cost(tokens: int) -> float:
-    """Estimate cost using Claude Haiku 4.5 blended rate."""
+    """Estimate cost using Claude Haiku 4.5 blended rate (fallback)."""
     return (tokens / 1_000_000) * BLENDED_RATE
 
 
@@ -325,15 +340,20 @@ async def download_token_usage_csv(
         writer.writerow([
             "ID", "Timestamp", "User ID", "User Name", "Action Type",
             "Request", "Response", "Status", "Tokens Used",
-            "Est. Input Tokens", "Est. Output Tokens", "Est. Cost ($)",
+            "Input Tokens", "Output Tokens", "Cache Read", "Cache Write", "Est. Cost ($)",
         ])
 
         total_tokens = 0
         total_cost = 0.0
         for row in rows:
             tokens = row.get("tokens_used", 0) or 0
+            inp = row.get("input_tokens", 0) or 0
+            out = row.get("output_tokens", 0) or 0
+            cr = row.get("cache_read", 0) or 0
+            cw = row.get("cache_write", 0) or 0
             total_tokens += tokens
-            cost = _estimate_cost(tokens)
+            # Use detailed cost if we have the breakdown, else blended
+            cost = _estimate_cost_detailed(inp, out, cr, cw) if inp or out else _estimate_cost(tokens)
             total_cost += cost
             writer.writerow([
                 row.get("id", ""),
@@ -345,8 +365,10 @@ async def download_token_usage_csv(
                 (row.get("response_summary") or "")[:200],
                 row.get("status", ""),
                 tokens if tokens else "",
-                round(tokens * INPUT_RATIO) if tokens else "",
-                round(tokens * OUTPUT_RATIO) if tokens else "",
+                inp if inp else "",
+                out if out else "",
+                cr if cr else "",
+                cw if cw else "",
                 f"{cost:.4f}" if tokens else "",
             ])
 
@@ -355,12 +377,11 @@ async def download_token_usage_csv(
         writer.writerow([
             "TOTAL", "", "", "", "", "", "",
             f"{len(rows)} messages", total_tokens,
-            round(total_tokens * INPUT_RATIO),
-            round(total_tokens * OUTPUT_RATIO),
+            "", "", "", "",
             f"{total_cost:.4f}",
         ])
         writer.writerow([])
-        writer.writerow(["PRICING", f"Claude Haiku 4.5: Input ${HAIKU_INPUT_RATE}/1M, Output ${HAIKU_OUTPUT_RATE}/1M, Blended ~${BLENDED_RATE:.2f}/1M"])
+        writer.writerow(["PRICING", f"Claude Haiku 4.5: Input ${HAIKU_INPUT_RATE}/1M, Output ${HAIKU_OUTPUT_RATE}/1M, Cache Read ${HAIKU_CACHE_READ_RATE}/1M, Cache Write ${HAIKU_CACHE_WRITE_RATE}/1M"])
         writer.writerow(["METHOD", "Token estimation: ~3.5 chars/token (Anthropic docs), +/- 10-15% for English text"])
 
         output.seek(0)

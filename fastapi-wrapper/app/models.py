@@ -64,7 +64,6 @@ class ExecuteActionRequest(BaseModel):
     timezone: str = Field(..., description="User's timezone (e.g., 'Asia/Kolkata', 'America/New_York')")
     phone_number: Optional[str] = Field(None, description="User's phone number")
     credentials: Optional[Dict[str, Any]] = Field(None, description="User service credentials")
-    context: Optional[str] = Field(None, description="Behavioral rules/instructions for the AI agent. Passed per-request, not stored.")
 
     class Config:
         json_schema_extra = {

@@ -199,6 +199,10 @@ class Database:
         response_summary: str = None,
         status: str = "pending",
         tokens_used: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read: int = 0,
+        cache_write: int = 0,
         error_message: str = None
     ) -> Optional[int]:
         """Log an action to the audit table"""
@@ -216,6 +220,10 @@ class Database:
                 "response_summary": response_summary[:500] if response_summary else None,
                 "status": status,
                 "tokens_used": tokens_used,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read": cache_read,
+                "cache_write": cache_write,
                 "error_message": error_message
             }
             
@@ -234,6 +242,10 @@ class Database:
         status: str,
         response_summary: str = None,
         tokens_used: int = None,
+        input_tokens: int = None,
+        output_tokens: int = None,
+        cache_read: int = None,
+        cache_write: int = None,
         error_message: str = None
     ) -> bool:
         """Update an existing audit log entry"""
@@ -249,6 +261,14 @@ class Database:
                 data["response_summary"] = response_summary[:500]
             if tokens_used is not None:
                 data["tokens_used"] = tokens_used
+            if input_tokens is not None:
+                data["input_tokens"] = input_tokens
+            if output_tokens is not None:
+                data["output_tokens"] = output_tokens
+            if cache_read is not None:
+                data["cache_read"] = cache_read
+            if cache_write is not None:
+                data["cache_write"] = cache_write
             if error_message:
                 data["error_message"] = error_message
             
@@ -273,7 +293,7 @@ class Database:
                     return []
             
             response = self._client.table("tbl_clawdbot_audit_log").select(
-                "id, session_id, action_type, request_summary, response_summary, status, tokens_used, created_at"
+                "id, session_id, action_type, request_summary, response_summary, status, tokens_used, input_tokens, output_tokens, cache_read, cache_write, created_at"
             ).eq("user_id", user_id).order(
                 "created_at", desc=True
             ).range(offset, offset + limit - 1).execute()
@@ -304,7 +324,7 @@ class Database:
                     return []
 
             query = self._client.table("tbl_clawdbot_audit_log").select(
-                "id, user_id, session_id, action_type, request_summary, response_summary, status, tokens_used, created_at"
+                "id, user_id, session_id, action_type, request_summary, response_summary, status, tokens_used, input_tokens, output_tokens, cache_read, cache_write, created_at"
             )
 
             if user_id:
