@@ -50,42 +50,47 @@ Parse user input to extract:
 
 ### 🚨 TIMEZONE HANDLING - CRITICAL RULES
 
-**Rule 1: User speaks in their LOCAL timezone ($USER_TIMEZONE), NOT UTC**
-- When user says "tomorrow at 2pm", they mean 2pm in THEIR timezone
-- You MUST convert this to UTC for the Calendar API
-- Use `TZ="$USER_TIMEZONE"` when parsing user input
+**Rule 1: NEVER convert to UTC. Pass LOCAL time + timeZone to Google Calendar.**
+- Google Calendar API accepts local times with a `timeZone` field — it does the UTC conversion for you
+- When user says "at 10:00", just use `10:00:00` with `timeZone: $USER_TIMEZONE`
+- DO NOT use `date -u` (UTC flag) for event creation. DO NOT append `Z` to times.
 
-**Rule 2: "Tomorrow" depends on when the user is speaking**
-- If conversation happens at 11:30 PM on Monday night:
-  - "Tomorrow" = Tuesday (the next calendar day from their perspective)
-  - "Today" = Monday (even though it might be early Tuesday UTC)
-- Always calculate relative dates from the user's current time in THEIR timezone
+**Rule 2: Use `TZ="$USER_TIMEZONE"` ONLY for resolving relative dates ("today", "tomorrow")**
+- "today" / "tomorrow" must be relative to the user's timezone, not the server's
+- Use `TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d` to get the correct DATE only
+- Then combine that date with the user's stated time as-is (no UTC conversion)
 
 **Rule 3: When updating/deleting events, search in the user's timezone context**
 - If user says "my meeting tomorrow", search for events on tomorrow in THEIR timezone
 - Don't search by UTC date - you'll get the wrong day
 
-Calculate dates dynamically using `date` command WITH timezone context:
+### How to calculate event times (NO UTC conversion!)
 
 ```bash
-# CORRECT: Use user's timezone for date calculations
-TZ="$USER_TIMEZONE" date -d "tomorrow 14:00"  # → User's tomorrow at 2pm
-TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ  # → Convert to UTC for API
+# Step 1: Resolve the DATE in user's timezone
+EVENT_DATE=$(TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d)
 
-# WRONG: Using UTC for user-facing dates
-date -u -d "tomorrow 14:00"  # ❌ This is tomorrow UTC, not user's tomorrow!
+# Step 2: Combine with user's stated time (NO conversion, NO -u flag, NO Z suffix)
+EVENT_START="${EVENT_DATE}T14:00:00"   # User said "2pm" → 14:00:00
+EVENT_END="${EVENT_DATE}T15:00:00"     # 1 hour later
+
+# Step 3: Pass to Google Calendar with timeZone field — Google handles UTC conversion
+# {
+#   "start": {"dateTime": "2026-03-27T14:00:00", "timeZone": "America/New_York"},
+#   "end": {"dateTime": "2026-03-27T15:00:00", "timeZone": "America/New_York"}
+# }
 ```
 
-Common date patterns (ALWAYS use `TZ="$USER_TIMEZONE"`):
-- Today: `$(TZ="$USER_TIMEZONE" date -u -d "today" +%Y-%m-%dT00:00:00Z)`
-- Tomorrow: `$(TZ="$USER_TIMEZONE" date -u -d "tomorrow" +%Y-%m-%dT00:00:00Z)`
-- Tomorrow at 2pm: `$(TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ)`
-- Next Tuesday at 6pm: `$(TZ="$USER_TIMEZONE" date -u -d "next Tuesday 18:00" +%Y-%m-%dT%H:%M:%SZ)`
-- In 3 days: `$(TZ="$USER_TIMEZONE" date -u -d "+3 days" +%Y-%m-%dT00:00:00Z)`
+Common date patterns:
+- Today: `$(TZ="$USER_TIMEZONE" date -d "today" +%Y-%m-%d)`
+- Tomorrow: `$(TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d)`
+- Next Tuesday: `$(TZ="$USER_TIMEZONE" date -d "next Tuesday" +%Y-%m-%d)`
+- In 3 days: `$(TZ="$USER_TIMEZONE" date -d "+3 days" +%Y-%m-%d)`
 
-Time conversion rules (convert ALL formats to HH:MM 24-hour for the date command):
+Time conversion rules (convert ALL formats to HH:MM 24-hour):
 - "6pm" / "6 PM" / "6:00pm" / "6:00 p.m." → 18:00
 - "2 PM" / "2pm" / "2:00 PM" → 14:00
+- "10:00" / "at 10" / "10 AM" → 10:00
 - "0700" / "0700hrs" / "0700 hours" → 07:00 (military without colon)
 - "7" / "at 7" / "7 o'clock" → 07:00 (AM) or 19:00 (PM based on context)
 - "7.30" / "7:30" / "730" → 07:30 (dot, colon, or no separator)
@@ -97,16 +102,17 @@ Time conversion rules (convert ALL formats to HH:MM 24-hour for the date command
 ### 🎯 Example: Handling "tomorrow at 2pm" correctly
 
 ```bash
-# User is in Asia/Kolkata (UTC+5:30), it's Monday 11:30 PM
-# They say "create a meeting tomorrow at 2pm"
+# User is in America/New_York, they say "create a meeting tomorrow at 2pm"
 
-# CORRECT approach:
-TZ="$USER_TIMEZONE" date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ
-# → Output: 2026-02-25T08:30:00Z (Tuesday 2pm IST = Tuesday 8:30am UTC)
+# CORRECT approach — pass local time, let Google convert:
+EVENT_DATE=$(TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d)
+EVENT_START="${EVENT_DATE}T14:00:00"
+# → "2026-03-27T14:00:00" with timeZone: "America/New_York"
+# → Google Calendar shows 2:00 PM Eastern ✅
 
-# WRONG approach:
-date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ
-# → Output: 2026-02-25T14:00:00Z (Tuesday 2pm UTC, which is 7:30pm IST - WRONG!)
+# WRONG approach — converting to UTC yourself (error-prone!):
+# date -u -d "tomorrow 14:00" +%Y-%m-%dT%H:%M:%SZ
+# → "2026-03-27T14:00:00Z" = 10:00 AM Eastern ❌ WRONG!
 ```
 
 ### Handling API Response Dates (ISO 8601 with Timezone Offsets)
@@ -236,17 +242,23 @@ When user says: "Schedule a meeting with Marvin tomorrow at 6 PM" or "Create eve
 # PARSE all values from user's actual request - DO NOT use these placeholder values!
 MEETING_TITLE="<EXTRACTED_FROM_USER_REQUEST>"
 DATE_PART="<EXTRACTED_DATE>"  # e.g., "tomorrow", "next Tuesday", "2026-02-15"
-TIME_PART="<EXTRACTED_TIME>"  # e.g., "18:00", "14:00"
+TIME_PART="<EXTRACTED_TIME>"  # e.g., "18:00", "14:00" (24-hour format)
 DURATION_MINUTES=<EXTRACTED_OR_DEFAULT_60>
 ATTENDEE_EMAIL="<EXTRACTED_OR_ASK_USER>"
 
-# Calculate start time dynamically (convert user's local time to UTC)
-EVENT_START=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
+# Step 1: Resolve the date in user's timezone (handles "today", "tomorrow", etc.)
+EVENT_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
 
-# Calculate end time (start + duration)
-EVENT_END=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+# Step 2: Build LOCAL datetime strings (NO UTC conversion, NO -u flag, NO Z suffix!)
+EVENT_START="${EVENT_DATE}T${TIME_PART}:00"
 
-# Build JSON payload safely using jq (handles special chars in titles/descriptions)
+# Step 3: Calculate end time by adding duration
+END_HOUR=$(( ${TIME_PART%%:*} + DURATION_MINUTES / 60 ))
+END_MIN=$(( ${TIME_PART##*:} + DURATION_MINUTES % 60 ))
+if [ $END_MIN -ge 60 ]; then END_HOUR=$((END_HOUR + 1)); END_MIN=$((END_MIN - 60)); fi
+EVENT_END="${EVENT_DATE}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
+
+# Step 4: Build JSON payload — Google Calendar handles timezone conversion!
 JSON_PAYLOAD=$(jq -n \
   --arg title "$MEETING_TITLE" \
   --arg desc "${DESCRIPTION:-}" \
@@ -298,13 +310,17 @@ When user says: "Create a meet" or "Create a meeting link" or "Send a meet link 
 # PARSE from user's actual request
 MEETING_TITLE="<EXTRACTED_FROM_USER_REQUEST>"
 DATE_PART="<EXTRACTED_DATE>"
-TIME_PART="<EXTRACTED_TIME>"
+TIME_PART="<EXTRACTED_TIME>"  # 24-hour format, e.g., "14:00"
 DURATION_MINUTES=<EXTRACTED_OR_DEFAULT_60>
 ATTENDEE_EMAIL="<EXTRACTED_OR_EMPTY>"
 
-# Calculate times
-EVENT_START=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART}" +%Y-%m-%dT%H:%M:%SZ)
-EVENT_END=$(TZ="$USER_TIMEZONE" date -u -d "${DATE_PART} ${TIME_PART} + ${DURATION_MINUTES} minutes" +%Y-%m-%dT%H:%M:%SZ)
+# Resolve date in user's timezone, then build LOCAL times (NO UTC, NO -u, NO Z!)
+EVENT_DATE=$(TZ="$USER_TIMEZONE" date -d "${DATE_PART}" +%Y-%m-%d)
+EVENT_START="${EVENT_DATE}T${TIME_PART}:00"
+END_HOUR=$(( ${TIME_PART%%:*} + DURATION_MINUTES / 60 ))
+END_MIN=$(( ${TIME_PART##*:} + DURATION_MINUTES % 60 ))
+if [ $END_MIN -ge 60 ]; then END_HOUR=$((END_HOUR + 1)); END_MIN=$((END_MIN - 60)); fi
+EVENT_END="${EVENT_DATE}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
 
 # Generate a unique request ID for Meet link creation
 REQUEST_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "meet-$(date +%s)")
@@ -392,12 +408,18 @@ SEARCH_DATE="<EXTRACTED_DATE_OR_TODAY>"  # e.g., "today", "tomorrow"
 # Step 2: Search for events based on criteria
 # OPTION A: If user mentioned specific time, search around that time window
 if [ -n "$SEARCH_TIME" ]; then
-  # Convert user's local time to UTC
-  SEARCH_TIME_UTC=$(TZ="$USER_TIMEZONE" date -u -d "$SEARCH_DATE $SEARCH_TIME" +%Y-%m-%dT%H:%M:%SZ)
+  # Resolve date in user's timezone and build search window
+  SEARCH_DATE_RESOLVED=$(TZ="$USER_TIMEZONE" date -d "$SEARCH_DATE" +%Y-%m-%d)
+  SEARCH_HOUR=${SEARCH_TIME%%:*}
+  SEARCH_MIN=${SEARCH_TIME##*:}
+  MIN_HOUR=$SEARCH_HOUR; MIN_MIN=$((SEARCH_MIN - 15))
+  if [ $MIN_MIN -lt 0 ]; then MIN_HOUR=$((MIN_HOUR - 1)); MIN_MIN=$((MIN_MIN + 60)); fi
+  MAX_HOUR=$SEARCH_HOUR; MAX_MIN=$((SEARCH_MIN + 15))
+  if [ $MAX_MIN -ge 60 ]; then MAX_HOUR=$((MAX_HOUR + 1)); MAX_MIN=$((MAX_MIN - 60)); fi
 
-  # Search ±15 minutes window to catch the event
-  TIME_MIN=$(date -u -d "$SEARCH_TIME_UTC - 15 minutes" +%Y-%m-%dT%H:%M:%SZ)
-  TIME_MAX=$(date -u -d "$SEARCH_TIME_UTC + 15 minutes" +%Y-%m-%dT%H:%M:%SZ)
+  # Convert search window to UTC for API (search queries need UTC)
+  TIME_MIN=$(TZ="$USER_TIMEZONE" date -u -d "${SEARCH_DATE_RESOLVED} $(printf '%02d:%02d' $MIN_HOUR $MIN_MIN)" +%Y-%m-%dT%H:%M:%SZ)
+  TIME_MAX=$(TZ="$USER_TIMEZONE" date -u -d "${SEARCH_DATE_RESOLVED} $(printf '%02d:%02d' $MAX_HOUR $MAX_MIN)" +%Y-%m-%dT%H:%M:%SZ)
 
   SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
     "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_MIN}&timeMax=${TIME_MAX}&singleEvents=true&orderBy=startTime")
@@ -473,9 +495,10 @@ CURRENT_EVENT=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 NEW_DATE="<PARSE_FROM_REQUEST>"  # e.g., "tomorrow", "2026-02-24"
 NEW_TIME="<PARSE_FROM_REQUEST>"  # e.g., "14:00", "2pm"
 
-# Step 5: Calculate new datetime in UTC
-# CRITICAL: User speaks in their local timezone ($USER_TIMEZONE), convert to UTC
-NEW_START=$(TZ="$USER_TIMEZONE" date -u -d "${NEW_DATE} ${NEW_TIME}" +%Y-%m-%dT%H:%M:%SZ)
+# Step 5: Calculate new datetime in USER'S LOCAL timezone (NOT UTC!)
+# CRITICAL: Do NOT convert to UTC — pass local time + timeZone to Google Calendar
+NEW_DATE_RESOLVED=$(TZ="$USER_TIMEZONE" date -d "${NEW_DATE}" +%Y-%m-%d)
+NEW_START="${NEW_DATE_RESOLVED}T${NEW_TIME}:00"
 
 # Calculate duration from current event to preserve it
 CURRENT_START=$(echo "$CURRENT_EVENT" | jq -r '.start.dateTime')
@@ -484,13 +507,18 @@ START_EPOCH=$(date -d "$CURRENT_START" +%s)
 END_EPOCH=$(date -d "$CURRENT_END" +%s)
 DURATION_MINUTES=$(( (END_EPOCH - START_EPOCH) / 60 ))
 
-# Calculate new end time based on original duration
-NEW_END=$(date -u -d "$NEW_START + $DURATION_MINUTES minutes" +%Y-%m-%dT%H:%M:%SZ)
+# Calculate new end time based on original duration (local time, no UTC!)
+END_HOUR=$(( ${NEW_TIME%%:*} + DURATION_MINUTES / 60 ))
+END_MIN=$(( ${NEW_TIME##*:} + DURATION_MINUTES % 60 ))
+if [ $END_MIN -ge 60 ]; then END_HOUR=$((END_HOUR + 1)); END_MIN=$((END_MIN - 60)); fi
+NEW_END="${NEW_DATE_RESOLVED}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
 
 # Step 6: Build update payload using jq for safety
+# CRITICAL: Use user's timezone, NOT "UTC" — Google handles conversion
 UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
   --arg newStart "$NEW_START" \
   --arg newEnd "$NEW_END" \
+  --arg tz "$USER_TIMEZONE" \
   '{
     summary: .summary,
     description: .description,
@@ -498,11 +526,11 @@ UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
     attendees: .attendees,
     start: {
       dateTime: $newStart,
-      timeZone: "UTC"
+      timeZone: $tz
     },
     end: {
       dateTime: $newEnd,
-      timeZone: "UTC"
+      timeZone: $tz
     },
     reminders: .reminders
   }')
@@ -545,18 +573,20 @@ CURRENT_EVENT=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
 
 # Parse new time from user request
-NEW_TIME_LOCAL="<USER_TIME>"  # e.g., "15:00" for 3 PM
+NEW_TIME_LOCAL="<USER_TIME>"  # e.g., "15:00" for 3 PM (24-hour format)
 CURRENT_DATE=$(echo "$CURRENT_EVENT" | jq -r '.start.dateTime' | cut -d'T' -f1)
 
-# Combine current date with new time in user's timezone, then convert to UTC
-NEW_START=$(TZ="$USER_TIMEZONE" date -u -d "${CURRENT_DATE} ${NEW_TIME_LOCAL}" +%Y-%m-%dT%H:%M:%SZ)
-NEW_END=$(TZ="$USER_TIMEZONE" date -u -d "${CURRENT_DATE} ${NEW_TIME_LOCAL} + 60 minutes" +%Y-%m-%dT%H:%M:%SZ)
+# Combine current date with new LOCAL time (NO UTC conversion, NO -u, NO Z!)
+NEW_START="${CURRENT_DATE}T${NEW_TIME_LOCAL}:00"
+END_HOUR=$(( ${NEW_TIME_LOCAL%%:*} + 1 ))
+NEW_END="${CURRENT_DATE}T$(printf '%02d:%02d' $END_HOUR ${NEW_TIME_LOCAL##*:}):00"
 
-# Update with jq
+# Update with jq — pass timeZone so Google handles conversion
 UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
   --arg start "$NEW_START" \
   --arg end "$NEW_END" \
-  '.start.dateTime = $start | .end.dateTime = $end')
+  --arg tz "$USER_TIMEZONE" \
+  '.start.dateTime = $start | .start.timeZone = $tz | .end.dateTime = $end | .end.timeZone = $tz')
 
 curl -s -X PUT \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \

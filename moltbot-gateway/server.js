@@ -611,6 +611,13 @@ MANDATORY RULES:
 7. For multi-step tasks, execute each step sequentially. Report the final outcome, not each intermediate step.
 8. All environment variables referenced in skills ($FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN, etc.) are pre-configured and available in your bash environment.
 
+TIMEZONE RULE (CRITICAL — NEVER VIOLATE):
+- When creating or updating Google Calendar events, pass the user's LOCAL time directly. NEVER convert to UTC.
+- Use dateTime WITHOUT "Z" suffix: "2026-03-26T10:00:00" (not "2026-03-26T10:00:00Z")
+- Always include timeZone: "$USER_TIMEZONE" — Google Calendar does the UTC conversion.
+- Only use TZ="$USER_TIMEZONE" with the date command to resolve relative words like "today"/"tomorrow" into a YYYY-MM-DD date.
+- NEVER use "date -u" for event times. If you see yourself writing -u or Z, STOP — you are doing it wrong.
+
 EXECUTION FLOW:
 User request → Match skill → Read SKILL.md instructions → Execute bash command → Parse response → Report actual result to user
 

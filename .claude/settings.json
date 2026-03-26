@@ -3,7 +3,9 @@
     "allow": [
       "Bash(curl -s --max-time 20 \"https://moltbot-fastapi.onrender.com/api/v1/reminders/list/usr_68594d25\")",
       "Bash(find /e/Peppi/moltbot-render -name \"*.md\" -type f -exec grep -l \"openclaw\\\\|workspace\\\\|SOUL\" {} ;)",
-      "Bash(find /e/Peppi/moltbot-render -type f -name \"*.sql\" -exec grep -l \"tbl_reminders\\\\|CREATE TABLE.*reminder\" {} ;)"
+      "Bash(find /e/Peppi/moltbot-render -type f -name \"*.sql\" -exec grep -l \"tbl_reminders\\\\|CREATE TABLE.*reminder\" {} ;)",
+      "mcp__claude_ai_Supabase__apply_migration",
+      "WebFetch(domain:developers.google.com)"
     ]
   }
 }
