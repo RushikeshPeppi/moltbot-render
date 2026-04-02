@@ -610,6 +610,25 @@ class Database:
             logger.error(f"Error updating timezone for user {user_id}: {e}")
             return False
 
+    async def update_google_connected(self, user_id: str, connected: bool) -> bool:
+        """Update a user's google_connected flag (e.g., after OAuth revocation)."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+
+            self._client.table("tbl_clawdbot_users").update({
+                "google_connected": connected,
+                "updated_at": datetime.utcnow().isoformat()
+            }).eq("user_id", user_id).execute()
+
+            logger.info(f"Updated google_connected for user {user_id}: {connected}")
+            return True
+        except Exception as e:
+            logger.error(f"Error updating google_connected for user {user_id}: {e}")
+            return False
+
     # ==================== Utility ====================
     
     async def health_check(self) -> bool:

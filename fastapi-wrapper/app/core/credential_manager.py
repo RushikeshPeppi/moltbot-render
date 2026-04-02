@@ -1,6 +1,12 @@
 """
 Supabase-backed Credential Manager with OAuth token support.
-Handles encrypted storage and automatic token refresh.
+Handles encrypted storage, automatic token refresh, and dead-token cleanup.
+
+Key behaviors:
+- On `invalid_grant`: auto-revokes credential from DB, updates google_connected flag,
+  and sets a Redis cooldown to prevent hammering Google's API.
+- On transient errors (network, 5xx): keeps credential, sets short cooldown.
+- Cooldown prevents repeated refresh attempts within a 5-minute window.
 """
 
 import json
@@ -9,9 +15,13 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import httpx
 from .database import db
+from .redis_client import redis_client
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+# Cooldown duration (seconds) before retrying a failed token refresh
+OAUTH_COOLDOWN_TTL = 300  # 5 minutes
 
 
 class CredentialManager:
@@ -68,13 +78,21 @@ class CredentialManager:
             "expires_in": expires_in
         }
         
+        # Clear any existing cooldown since we have fresh tokens
+        await self._clear_oauth_cooldown(user_id)
+        
         return await self.store_credentials(user_id, "google_oauth", credentials, expires_at)
     
     async def get_valid_google_token(self, user_id: str) -> Optional[str]:
         """
         Get a valid Google access token, refreshing if necessary.
-        Returns None if no credentials or refresh fails.
+        Returns None if no credentials, refresh fails, or cooldown is active.
         """
+        # Check cooldown BEFORE hitting Google's API
+        if await self._is_oauth_on_cooldown(user_id):
+            logger.debug(f"OAuth cooldown active for user {user_id}, skipping refresh")
+            return None
+
         creds = await self.get_credentials(user_id, "google_oauth")
         
         if not creds:
@@ -96,7 +114,7 @@ class CredentialManager:
                     if new_token:
                         return new_token
                     else:
-                        logger.error(f"Failed to refresh token for user {user_id}")
+                        # refresh_google_token already handled cleanup/cooldown
                         return None
             except (ValueError, KeyError) as e:
                 logger.error(f"Error parsing token expiry: {e}")
@@ -104,7 +122,12 @@ class CredentialManager:
         return creds.get('access_token')
     
     async def refresh_google_token(self, user_id: str, refresh_token: str) -> Optional[str]:
-        """Refresh Google access token using refresh token"""
+        """
+        Refresh Google access token using refresh token.
+        
+        On permanent failure (invalid_grant): auto-revokes credentials.
+        On transient failure (network/5xx): sets cooldown, keeps credentials.
+        """
         if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
             logger.error("Google OAuth not configured")
             return None
@@ -122,7 +145,33 @@ class CredentialManager:
                 )
                 
                 if response.status_code != 200:
-                    logger.error(f"Token refresh failed: {response.text}")
+                    error_body = response.text
+                    logger.error(f"Token refresh failed: {error_body}")
+                    
+                    # Parse the error to distinguish permanent vs transient
+                    try:
+                        error_data = response.json()
+                        error_code = error_data.get("error", "")
+                    except Exception:
+                        error_code = ""
+                    
+                    # PERMANENT failures — token is dead, clean it up
+                    permanent_errors = {"invalid_grant", "invalid_client", "unauthorized_client"}
+                    if error_code in permanent_errors:
+                        logger.error(
+                            f"PERMANENT OAuth failure for user {user_id}: {error_code}. "
+                            f"Auto-revoking credentials."
+                        )
+                        await self.invalidate_google_credentials(user_id)
+                    else:
+                        # TRANSIENT failure — set cooldown but keep credentials
+                        logger.warning(
+                            f"Transient OAuth failure for user {user_id}: "
+                            f"status={response.status_code}, error={error_code}. "
+                            f"Setting {OAUTH_COOLDOWN_TTL}s cooldown."
+                        )
+                        await self._set_oauth_cooldown(user_id)
+                    
                     return None
                 
                 data = response.json()
@@ -140,12 +189,40 @@ class CredentialManager:
                 logger.info(f"Token refreshed for user {user_id}")
                 return data['access_token']
                 
+        except httpx.TimeoutException:
+            logger.warning(f"Token refresh timed out for user {user_id}, setting cooldown")
+            await self._set_oauth_cooldown(user_id)
+            return None
+        except httpx.ConnectError:
+            logger.warning(f"Token refresh connection error for user {user_id}, setting cooldown")
+            await self._set_oauth_cooldown(user_id)
+            return None
         except Exception as e:
-            logger.error(f"Error refreshing token: {e}")
+            logger.error(f"Unexpected error refreshing token for user {user_id}: {e}")
+            await self._set_oauth_cooldown(user_id)
             return None
     
+    async def invalidate_google_credentials(self, user_id: str) -> None:
+        """
+        Permanently remove dead Google credentials and update user record.
+        Called when refresh token is permanently invalid (invalid_grant, revoked, etc.).
+        """
+        # 1. Delete the credential row
+        await self.delete_credentials(user_id, "google_oauth")
+        
+        # 2. Update user's google_connected flag
+        try:
+            await self.db.update_google_connected(user_id, False)
+        except Exception as e:
+            logger.error(f"Failed to update google_connected for user {user_id}: {e}")
+        
+        # 3. Set cooldown to prevent immediate re-attempts
+        await self._set_oauth_cooldown(user_id)
+        
+        logger.info(f"Invalidated Google credentials for user {user_id}")
+    
     async def revoke_google_token(self, user_id: str) -> bool:
-        """Revoke Google OAuth tokens"""
+        """Revoke Google OAuth tokens (user-initiated disconnect)"""
         creds = await self.get_credentials(user_id, "google_oauth")
         
         if not creds:
@@ -159,8 +236,8 @@ class CredentialManager:
                     params={"token": creds.get('access_token')}
                 )
             
-            # Delete from database
-            await self.delete_credentials(user_id, "google_oauth")
+            # Delete from database and update user record
+            await self.invalidate_google_credentials(user_id)
             logger.info(f"Revoked Google tokens for user {user_id}")
             return True
             
@@ -188,3 +265,21 @@ class CredentialManager:
             "scopes": creds.get('scope', '').split(' ') if creds.get('scope') else [],
             "expires_at": creds.get('expires_at')
         }
+    
+    # ==================== Cooldown Helpers ====================
+    
+    async def _is_oauth_on_cooldown(self, user_id: str) -> bool:
+        """Check if OAuth refresh is on cooldown for this user."""
+        key = f"oauth_cooldown:{user_id}"
+        value = await redis_client.get(key)
+        return value is not None
+    
+    async def _set_oauth_cooldown(self, user_id: str) -> None:
+        """Set OAuth cooldown to prevent hammering Google's API."""
+        key = f"oauth_cooldown:{user_id}"
+        await redis_client.set(key, "1", ttl=OAUTH_COOLDOWN_TTL)
+    
+    async def _clear_oauth_cooldown(self, user_id: str) -> None:
+        """Clear OAuth cooldown (e.g., after successful token storage)."""
+        key = f"oauth_cooldown:{user_id}"
+        await redis_client.delete(key)

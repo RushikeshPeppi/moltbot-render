@@ -46,8 +46,20 @@ The following are automatically available:
 
 **ALWAYS extract ALL details from the user's actual request. NEVER use hardcoded values.**
 
+⚠️ **MESSAGE CONTENT RULE (ZERO TOLERANCE):**
+- The reminder message MUST come from the user's **exact, explicit words** — NOT inferred from conversation history, calendar events, or context.
+- If the user says "remind me at 7am" WITHOUT specifying WHAT to be reminded about, you MUST ASK: "Sure! What would you like to be reminded about at 7:00 AM?"
+- **NEVER fabricate or guess** the reminder content. If the user didn't say it, don't set it.
+- Examples of WRONG behavior:
+  - User: "Send me a reminder at 7am" → ❌ Setting reminder "Fly back to NYC" (hallucinated from earlier context)
+  - User: "Remind me in 2 hours" → ❌ Setting reminder "Take your medicine" (inferred from past conversation)
+- Examples of CORRECT behavior:
+  - User: "Send me a reminder at 7am" → ✅ "Sure! What would you like to be reminded about at 7:00 AM?"
+  - User: "Remind me to buy milk at 2pm" → ✅ Setting reminder "buy milk" at 2pm
+  - User: "Remind me about the meeting tomorrow at 10" → ✅ Setting reminder "the meeting" for tomorrow at 10am
+
 Parse user input to extract:
-- **Message**: What to remind about
+- **Message**: What to remind about (MUST be explicitly stated by the user — if missing, ASK)
   - "remind me to buy milk" → message = "buy milk"
   - "remind me about the meeting" → message = "the meeting"
   - "don't let me forget to call John" → message = "call John"
@@ -625,11 +637,12 @@ After executing API calls:
 ## 🚨 CRITICAL RULES
 
 1. **NEVER use hardcoded values** — ALWAYS extract from user's actual request
+1b. **NEVER FABRICATE REMINDER CONTENT** — The reminder message MUST be the user's exact words. If the user says "remind me at 7am" without saying WHAT, you MUST ask "What would you like to be reminded about?" — DO NOT pull content from conversation history, calendar events, or any other context. This is a CRITICAL rule.
 2. **SEND LOCAL TIME — NOT UTC** — When user says "10am", send trigger_at as LOCAL time: `TARGET_DATE=$(TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d) && TRIGGER_AT="${TARGET_DATE}T10:00:00"`. NEVER use `date -u` or add `Z` suffix to trigger_at! The backend API converts local time to UTC automatically using the user_timezone field. If you send Z-suffixed times, the backend treats them as already-UTC and the reminder fires at the WRONG time!
 3. **USE UPDATE ENDPOINT for changes** — When user wants to change a reminder time/message, use `/api/v1/reminders/update` instead of cancelling and recreating
 4. **USE SMART SEARCH for updates/cancels** — When user says "change my claude billing reminder" or "cancel my daily reminder", use the smart search + disambiguation approach (search by keywords, time, or recurrence, handle 0/1/multiple matches). This works across sessions and time, unlike relying on conversation history.
 5. **ALWAYS confirm actions** — Tell the user what was set, when, and the recurrence (in THEIR timezone). DO NOT show technical IDs to users.
-6. **ASK for missing information** — If the user doesn't specify a time, ask: "What time should I remind you?"
+6. **ASK for missing information** — If the user doesn't specify a time, ask: "What time should I remind you?" If the user doesn't specify WHAT to be reminded about, ask: "What would you like to be reminded about?" NEVER infer or fabricate reminder content from conversation history or context — only use the user's explicit words.
 7. **PARSE natural language** — Understand "tomorrow", "next week", "in 2 hours", "every Monday"
 8. **DISPLAY times in user's timezone** — When showing reminders, convert UTC back to local time for readability
 9. **FORMAT responses** in a user-friendly way with emojis and clear structure

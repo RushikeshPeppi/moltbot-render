@@ -1,0 +1,24 @@
+{
+  "project": {
+    "enabled": true,
+    "lastGenerated": "2026-04-01T13:48:34.309Z",
+    "observationCount": 88,
+    "skillCount": 0,
+    "domain": "project",
+    "triggerGlobs": [
+      "**/*"
+    ],
+    "description": "Project for moltbot-render. 33 gotchas, 52 conventions, 1 fixes."
+  },
+  "python": {
+    "enabled": true,
+    "lastGenerated": "2026-04-01T13:48:34.310Z",
+    "observationCount": 2,
+    "skillCount": 0,
+    "domain": "python",
+    "triggerGlobs": [
+      "**/*.py"
+    ],
+    "description": "Python for moltbot-render. ."
+  }
+}

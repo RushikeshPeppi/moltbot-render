@@ -34,3 +34,10 @@ build/
 *.sw?
 .claude/
 .gemini/
+
+# Auto-generated agent rules (personalized per developer)
+.brainsync/agent-rules.md
+
+AGENT.md
+CLAUDE.md
+.agent-mem/

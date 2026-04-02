@@ -3,12 +3,23 @@ Reminder API Router.
 
 Provides endpoints for creating, delivering, listing, and cancelling reminders.
 Integrates with QStash for scheduling and Peppi for SMS delivery.
+
+Production hardening (April 2026):
+- QStash webhook signature verification is ENABLED
+- Reminder deduplication prevents the same reminder from being created twice
+- Delivery errors are classified as permanent vs transient:
+    - Permanent (404, 403, 400): auto-fail + cancel QStash schedule
+    - Transient (5xx, timeout): retry up to max_retries
+- Playground users (usr_* IDs) skip Peppi SMS and use Redis push instead
+- Dead-letter guard: if retry_count exceeds threshold, auto-cancel
 """
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Request, HTTPException
+from qstash import Receiver
+
 from ..models import (
     BaseResponse,
     CreateReminderRequest,
@@ -26,11 +37,106 @@ from ..core.redis_client import redis_client
 from ..services.qstash_service import qstash_service
 from ..services.peppi_client import peppi_client
 from ..utils.timezone_utils import local_to_utc, recurrence_to_cron
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Reminders"])
 
+# Dead-letter threshold — if a reminder has already retried this many times,
+# don't even attempt delivery anymore.
+DEAD_LETTER_RETRY_THRESHOLD = 5
+
+# HTTP status codes that indicate permanent, non-retryable failures.
+PERMANENT_HTTP_ERRORS = {400, 401, 403, 404, 410, 422}
+
+# Maximum time window (minutes) for duplicate reminder detection.
+DEDUP_WINDOW_MINUTES = 5
+
+
+# ==================== Helpers ====================
+
+def _is_playground_user(user_id: str) -> bool:
+    """Playground users have 'usr_' prefixed IDs. They don't exist in Peppi's system."""
+    return user_id.startswith("usr_")
+
+
+def _is_permanent_sms_error(exc: Exception) -> bool:
+    """
+    Determine whether an SMS delivery error is permanent (never retry) or transient.
+    Permanent errors: user_not_found (404), forbidden (403), bad request (400), etc.
+    Transient errors: server error (5xx), timeout, network errors.
+    """
+    import httpx
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in PERMANENT_HTTP_ERRORS
+    # Network errors, timeouts → transient
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
+        return False
+    # Unknown error → treat as transient to be safe
+    return False
+
+
+async def _cancel_qstash_for_reminder(reminder: dict, reminder_id: int) -> None:
+    """Cancel any QStash message or schedule for a reminder."""
+    if not qstash_service.is_configured:
+        return
+    try:
+        qstash_schedule_id = reminder.get("qstash_schedule_id")
+        qstash_message_id = reminder.get("qstash_message_id")
+        if qstash_schedule_id:
+            qstash_service.cancel_schedule(qstash_schedule_id)
+            logger.info(f"Cancelled QStash schedule {qstash_schedule_id} for reminder {reminder_id}")
+        elif qstash_message_id:
+            qstash_service.cancel_message(qstash_message_id)
+            logger.info(f"Cancelled QStash message {qstash_message_id} for reminder {reminder_id}")
+    except Exception as e:
+        logger.warning(f"Could not cancel QStash job for reminder {reminder_id}: {e}")
+
+
+async def _mark_permanently_failed(reminder: dict, reminder_id: int, reason: str) -> None:
+    """Mark a reminder as permanently failed and cancel its QStash schedule."""
+    await db.update_reminder(reminder_id, {
+        "status": "failed",
+        "retry_count": reminder.get("retry_count", 0),
+    })
+    await _cancel_qstash_for_reminder(reminder, reminder_id)
+    logger.error(
+        f"Reminder {reminder_id} PERMANENTLY FAILED: {reason}. "
+        f"QStash schedule cancelled."
+    )
+
+
+def _verify_qstash_signature(raw_body: bytes, signature: str) -> bool:
+    """
+    Verify the QStash webhook signature using current + next signing keys.
+    Returns True if valid, raises on failure.
+    """
+    current_key = settings.QSTASH_CURRENT_SIGNING_KEY
+    next_key = settings.QSTASH_NEXT_SIGNING_KEY
+
+    if not current_key or not next_key:
+        logger.warning("QStash signing keys not configured — skipping signature verification")
+        return True
+
+    try:
+        receiver = Receiver(
+            current_signing_key=current_key,
+            next_signing_key=next_key,
+        )
+        deliver_url = f"{settings.MOLTBOT_PUBLIC_URL}/api/v1/reminders/deliver"
+        receiver.verify(
+            body=raw_body.decode("utf-8"),
+            signature=signature,
+            url=deliver_url,
+        )
+        return True
+    except Exception as e:
+        logger.error(f"QStash signature verification failed: {e}")
+        return False
+
+
+# ==================== Create ====================
 
 @router.post(
     "/reminders/create",
@@ -60,7 +166,54 @@ async def create_reminder(request: CreateReminderRequest):
                 code=ResponseCode.BAD_REQUEST,
             )
 
-        # 2. Save reminder to Supabase
+        # 2. Deduplication — check for an existing pending reminder with similar
+        #    trigger time for the same user, created within the last 2 minutes.
+        #    This prevents the gateway's empty-payload retries from creating duplicates.
+        try:
+            existing_reminders = await db.get_user_reminders(request.user_id, status='pending')
+            dedup_cutoff = datetime.utcnow() - timedelta(minutes=2)
+
+            for existing in existing_reminders:
+                existing_trigger = existing.get("trigger_at", "")
+                existing_created = existing.get("created_at", "")
+
+                try:
+                    existing_trigger_dt = datetime.fromisoformat(
+                        existing_trigger.replace('Z', '+00:00')
+                    ).replace(tzinfo=None)
+                    existing_created_dt = datetime.fromisoformat(
+                        existing_created.replace('Z', '+00:00')
+                    ).replace(tzinfo=None)
+                except (ValueError, AttributeError):
+                    continue
+
+                # Same user, similar time (within DEDUP_WINDOW_MINUTES), recently created
+                time_diff = abs((existing_trigger_dt - trigger_at_utc.replace(tzinfo=None)).total_seconds())
+                if time_diff <= DEDUP_WINDOW_MINUTES * 60 and existing_created_dt >= dedup_cutoff:
+                    logger.info(
+                        f"Dedup: Reminder for user {request.user_id} at "
+                        f"~{trigger_at_utc.isoformat()} already exists "
+                        f"(existing reminder {existing.get('id')}). Returning existing."
+                    )
+                    return success_response(
+                        message="Reminder already exists (deduplicated)",
+                        data=ReminderData(
+                            id=existing.get("id"),
+                            user_id=request.user_id,
+                            message=existing.get("message", ""),
+                            trigger_at=existing_trigger,
+                            user_timezone=existing.get("user_timezone", ""),
+                            recurrence=existing.get("recurrence", "none"),
+                            status="pending",
+                            created_at=existing_created,
+                        ),
+                        code=ResponseCode.SUCCESS,
+                    )
+        except Exception as dedup_err:
+            # Dedup is a best-effort optimization — don't block creation if it fails
+            logger.warning(f"Dedup check failed (non-blocking): {dedup_err}")
+
+        # 3. Save reminder to Supabase
         reminder_data = {
             "user_id": request.user_id,
             "message": request.message,
@@ -69,6 +222,7 @@ async def create_reminder(request: CreateReminderRequest):
             "recurrence": request.recurrence,
             "recurrence_rule": request.recurrence_rule,
             "status": "pending",
+            "max_retries": 3,  # Explicit — not NULL
         }
 
         reminder = await db.create_reminder(reminder_data)
@@ -81,7 +235,7 @@ async def create_reminder(request: CreateReminderRequest):
 
         reminder_id = reminder["id"]
 
-        # 3. Schedule via QStash
+        # 4. Schedule via QStash
         if not qstash_service.is_configured:
             logger.warning("QStash not configured — reminder saved but not scheduled")
             return success_response(
@@ -156,6 +310,8 @@ async def create_reminder(request: CreateReminderRequest):
         )
 
 
+# ==================== Deliver ====================
+
 @router.post(
     "/reminders/deliver",
     summary="Deliver a reminder (QStash webhook)",
@@ -174,125 +330,211 @@ async def deliver_reminder(request: Request):
     QStash webhook endpoint — called when a reminder fires.
     
     Flow:
-    1. Parse the reminder payload from QStash
-    2. Fetch reminder from DB to confirm it's still pending
-    3. Call Peppi to send SMS
-    4. Update status to delivered
+    1. Verify QStash signature
+    2. Parse the reminder payload
+    3. Dead-letter check (skip if too many retries)
+    4. Route delivery: Peppi SMS (production) or Redis push (playground)
+    5. Update status
     """
     try:
-        # TODO: Verify QStash signature for production security
-        # For now, we'll process without signature verification
-        # and add it once we've confirmed the webhook flow works.
-        # 
-        # from qstash import Receiver
-        # receiver = Receiver(
-        #     current_signing_key=settings.QSTASH_CURRENT_SIGNING_KEY,
-        #     next_signing_key=settings.QSTASH_NEXT_SIGNING_KEY,
-        # )
-        # body = await request.body()
-        # signature = request.headers.get("upstash-signature", "")
-        # receiver.verify(body=body.decode(), signature=signature, url=deliver_url)
+        # 0. Read raw body FIRST (needed for signature verification)
+        raw_body = await request.body()
+        signature = request.headers.get("upstash-signature", "")
 
-        # 1. Parse payload
-        body = await request.json()
+        # 1. Verify QStash signature
+        if not _verify_qstash_signature(raw_body, signature):
+            logger.error("QStash signature verification failed — rejecting request")
+            return {"status": "rejected", "reason": "invalid_signature"}
+
+        # 2. Parse payload
+        import json
+        body = json.loads(raw_body)
         payload = DeliverReminderPayload(**body)
 
         logger.info(
             f"Delivering reminder {payload.reminder_id} to user {payload.user_id}"
         )
 
-        # 2. Fetch reminder from DB
+        # 3. Fetch reminder from DB
         reminder = await db.get_reminder(payload.reminder_id)
         if not reminder:
             logger.warning(f"Reminder {payload.reminder_id} not found in database")
             return {"status": "skipped", "reason": "reminder_not_found"}
 
-        if reminder.get("status") == "cancelled":
-            logger.info(f"Reminder {payload.reminder_id} was cancelled — skipping delivery")
-            return {"status": "skipped", "reason": "cancelled"}
-
-        # 3. Send SMS via Peppi
-        try:
-            sms_result = await peppi_client.send_sms(
-                user_id=payload.user_id,
-                message=f"⏰ Reminder: {payload.message}",
-                source="moltbot-reminder",
+        if reminder.get("status") in ("cancelled", "failed"):
+            logger.info(
+                f"Reminder {payload.reminder_id} status is "
+                f"'{reminder.get('status')}' — skipping delivery"
             )
-            logger.info(f"SMS delivery result for reminder {payload.reminder_id}: {sms_result}")
-        except Exception as sms_error:
-            logger.error(f"SMS delivery failed for reminder {payload.reminder_id}: {sms_error}")
+            return {"status": "skipped", "reason": reminder.get("status")}
 
-            # Increment retry count
-            retry_count = reminder.get("retry_count", 0) + 1
-            max_retries = reminder.get("max_retries", 3)
+        if reminder.get("status") == "delivered" and reminder.get("recurrence") == "none":
+            logger.info(f"One-time reminder {payload.reminder_id} already delivered — skipping")
+            return {"status": "skipped", "reason": "already_delivered"}
 
-            if retry_count >= max_retries:
-                await db.update_reminder(payload.reminder_id, {
-                    "status": "failed",
-                    "retry_count": retry_count,
-                })
-                logger.error(f"Reminder {payload.reminder_id} failed after {retry_count} retries")
-            else:
-                await db.update_reminder(payload.reminder_id, {
-                    "retry_count": retry_count,
-                })
-
-            # Return 200 so QStash doesn't retry (we handle retries ourselves)
-            return {"status": "failed", "reason": str(sms_error)}
-
-        # 4. Check if SMS was actually sent (not just skipped)
-        if sms_result.get("status") == "skipped":
-            logger.warning(
-                f"Reminder {payload.reminder_id} SMS was skipped: {sms_result.get('message')}"
+        # 4. Dead-letter guard — prevent zombie retries
+        retry_count = reminder.get("retry_count", 0) or 0
+        if retry_count >= DEAD_LETTER_RETRY_THRESHOLD:
+            logger.error(
+                f"Reminder {payload.reminder_id} exceeded dead-letter threshold "
+                f"({retry_count} retries). Auto-cancelling."
             )
-            await db.update_reminder(payload.reminder_id, {"status": "failed"})
-            return {"status": "failed", "reason": sms_result.get("message")}
-
-        # 5. Update status to delivered
-        await db.update_reminder(payload.reminder_id, {
-            "status": "delivered",
-            "delivered_at": datetime.utcnow().isoformat(),
-        })
-
-        # 6. Create audit log entry so the reminder appears in chat history
-        # This ensures the reminder delivery persists and shows up when user refreshes/logs in again
-        # USER SIDE (request_summary) is blank - no user request, it's system-initiated
-        # AGENT SIDE (response_summary) has the full reminder message with special formatting
-        reminder_delivery_message = f"⏰ Reminder: {payload.message}"
-        try:
-            await db.log_action(
-                user_id=payload.user_id,
-                session_id=f"reminder_{payload.reminder_id}",  # Unique session for reminder deliveries
-                action_type="reminder_delivery",
-                request_summary="",  # Blank - no user request for system-initiated reminders
-                response_summary=reminder_delivery_message,
-                status="success",
-                tokens_used=0,
+            await _mark_permanently_failed(
+                reminder, payload.reminder_id,
+                f"Exceeded {DEAD_LETTER_RETRY_THRESHOLD} retry threshold"
             )
-            logger.info(f"Audit log created for reminder {payload.reminder_id} delivery")
-        except Exception as log_error:
-            logger.warning(f"Could not create audit log for reminder {payload.reminder_id}: {log_error}")
+            return {"status": "dead_lettered", "reason": "exceeded_retry_threshold"}
 
-        # 7. Push playground notification so the frontend chat window shows the reminder immediately
-        # (without waiting for history refresh)
-        try:
-            await redis_client.push_playground_message(payload.user_id, {
-                "type": "reminder_delivery",
-                "message": payload.message,
-                "reminder_id": payload.reminder_id,
-                "timestamp": datetime.utcnow().isoformat(),
-            })
-        except Exception as push_error:
-            logger.warning(f"Could not push playground message for reminder {payload.reminder_id}: {push_error}")
+        # 5. Route delivery based on user type
+        if _is_playground_user(payload.user_id):
+            # Playground users — deliver via Redis push (no Peppi SMS)
+            delivery_result = await _deliver_to_playground(payload, reminder)
+        else:
+            # Production users — deliver via Peppi SMS
+            delivery_result = await _deliver_via_peppi_sms(payload, reminder)
 
-        logger.info(f"Reminder {payload.reminder_id} delivered successfully")
-        return {"status": "delivered", "reminder_id": payload.reminder_id}
+        return delivery_result
 
     except Exception as e:
         logger.error(f"Error in deliver_reminder: {e}")
         # Return 200 to prevent QStash from retrying on parse errors
         return {"status": "error", "reason": str(e)}
 
+
+async def _deliver_to_playground(
+    payload: DeliverReminderPayload, reminder: dict
+) -> dict:
+    """
+    Deliver reminder to playground users via Redis push notification.
+    Skip Peppi SMS entirely since usr_ IDs don't exist in Peppi's system.
+    """
+    try:
+        await redis_client.push_playground_message(payload.user_id, {
+            "type": "reminder_delivery",
+            "message": payload.message,
+            "reminder_id": payload.reminder_id,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+
+        # Update status
+        if reminder.get("recurrence") == "none":
+            await db.update_reminder(payload.reminder_id, {
+                "status": "delivered",
+                "delivered_at": datetime.utcnow().isoformat(),
+            })
+
+        # Create audit log
+        await _create_delivery_audit_log(payload)
+
+        logger.info(
+            f"Reminder {payload.reminder_id} delivered to playground user "
+            f"{payload.user_id} via Redis push"
+        )
+        return {"status": "delivered", "reminder_id": payload.reminder_id, "channel": "playground"}
+
+    except Exception as e:
+        logger.error(f"Playground delivery failed for reminder {payload.reminder_id}: {e}")
+        return {"status": "failed", "reason": str(e)}
+
+
+async def _deliver_via_peppi_sms(
+    payload: DeliverReminderPayload, reminder: dict
+) -> dict:
+    """
+    Deliver reminder to production users via Peppi SMS.
+    Classifies errors as permanent vs transient for proper retry behavior.
+    """
+    try:
+        sms_result = await peppi_client.send_sms(
+            user_id=payload.user_id,
+            message=f"⏰ Reminder: {payload.message}",
+            source="moltbot-reminder",
+        )
+        logger.info(f"SMS delivery result for reminder {payload.reminder_id}: {sms_result}")
+    except Exception as sms_error:
+        logger.error(f"SMS delivery failed for reminder {payload.reminder_id}: {sms_error}")
+
+        if _is_permanent_sms_error(sms_error):
+            # PERMANENT: user doesn't exist, forbidden, bad request
+            # No amount of retrying will fix this — fail immediately
+            await _mark_permanently_failed(
+                reminder, payload.reminder_id,
+                f"Permanent SMS error: {sms_error}"
+            )
+            return {"status": "permanently_failed", "reason": str(sms_error)}
+        else:
+            # TRANSIENT: server error, timeout — retry allowed
+            retry_count = (reminder.get("retry_count", 0) or 0) + 1
+            max_retries = reminder.get("max_retries") or 3
+
+            if retry_count >= max_retries:
+                await _mark_permanently_failed(
+                    reminder, payload.reminder_id,
+                    f"Exhausted {max_retries} retries. Last error: {sms_error}"
+                )
+                return {"status": "failed", "reason": f"max_retries_exceeded ({max_retries})"}
+            else:
+                await db.update_reminder(payload.reminder_id, {
+                    "retry_count": retry_count,
+                })
+                logger.warning(
+                    f"Reminder {payload.reminder_id} transient failure "
+                    f"(retry {retry_count}/{max_retries}): {sms_error}"
+                )
+
+            # Return 200 so QStash doesn't add its own retries on top of ours
+            return {"status": "retrying", "reason": str(sms_error), "retry_count": retry_count}
+
+    # Check if SMS was actually sent (not just skipped by PeppiClient)
+    if sms_result.get("status") == "skipped":
+        logger.warning(
+            f"Reminder {payload.reminder_id} SMS was skipped: {sms_result.get('message')}"
+        )
+        await db.update_reminder(payload.reminder_id, {"status": "failed"})
+        return {"status": "failed", "reason": sms_result.get("message")}
+
+    # Success — update status
+    if reminder.get("recurrence") == "none":
+        await db.update_reminder(payload.reminder_id, {
+            "status": "delivered",
+            "delivered_at": datetime.utcnow().isoformat(),
+        })
+
+    # Create audit log + push playground notification
+    await _create_delivery_audit_log(payload)
+    try:
+        await redis_client.push_playground_message(payload.user_id, {
+            "type": "reminder_delivery",
+            "message": payload.message,
+            "reminder_id": payload.reminder_id,
+            "timestamp": datetime.utcnow().isoformat(),
+        })
+    except Exception as push_error:
+        logger.warning(f"Could not push playground message for reminder {payload.reminder_id}: {push_error}")
+
+    logger.info(f"Reminder {payload.reminder_id} delivered successfully via SMS")
+    return {"status": "delivered", "reminder_id": payload.reminder_id}
+
+
+async def _create_delivery_audit_log(payload: DeliverReminderPayload) -> None:
+    """Record reminder delivery in audit log for chat history persistence."""
+    reminder_delivery_message = f"⏰ Reminder: {payload.message}"
+    try:
+        await db.log_action(
+            user_id=payload.user_id,
+            session_id=f"reminder_{payload.reminder_id}",
+            action_type="reminder_delivery",
+            request_summary="",  # Blank — system-initiated, no user request
+            response_summary=reminder_delivery_message,
+            status="success",
+            tokens_used=0,
+        )
+        logger.info(f"Audit log created for reminder {payload.reminder_id} delivery")
+    except Exception as log_error:
+        logger.warning(f"Could not create audit log for reminder {payload.reminder_id}: {log_error}")
+
+
+# ==================== List ====================
 
 @router.get(
     "/reminders/list/{user_id}",
@@ -325,6 +567,8 @@ async def list_reminders(user_id: str, status: Optional[str] = None):
             exception=str(e),
         )
 
+
+# ==================== Cancel ====================
 
 @router.post(
     "/reminders/cancel",
@@ -367,19 +611,7 @@ async def cancel_reminder(request: CancelReminderRequest):
             )
 
         # 2. Cancel in QStash
-        if qstash_service.is_configured:
-            try:
-                qstash_message_id = reminder.get("qstash_message_id")
-                qstash_schedule_id = reminder.get("qstash_schedule_id")
-
-                if qstash_schedule_id:
-                    qstash_service.cancel_schedule(qstash_schedule_id)
-                elif qstash_message_id:
-                    qstash_service.cancel_message(qstash_message_id)
-            except Exception as qstash_error:
-                logger.warning(
-                    f"Could not cancel QStash job for reminder {request.reminder_id}: {qstash_error}"
-                )
+        await _cancel_qstash_for_reminder(reminder, request.reminder_id)
 
         # 3. Update status in DB
         await db.cancel_reminder(request.reminder_id)
@@ -400,6 +632,8 @@ async def cancel_reminder(request: CancelReminderRequest):
             exception=str(e),
         )
 
+
+# ==================== Update ====================
 
 @router.post(
     "/reminders/update",
@@ -478,21 +712,11 @@ async def update_reminder(request: UpdateReminderRequest):
             update_data["user_timezone"] = request.user_timezone
 
         # 3. Cancel old QStash schedule
-        if qstash_service.is_configured:
-            try:
-                qstash_message_id = reminder.get("qstash_message_id")
-                qstash_schedule_id = reminder.get("qstash_schedule_id")
-
-                if qstash_schedule_id:
-                    qstash_service.cancel_schedule(qstash_schedule_id)
-                    update_data["qstash_schedule_id"] = None
-                elif qstash_message_id:
-                    qstash_service.cancel_message(qstash_message_id)
-                    update_data["qstash_message_id"] = None
-            except Exception as qstash_error:
-                logger.warning(
-                    f"Could not cancel old QStash job for reminder {request.reminder_id}: {qstash_error}"
-                )
+        await _cancel_qstash_for_reminder(reminder, request.reminder_id)
+        if reminder.get("qstash_schedule_id"):
+            update_data["qstash_schedule_id"] = None
+        if reminder.get("qstash_message_id"):
+            update_data["qstash_message_id"] = None
 
         # 4. Create new QStash schedule with updated parameters
         if qstash_service.is_configured:
