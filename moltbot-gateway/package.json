@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "setup": "npm install -g openclaw@latest && openclaw onboard --install-daemon"
+    "setup": "npm install -g openclaw@2026.3.8 && openclaw onboard --install-daemon"
   },
   "dependencies": {
     "express": "^4.18.2",

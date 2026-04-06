@@ -201,8 +201,8 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // so we don't use --to or --session-id (which caused token bloat: 33K→292K).
     // Each request is independent — OpenClaw gets context from the message.
     // OpenClaw v2026.3.8+ requires --agent to route the request (new CLI requirement).
-    // NOTE: --thinking flag disabled for Claude Haiku (causes thinking leakage in output)
-    const args = ['agent', '--agent', 'main', '--message', fullMessage];
+    // OpenClaw v2026.3.8+ handles default agent routing automatically
+    const args = ['agent', '--message', fullMessage];
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
     const extraEnv = {};

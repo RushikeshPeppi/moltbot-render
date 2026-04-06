@@ -339,7 +339,8 @@ async def execute_action(request: ExecuteActionRequest):
             except Exception:
                 pass  # Non-critical — used for dedup detection only
 
-        # 6. Call OpenClaw (single attempt — no empty-payload retries that cause duplicates)
+        # 6. Call OpenClaw with selective retry logic (+ retry on empty payloads for chat)
+        MAX_EMPTY_RETRIES = 2
         clean_response = None
         tokens_used = 0
         input_tokens = 0
@@ -348,94 +349,84 @@ async def execute_action(request: ExecuteActionRequest):
         cache_write = 0
         openclaw_response = None
 
-        try:
-            openclaw_response = await openclaw_client.send_message(
-                session_id=session_id,
-                message=request.message,
-                user_id=user_id,
-                timezone=request.timezone,
-                user_credentials=user_credentials,
-                conversation_history=[],
-                user_context=user_context
-            )
-        except OpenClawClientError as e:
-            logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")
-            
-            if log_id:
-                await db.update_action_log(
-                    log_id=log_id,
-                    status="failed",
-                    error_message=e.message
-                )
-            
-            return create_error_response(
-                code=ResponseCode.SERVICE_UNAVAILABLE if e.retryable else ResponseCode.INTERNAL_ERROR,
-                message="Failed to process your request. Please try again.",
-                error=e.error_type,
-                exception=e.message
-            )
-
-        # 7. Parse and clean the response
-        # The gateway (server.js) already extracts text from OpenClaw's payloads.
-        # raw_response is normally a plain text string, NOT nested JSON.
-        raw_response = openclaw_response.get('response', 'Action completed')
-        tokens_used = openclaw_response.get('tokens_used', 0) or 0
-        input_tokens = openclaw_response.get('input_tokens', 0) or 0
-        output_tokens = openclaw_response.get('output_tokens', 0) or 0
-        cache_read = openclaw_response.get('cache_read', 0) or 0
-        cache_write = openclaw_response.get('cache_write', 0) or 0
-
-        # DEBUG: Log the raw gateway response for tracing empty-response issues
-        logger.info(f"[{session_id}] Gateway response keys: {list(openclaw_response.keys())}")
-        logger.info(f"[{session_id}] raw_response type={type(raw_response).__name__} len={len(str(raw_response))} value={str(raw_response)[:200]}")
-
-        clean_response = raw_response
-
-        # Safety net: gateway's last-resort path may send JSON.stringify(result)
-        # instead of extracted text. Detect and extract if that happens.
-        if isinstance(raw_response, str) and raw_response.strip().startswith('{'):
+        for attempt in range(1, MAX_EMPTY_RETRIES + 1):
             try:
-                import json
-                parsed = json.loads(raw_response)
-                if isinstance(parsed, dict):
-                    extracted_text = _extract_text_from_gateway_fallback(parsed, session_id)
-                    if extracted_text:
-                        clean_response = extracted_text
+                openclaw_response = await openclaw_client.send_message(
+                    session_id=session_id,
+                    message=request.message,
+                    user_id=user_id,
+                    timezone=request.timezone,
+                    user_credentials=user_credentials,
+                    conversation_history=[],
+                    user_context=user_context
+                )
+            except OpenClawClientError as e:
+                logger.error(f"OpenClaw call failed (attempt {attempt}): {e.message}")
+                if attempt < MAX_EMPTY_RETRIES:
+                    await _async_sleep(1) # Small delay before retry
+                    continue
+                
+                if log_id:
+                    await db.update_action_log(log_id=log_id, status="failed", error_message=e.message)
+                
+                return create_error_response(
+                    code=ResponseCode.SERVICE_UNAVAILABLE if e.retryable else ResponseCode.INTERNAL_ERROR,
+                    message="Failed to process your request. Please try again.",
+                    error=e.error_type,
+                    exception=e.message
+                )
 
-                    # Extract token usage from meta if gateway didn't provide it
-                    if not tokens_used:
-                        tokens_used = _extract_token_count(parsed)
-            except (json.JSONDecodeError, ValueError):
-                pass  # raw_response is already the best we have
+            # 7. Parse and clean the response
+            raw_response = openclaw_response.get('response', 'Action completed')
+            tokens_used = openclaw_response.get('tokens_used', 0) or 0
+            input_tokens = openclaw_response.get('input_tokens', 0) or 0
+            output_tokens = openclaw_response.get('output_tokens', 0) or 0
+            cache_read = openclaw_response.get('cache_read', 0) or 0
+            cache_write = openclaw_response.get('cache_write', 0) or 0
 
-        # 7b. If payloads are empty, check for real side-effects via DB
-        #     (instead of retrying and creating duplicates)
-        if not clean_response or not clean_response.strip():
-            # Check if new reminders were created during this gateway call
+            # Clean/extract response text
+            clean_response = raw_response
+            if isinstance(raw_response, str) and raw_response.strip().startswith('{'):
+                try:
+                    import json
+                    parsed = json.loads(raw_response)
+                    if isinstance(parsed, dict):
+                        extracted = _extract_text_from_gateway_fallback(parsed, session_id)
+                        if extracted: clean_response = extracted
+                except: pass
+
+            # Success condition
+            if clean_response and clean_response.strip():
+                break
+
+            # 7b. Handle empty payloads — Check for side-effects before retrying
+            # If the agent already created a reminder, retrying would duplicate it.
             fallback = await _detect_side_effects_and_build_fallback(
                 user_id, session_id, pre_call_reminder_ids, openclaw_response
             )
             if fallback:
                 clean_response = fallback
+                break # Side-effect detected, don't retry
 
-        # If still empty after side-effect check, return error
+            # Chat-only action (no side effects) — safe to retry
+            if attempt < MAX_EMPTY_RETRIES:
+                logger.warning(f"[{session_id}] Empty response on attempt {attempt}, retrying...")
+            else:
+                logger.error(f"[{session_id}] Persistent empty response after {MAX_EMPTY_RETRIES} attempts")
+
+        # If still empty after all attempts, return error
         if not clean_response or not clean_response.strip():
             if log_id:
                 await db.update_action_log(
-                    log_id=log_id,
-                    status="failed",
-                    error_message="Agent returned empty response (empty payloads)",
-                    tokens_used=tokens_used,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read=cache_read,
-                    cache_write=cache_write
+                    log_id=log_id, status="failed", 
+                    error_message="Agent returned empty response after retries",
+                    tokens_used=tokens_used, input_tokens=input_tokens, output_tokens=output_tokens
                 )
             return create_error_response(
                 code=ResponseCode.INTERNAL_ERROR,
                 message="Agent returned an empty response. Please try again.",
                 error="EMPTY_RESPONSE",
-                exception="OpenClaw returned empty payloads"
+                exception="OpenClaw returned empty payloads after retries"
             )
 
         # Final fallback: Estimate tokens from character count (~3.5 chars/token for Claude)
