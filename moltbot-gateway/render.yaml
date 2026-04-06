@@ -6,7 +6,7 @@ services:
     plan: pro
     buildCommand: |
       npm install && \
-      npm install -g openclaw@latest
+      npm install -g openclaw@2026.3.8
     startCommand: npm start
     healthCheckPath: /health
     disk:
