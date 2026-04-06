@@ -200,9 +200,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Stateless execution: Peppi's context already provides conversation history,
     // so we don't use --to or --session-id (which caused token bloat: 33K→292K).
     // Each request is independent — OpenClaw gets context from the message.
-    // OpenClaw v2026.3.8+ requires --agent to route the request (new CLI requirement).
-    // OpenClaw v2026.3.8+ handles default agent routing automatically
-    const args = ['agent', '--message', fullMessage];
+    // --agent main is REQUIRED by OpenClaw CLI to route to the correct agent config.
+    // Verified working in commits fc4c4d6 (Mar 10) through 6ac2b64 (Mar 26).
+    const args = ['agent', '--agent', 'main', '--message', fullMessage];
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
     const extraEnv = {};
