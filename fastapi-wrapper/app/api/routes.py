@@ -111,6 +111,60 @@ async def health_check():
         )
 
 
+# ==================== Response Extraction Helpers ====================
+
+# Known fields where OpenClaw may place the response text
+_TEXT_FIELDS = ('response', 'message', 'text', 'output', 'content')
+
+
+def _extract_text_from_gateway_fallback(parsed: dict, session_id: str) -> Optional[str]:
+    """
+    Extract text from a raw JSON dict when the gateway's last-resort path
+    sends JSON.stringify(result) instead of extracted text.
+    """
+    # Try payloads first (OpenClaw's native format)
+    payloads = parsed.get('payloads', [])
+    if payloads and isinstance(payloads[0], dict):
+        text = payloads[0].get('text', '')
+        if text and text.strip():
+            return text
+
+    # Fallback: try known text fields
+    for field in _TEXT_FIELDS:
+        value = parsed.get(field)
+        if value and isinstance(value, str) and value.strip():
+            logger.info(f"[{session_id}] Extracted text from fallback field '{field}'")
+            return value
+
+    logger.warning(
+        f"[{session_id}] Gateway sent raw JSON but no text found. "
+        f"Keys: {list(parsed.keys())[:10]}"
+    )
+    return None
+
+
+def _extract_token_count(parsed: dict) -> int:
+    """Extract total token count from OpenClaw's nested meta structure."""
+    meta = parsed.get('meta', {})
+    if not isinstance(meta, dict):
+        return 0
+
+    agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
+    if not isinstance(agent_meta, dict):
+        agent_meta = {}
+
+    usage = agent_meta.get('usage', meta.get('usage', {}))
+    if not isinstance(usage, dict):
+        return 0
+
+    return (
+        usage.get('totalTokenCount', 0)
+        or usage.get('total_token_count', 0)
+        or usage.get('total_tokens', 0)
+        or usage.get('total', 0)
+    )
+
+
 # ==================== Side-Effect Detection ====================
 
 async def _detect_side_effects_and_build_fallback(
@@ -275,13 +329,15 @@ async def execute_action(request: ExecuteActionRequest):
         # Note: We skip saving to Redis conversation_history — Peppi already
         # provides full chat history in context. Redis is only used for session_id mapping.
         
-        # 5. Snapshot reminders count BEFORE gateway call (for side-effect detection)
+        # 5. Snapshot reminders ONLY when relevant (avoid extra DB call on every request)
+        REMINDER_KEYWORDS = ('remind', 'alarm', 'timer', 'notify', 'alert')
         pre_call_reminder_ids = set()
-        try:
-            existing_reminders = await db.get_user_reminders(user_id, status='pending')
-            pre_call_reminder_ids = {r.get('id') for r in existing_reminders if r.get('id')}
-        except Exception:
-            pass  # Non-critical — used for dedup detection only
+        if any(kw in request.message.lower() for kw in REMINDER_KEYWORDS):
+            try:
+                existing_reminders = await db.get_user_reminders(user_id, status='pending')
+                pre_call_reminder_ids = {r.get('id') for r in existing_reminders if r.get('id')}
+            except Exception:
+                pass  # Non-critical — used for dedup detection only
 
         # 6. Call OpenClaw (single attempt — no empty-payload retries that cause duplicates)
         clean_response = None
@@ -320,6 +376,8 @@ async def execute_action(request: ExecuteActionRequest):
             )
 
         # 7. Parse and clean the response
+        # The gateway (server.js) already extracts text from OpenClaw's payloads.
+        # raw_response is normally a plain text string, NOT nested JSON.
         raw_response = openclaw_response.get('response', 'Action completed')
         tokens_used = openclaw_response.get('tokens_used', 0) or 0
         input_tokens = openclaw_response.get('input_tokens', 0) or 0
@@ -327,47 +385,24 @@ async def execute_action(request: ExecuteActionRequest):
         cache_read = openclaw_response.get('cache_read', 0) or 0
         cache_write = openclaw_response.get('cache_write', 0) or 0
 
-        try:
-            import json
-            parsed_response = json.loads(raw_response)
+        clean_response = raw_response
 
-            # Extract just the text from payloads
-            payloads = parsed_response.get('payloads', [])
-            if payloads and len(payloads) > 0:
-                clean_response = payloads[0].get('text', '')
-            else:
-                # Gemini/OpenClaw may return in different formats — try all known fields
-                clean_response = (
-                    parsed_response.get('response')
-                    or parsed_response.get('message')
-                    or parsed_response.get('text')
-                    or parsed_response.get('output')
-                    or parsed_response.get('content')
-                    or None
-                )
-                if clean_response:
-                    logger.info(f"[{session_id}] Used fallback field (no payloads)")
-                else:
-                    logger.warning(
-                        f"[{session_id}] No text found in response. "
-                        f"Keys: {list(parsed_response.keys())[:10]}, "
-                        f"Preview: {raw_response[:300]}"
-                    )
+        # Safety net: gateway's last-resort path may send JSON.stringify(result)
+        # instead of extracted text. Detect and extract if that happens.
+        if isinstance(raw_response, str) and raw_response.strip().startswith('{'):
+            try:
+                import json
+                parsed = json.loads(raw_response)
+                if isinstance(parsed, dict):
+                    extracted_text = _extract_text_from_gateway_fallback(parsed, session_id)
+                    if extracted_text:
+                        clean_response = extracted_text
 
-            # Extract token usage from meta if gateway didn't provide it
-            if not tokens_used:
-                meta = parsed_response.get('meta', {})
-                agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
-                usage = agent_meta.get('usage', meta.get('usage', {}))
-                tokens_used = (
-                    usage.get('totalTokenCount', 0)
-                    or usage.get('total_token_count', 0)
-                    or usage.get('total_tokens', 0)
-                    or usage.get('total', 0)
-                )
-
-        except (json.JSONDecodeError, AttributeError, KeyError):
-            clean_response = raw_response
+                    # Extract token usage from meta if gateway didn't provide it
+                    if not tokens_used:
+                        tokens_used = _extract_token_count(parsed)
+            except (json.JSONDecodeError, ValueError):
+                pass  # raw_response is already the best we have
 
         # 7b. If payloads are empty, check for real side-effects via DB
         #     (instead of retrying and creating duplicates)

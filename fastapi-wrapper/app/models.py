@@ -82,7 +82,12 @@ class ExecuteActionData(BaseModel):
     session_id: str = Field(..., description="Session ID for conversation tracking")
     response: str = Field(..., description="AI response message")
     action_performed: Optional[str] = Field(None, description="Type of action executed")
-    details: Optional[Dict[str, Any]] = Field(None, description="Additional action details")
+    tokens_used: Optional[int] = Field(None, description="Total tokens consumed")
+    input_tokens: Optional[int] = Field(None, description="Input tokens (non-cached + cache read + cache write)")
+    output_tokens: Optional[int] = Field(None, description="Output tokens generated")
+    cache_read: Optional[int] = Field(None, description="Tokens served from prompt cache")
+    cache_write: Optional[int] = Field(None, description="Tokens written to prompt cache")
+    reminder_trigger_at: Optional[str] = Field(None, description="ISO timestamp for next reminder trigger")
 
 
 class ExecuteActionResponse(BaseResponse):
