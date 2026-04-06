@@ -279,6 +279,16 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
         return;
       }
 
+      // OpenClaw 2026.4.5+ may write JSON to stderr instead of stdout.
+      // If stdout is empty but stderr has content, use stderr as the response source.
+      if (!stdout.trim() && stderr.trim()) {
+        console.log(`[${sessionId}] stdout empty — trying stderr as response (${stderr.length} chars)`);
+        stdout = stderr;
+        stderr = '';
+      } else if (!stdout.trim()) {
+        console.warn(`[${sessionId}] Both stdout and stderr are empty (OpenClaw produced no output)`);
+      }
+
       try {
         // Attempt to extract JSON from mixed output (CLI often prints logs + JSON)
         let result = null;
