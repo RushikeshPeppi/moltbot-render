@@ -385,6 +385,10 @@ async def execute_action(request: ExecuteActionRequest):
         cache_read = openclaw_response.get('cache_read', 0) or 0
         cache_write = openclaw_response.get('cache_write', 0) or 0
 
+        # DEBUG: Log the raw gateway response for tracing empty-response issues
+        logger.info(f"[{session_id}] Gateway response keys: {list(openclaw_response.keys())}")
+        logger.info(f"[{session_id}] raw_response type={type(raw_response).__name__} len={len(str(raw_response))} value={str(raw_response)[:200]}")
+
         clean_response = raw_response
 
         # Safety net: gateway's last-resort path may send JSON.stringify(result)
