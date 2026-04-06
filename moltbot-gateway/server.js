@@ -200,8 +200,8 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Stateless execution: Peppi's context already provides conversation history,
     // so we don't use --to or --session-id (which caused token bloat: 33K→292K).
     // Each request is independent — OpenClaw gets context from the message.
-    // --agent main is REQUIRED by OpenClaw CLI to route to the correct agent config.
-    // Verified working in commits fc4c4d6 (Mar 10) through 6ac2b64 (Mar 26).
+    // OpenClaw v2026.3.8+ requires --agent to route the request (new CLI requirement).
+    // NOTE: --thinking flag disabled for Claude Haiku (causes thinking leakage in output)
     const args = ['agent', '--agent', 'main', '--message', fullMessage];
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
@@ -309,12 +309,14 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
           console.log(`[${sessionId}] OpenClaw raw result (first 500c): ${resultPreview}`);
 
           // Extract text from OpenClaw's payloads format (preferred)
+          // Skip thinking blocks (type: "thinking") — only extract actual text responses
           let responseText = null;
           if (result.payloads && Array.isArray(result.payloads) && result.payloads.length > 0) {
             responseText = result.payloads
+              .filter(p => p.type !== 'thinking')
               .map(p => p.text || p.content || '')
               .filter(t => t.length > 0)
-              .join('\n');
+              .join('\n') || null;
           }
 
           // Fallback chain: payloads → standard fields → raw stringify
@@ -540,9 +542,10 @@ async function startOpenClaw() {
               primary: "anthropic/claude-haiku-4-5-20251001",
               fallbacks: ["google/gemini-2.5-pro"]
             },
-            // Claude Haiku thinking level: medium = "think harder" (quality over token savings)
+            // Claude Haiku thinking level: low = lightweight reasoning without token bloat
+            // medium/high caused Haiku to produce thinking-only payloads with no text response
             // Levels: minimal | low | medium | high | xhigh | adaptive
-            thinkingDefault: "medium"
+            thinkingDefault: "low"
           }
         },
         // CRITICAL: Tool execution permissions — without this, bash skills are silently blocked

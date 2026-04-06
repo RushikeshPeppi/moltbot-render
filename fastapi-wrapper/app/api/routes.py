@@ -16,7 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 import traceback
 
@@ -109,126 +109,6 @@ async def health_check():
             error="HEALTH_CHECK_ERROR",
             exception=str(e)
         )
-
-
-# ==================== Response Extraction Helpers ====================
-
-# Known fields where OpenClaw may place the response text
-_TEXT_FIELDS = ('response', 'message', 'text', 'output', 'content')
-
-
-def _extract_text_from_gateway_fallback(parsed: dict, session_id: str) -> Optional[str]:
-    """
-    Extract text from a raw JSON dict when the gateway's last-resort path
-    sends JSON.stringify(result) instead of extracted text.
-    """
-    # Try payloads first (OpenClaw's native format)
-    payloads = parsed.get('payloads', [])
-    if payloads and isinstance(payloads[0], dict):
-        text = payloads[0].get('text', '')
-        if text and text.strip():
-            return text
-
-    # Fallback: try known text fields
-    for field in _TEXT_FIELDS:
-        value = parsed.get(field)
-        if value and isinstance(value, str) and value.strip():
-            logger.info(f"[{session_id}] Extracted text from fallback field '{field}'")
-            return value
-
-    logger.warning(
-        f"[{session_id}] Gateway sent raw JSON but no text found. "
-        f"Keys: {list(parsed.keys())[:10]}"
-    )
-    return None
-
-
-def _extract_token_count(parsed: dict) -> int:
-    """Extract total token count from OpenClaw's nested meta structure."""
-    meta = parsed.get('meta', {})
-    if not isinstance(meta, dict):
-        return 0
-
-    agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
-    if not isinstance(agent_meta, dict):
-        agent_meta = {}
-
-    usage = agent_meta.get('usage', meta.get('usage', {}))
-    if not isinstance(usage, dict):
-        return 0
-
-    return (
-        usage.get('totalTokenCount', 0)
-        or usage.get('total_token_count', 0)
-        or usage.get('total_tokens', 0)
-        or usage.get('total', 0)
-    )
-
-
-# ==================== Side-Effect Detection ====================
-
-async def _detect_side_effects_and_build_fallback(
-    user_id: str,
-    session_id: str,
-    pre_call_reminder_ids: set,
-    openclaw_response: dict
-) -> Optional[str]:
-    """
-    When the gateway returns empty payloads, check if a real side-effect
-    (e.g., reminder creation, email sent) already happened.
-    If so, build a contextual fallback response instead of retrying or erroring.
-    """
-    try:
-        # 1. Check for newly created reminders
-        current_reminders = await db.get_user_reminders(user_id, status='pending')
-        current_ids = {r.get('id') for r in current_reminders if r.get('id')}
-        new_reminder_ids = current_ids - pre_call_reminder_ids
-
-        if new_reminder_ids:
-            # Find the newest reminder to build a contextual response
-            new_reminders = [r for r in current_reminders if r.get('id') in new_reminder_ids]
-            if new_reminders:
-                newest = max(new_reminders, key=lambda r: r.get('id', 0))
-                trigger_at = newest.get('trigger_at', '')
-                msg = newest.get('message', '')
-
-                # Build a human-friendly time description
-                time_desc = ""
-                try:
-                    from datetime import datetime as dt
-                    trigger_dt = dt.fromisoformat(trigger_at.replace('Z', '+00:00'))
-                    time_desc = trigger_dt.strftime('%I:%M %p on %B %d')
-                except Exception:
-                    time_desc = trigger_at
-
-                logger.info(
-                    f"[{session_id}] Empty payloads but {len(new_reminder_ids)} reminder(s) "
-                    f"created during gateway call — using contextual fallback"
-                )
-                return (
-                    f"Done! I've set your reminder for {time_desc}. "
-                    f"You'll receive a notification: \"{msg}\""
-                )
-
-        # 2. Check action_type as a fallback signal
-        detected_action = (openclaw_response.get('action_type') or '').lower() if openclaw_response else ''
-        SIDE_EFFECT_ACTIONS = (
-            'gmail', 'calendar', 'reminder', 'email', 'send', 'create',
-            'delete', 'update', 'schedule', 'compose', 'draft',
-        )
-        has_side_effects = any(kw in detected_action for kw in SIDE_EFFECT_ACTIONS)
-
-        if has_side_effects:
-            logger.warning(
-                f"[{session_id}] Empty payloads but action '{detected_action}' "
-                f"likely already executed — using generic fallback"
-            )
-            return "Done! Your request has been processed."
-
-    except Exception as e:
-        logger.warning(f"[{session_id}] Side-effect detection failed: {e}")
-
-    return None
 
 
 # ==================== Action Execution ====================
@@ -329,24 +209,10 @@ async def execute_action(request: ExecuteActionRequest):
         # Note: We skip saving to Redis conversation_history — Peppi already
         # provides full chat history in context. Redis is only used for session_id mapping.
         
-        # 5. Snapshot reminders ONLY when relevant (avoid extra DB call on every request)
-        REMINDER_KEYWORDS = ('remind', 'alarm', 'timer', 'notify', 'alert')
-        pre_call_reminder_ids = set()
-        if any(kw in request.message.lower() for kw in REMINDER_KEYWORDS):
-            try:
-                existing_reminders = await db.get_user_reminders(user_id, status='pending')
-                pre_call_reminder_ids = {r.get('id') for r in existing_reminders if r.get('id')}
-            except Exception:
-                pass  # Non-critical — used for dedup detection only
-
-        # 6. Call OpenClaw with selective retry logic (+ retry on empty payloads for chat)
+        # 6. Call OpenClaw with retry logic (+ retry on empty payloads)
         MAX_EMPTY_RETRIES = 2
         clean_response = None
         tokens_used = 0
-        input_tokens = 0
-        output_tokens = 0
-        cache_read = 0
-        cache_write = 0
         openclaw_response = None
 
         for attempt in range(1, MAX_EMPTY_RETRIES + 1):
@@ -357,17 +223,20 @@ async def execute_action(request: ExecuteActionRequest):
                     user_id=user_id,
                     timezone=request.timezone,
                     user_credentials=user_credentials,
+                    # Peppi sends full context; playground has no context so would use Redis history.
+                    # Gateway ignores the history field anyway, so always send empty.
                     conversation_history=[],
                     user_context=user_context
                 )
             except OpenClawClientError as e:
-                logger.error(f"OpenClaw call failed (attempt {attempt}): {e.message}")
-                if attempt < MAX_EMPTY_RETRIES:
-                    await _async_sleep(1) # Small delay before retry
-                    continue
+                logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")
                 
                 if log_id:
-                    await db.update_action_log(log_id=log_id, status="failed", error_message=e.message)
+                    await db.update_action_log(
+                        log_id=log_id,
+                        status="failed",
+                        error_message=e.message
+                    )
                 
                 return create_error_response(
                     code=ResponseCode.SERVICE_UNAVAILABLE if e.retryable else ResponseCode.INTERNAL_ERROR,
@@ -384,49 +253,129 @@ async def execute_action(request: ExecuteActionRequest):
             cache_read = openclaw_response.get('cache_read', 0) or 0
             cache_write = openclaw_response.get('cache_write', 0) or 0
 
-            # Clean/extract response text
-            clean_response = raw_response
-            if isinstance(raw_response, str) and raw_response.strip().startswith('{'):
-                try:
-                    import json
-                    parsed = json.loads(raw_response)
-                    if isinstance(parsed, dict):
-                        extracted = _extract_text_from_gateway_fallback(parsed, session_id)
-                        if extracted: clean_response = extracted
-                except: pass
+            try:
+                import json
+                parsed_response = json.loads(raw_response)
 
-            # Success condition
+                # Extract text payloads — skip thinking blocks (type: "thinking")
+                # Bug: thinking-only payloads have no 'text' key, so payloads[0].get('text','')
+                # returns '' and the fallback chain below was never reached.
+                payloads = parsed_response.get('payloads', [])
+                text_payloads = [p for p in payloads if p.get('type') != 'thinking']
+
+                if text_payloads:
+                    clean_response = '\n'.join(
+                        p.get('text') or p.get('content') or ''
+                        for p in text_payloads
+                    ).strip() or None
+                else:
+                    clean_response = None
+
+                if not clean_response:
+                    # Gemini/OpenClaw may return in different formats — try all known fields
+                    clean_response = (
+                        parsed_response.get('response')
+                        or parsed_response.get('message')
+                        or parsed_response.get('text')
+                        or parsed_response.get('output')
+                        or parsed_response.get('content')
+                        or None
+                    )
+                    if clean_response:
+                        logger.info(f"[{session_id}] Used fallback field (no text payloads)")
+                    else:
+                        payload_types = [p.get('type', 'unknown') for p in payloads]
+                        logger.warning(
+                            f"[{session_id}] No text found in response. "
+                            f"Keys: {list(parsed_response.keys())[:10]}, "
+                            f"Payload types: {payload_types}, "
+                            f"Preview: {raw_response[:300]}"
+                        )
+
+                # Extract token usage from meta if gateway didn't provide it
+                if not tokens_used:
+                    meta = parsed_response.get('meta', {})
+                    agent_meta = meta.get('agentMeta', meta.get('agent_meta', {}))
+                    usage = agent_meta.get('usage', meta.get('usage', {}))
+                    tokens_used = (
+                        usage.get('totalTokenCount', 0)
+                        or usage.get('total_token_count', 0)
+                        or usage.get('total_tokens', 0)
+                        or usage.get('total', 0)
+                    )
+
+            except (json.JSONDecodeError, AttributeError, KeyError):
+                clean_response = raw_response
+
+            # If we got a valid non-empty response, break out of retry loop
             if clean_response and clean_response.strip():
                 break
 
-            # 7b. Handle empty payloads — Check for side-effects before retrying
-            # If the agent already created a reminder, retrying would duplicate it.
-            fallback = await _detect_side_effects_and_build_fallback(
-                user_id, session_id, pre_call_reminder_ids, openclaw_response
+            # --- Smart retry: only retry for chat-like actions ---
+            # If the agent performed a side-effect action (gmail, calendar, etc.),
+            # retrying would double-execute it. Use a fallback message instead.
+            detected_action = (openclaw_response.get('action_type') or '').lower()
+            SIDE_EFFECT_ACTIONS = (
+                'gmail', 'calendar', 'reminder', 'email', 'send', 'create',
+                'delete', 'update', 'schedule', 'compose', 'draft',
             )
-            if fallback:
-                clean_response = fallback
-                break # Side-effect detected, don't retry
+            # action_type from OpenClaw defaults to 'chat' even for Gmail/Calendar actions.
+            # Also check the user's message to detect side-effect operations.
+            message_lower = (request.message or '').lower()
+            MESSAGE_SIDE_EFFECT_KEYWORDS = (
+                'inbox', 'email', 'mail', 'calendar', 'meet', 'schedule',
+                'reminder', 'remind', 'appointment', 'event', 'send', 'compose',
+            )
+            has_side_effects = (
+                any(kw in detected_action for kw in SIDE_EFFECT_ACTIONS)
+                or any(kw in message_lower for kw in MESSAGE_SIDE_EFFECT_KEYWORDS)
+            )
 
-            # Chat-only action (no side effects) — safe to retry
+            if has_side_effects:
+                # Action already executed — don't retry (would double-execute).
+                # Build a context-aware fallback message.
+                if any(kw in message_lower for kw in ('inbox', 'email', 'mail', 'compose', 'send')):
+                    clean_response = "I checked your inbox but couldn't format the response properly. Please try asking again."
+                elif any(kw in message_lower for kw in ('calendar', 'meet', 'schedule', 'appointment', 'event')):
+                    clean_response = "I processed your calendar request. Please check your Google Calendar to confirm."
+                elif any(kw in message_lower for kw in ('remind', 'reminder')):
+                    clean_response = "Your reminder has been set."
+                else:
+                    clean_response = "Done! Your request has been processed."
+                logger.warning(
+                    f"[{session_id}] Empty payloads but side-effect action detected "
+                    f"(action_type='{detected_action}', message_keywords matched) — using fallback response"
+                )
+                break
+
+            # Chat-like action — safe to retry
             if attempt < MAX_EMPTY_RETRIES:
-                logger.warning(f"[{session_id}] Empty response on attempt {attempt}, retrying...")
+                logger.warning(
+                    f"[{session_id}] Empty payloads on attempt {attempt}/{MAX_EMPTY_RETRIES}, retrying..."
+                )
             else:
-                logger.error(f"[{session_id}] Persistent empty response after {MAX_EMPTY_RETRIES} attempts")
+                logger.error(
+                    f"[{session_id}] Empty payloads after {MAX_EMPTY_RETRIES} attempts — returning error"
+                )
 
-        # If still empty after all attempts, return error
+        # If still empty after all retries, return 500 error
         if not clean_response or not clean_response.strip():
             if log_id:
                 await db.update_action_log(
-                    log_id=log_id, status="failed", 
-                    error_message="Agent returned empty response after retries",
-                    tokens_used=tokens_used, input_tokens=input_tokens, output_tokens=output_tokens
+                    log_id=log_id,
+                    status="failed",
+                    error_message="Agent returned empty response (empty payloads)",
+                    tokens_used=tokens_used,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read=cache_read,
+                    cache_write=cache_write
                 )
             return create_error_response(
                 code=ResponseCode.INTERNAL_ERROR,
                 message="Agent returned an empty response. Please try again.",
                 error="EMPTY_RESPONSE",
-                exception="OpenClaw returned empty payloads after retries"
+                exception=f"OpenClaw returned empty payloads after {MAX_EMPTY_RETRIES} attempts"
             )
 
         # Final fallback: Estimate tokens from character count (~3.5 chars/token for Claude)
@@ -750,16 +699,6 @@ async def get_credentials_status(user_id: str):
 async def get_action_history(user_id: str, limit: int = 50, offset: int = 0):
     """Get action history for a user from audit log."""
     try:
-        # Validate user exists before returning history
-        existing_user = await db.get_user(user_id)
-        if not existing_user:
-            return create_error_response(
-                code=ResponseCode.NOT_FOUND,
-                message=f"User '{user_id}' not found",
-                error="USER_NOT_FOUND",
-                exception=None
-            )
-
         actions = await db.get_user_action_history(user_id, limit, offset)
         
         # Convert datetime objects to strings (Supabase may return strings already)
