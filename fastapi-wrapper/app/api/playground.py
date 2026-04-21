@@ -286,15 +286,15 @@ async def get_token_usage(
         )
 
 
-# Anthropic Claude Haiku 4.5 pricing (per 1M tokens)
-HAIKU_INPUT_RATE = 1.00        # $ per 1M non-cached input tokens
-HAIKU_OUTPUT_RATE = 5.00       # $ per 1M output tokens
-HAIKU_CACHE_READ_RATE = 0.10   # $ per 1M cache read tokens (90% discount)
-HAIKU_CACHE_WRITE_RATE = 1.25  # $ per 1M cache write tokens (25% premium)
+# Anthropic Claude Sonnet 4.6 pricing (per 1M tokens)
+SONNET_INPUT_RATE = 3.00        # $ per 1M non-cached input tokens
+SONNET_OUTPUT_RATE = 15.00      # $ per 1M output tokens
+SONNET_CACHE_READ_RATE = 0.30   # $ per 1M cache read tokens (90% discount)
+SONNET_CACHE_WRITE_RATE = 3.75  # $ per 1M cache write tokens (25% premium)
 # Blended rate fallback for rows without detailed breakdown
 INPUT_RATIO = 0.15
 OUTPUT_RATIO = 0.85
-BLENDED_RATE = INPUT_RATIO * HAIKU_INPUT_RATE + OUTPUT_RATIO * HAIKU_OUTPUT_RATE
+BLENDED_RATE = INPUT_RATIO * SONNET_INPUT_RATE + OUTPUT_RATIO * SONNET_OUTPUT_RATE
 
 
 def _estimate_cost_detailed(input_tokens: int, output_tokens: int, cache_read: int, cache_write: int) -> float:
@@ -302,15 +302,15 @@ def _estimate_cost_detailed(input_tokens: int, output_tokens: int, cache_read: i
     # Subtract cache from input to get non-cached input
     non_cached_input = max(0, input_tokens - cache_read - cache_write)
     return (
-        (non_cached_input / 1_000_000) * HAIKU_INPUT_RATE +
-        (cache_read / 1_000_000) * HAIKU_CACHE_READ_RATE +
-        (cache_write / 1_000_000) * HAIKU_CACHE_WRITE_RATE +
-        (output_tokens / 1_000_000) * HAIKU_OUTPUT_RATE
+        (non_cached_input / 1_000_000) * SONNET_INPUT_RATE +
+        (cache_read / 1_000_000) * SONNET_CACHE_READ_RATE +
+        (cache_write / 1_000_000) * SONNET_CACHE_WRITE_RATE +
+        (output_tokens / 1_000_000) * SONNET_OUTPUT_RATE
     )
 
 
 def _estimate_cost(tokens: int) -> float:
-    """Estimate cost using Claude Haiku 4.5 blended rate (fallback)."""
+    """Estimate cost using Claude Sonnet 4.6 blended rate (fallback)."""
     return (tokens / 1_000_000) * BLENDED_RATE
 
 
@@ -381,7 +381,7 @@ async def download_token_usage_csv(
             f"{total_cost:.4f}",
         ])
         writer.writerow([])
-        writer.writerow(["PRICING", f"Claude Haiku 4.5: Input ${HAIKU_INPUT_RATE}/1M, Output ${HAIKU_OUTPUT_RATE}/1M, Cache Read ${HAIKU_CACHE_READ_RATE}/1M, Cache Write ${HAIKU_CACHE_WRITE_RATE}/1M"])
+        writer.writerow(["PRICING", f"Claude Sonnet 4.6: Input ${SONNET_INPUT_RATE}/1M, Output ${SONNET_OUTPUT_RATE}/1M, Cache Read ${SONNET_CACHE_READ_RATE}/1M, Cache Write ${SONNET_CACHE_WRITE_RATE}/1M"])
         writer.writerow(["METHOD", "Token estimation: ~3.5 chars/token (Anthropic docs), +/- 10-15% for English text"])
 
         output.seek(0)

@@ -197,12 +197,13 @@ async def execute_action(request: ExecuteActionRequest):
         user_context = await session_manager.get_user_context(session_id, user_id)
         logger.debug(f"Retrieved user context for {user_id}: {user_context}")
         
-        # 4. Log action start
+        # 4. Log action start (include image count if present)
+        img_prefix = f"[{request.num_media} image(s)] " if request.num_media else ""
         log_id = await db.log_action(
             user_id=user_id,
             session_id=session_id,
             action_type="execute_action",
-            request_summary=request.message[:2000],
+            request_summary=img_prefix + request.message[:2000],
             status="pending"
         )
         
@@ -226,7 +227,8 @@ async def execute_action(request: ExecuteActionRequest):
                     # Peppi sends full context; playground has no context so would use Redis history.
                     # Gateway ignores the history field anyway, so always send empty.
                     conversation_history=[],
-                    user_context=user_context
+                    user_context=user_context,
+                    image_urls=request.image_urls
                 )
             except OpenClawClientError as e:
                 logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")

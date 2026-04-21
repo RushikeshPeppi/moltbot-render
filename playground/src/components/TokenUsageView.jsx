@@ -3,21 +3,21 @@ import { useAuth } from '../context/AuthContext';
 import { getTokenUsage, getPlaygroundUsers, getTokenUsageCsvUrl } from '../services/api';
 
 /*
- * Claude Haiku 4.5 Pricing (as of Mar 2026):
- *   Input (non-cached): $1.00 per 1M tokens
- *   Output:             $5.00 per 1M tokens
- *   Cache Read:         $0.10 per 1M tokens (90% discount)
- *   Cache Write:        $1.25 per 1M tokens (25% premium)
+ * Claude Sonnet 4.6 Pricing (as of Apr 2026):
+ *   Input (non-cached): $3.00 per 1M tokens
+ *   Output:             $15.00 per 1M tokens
+ *   Cache Read:         $0.30 per 1M tokens (90% discount)
+ *   Cache Write:        $3.75 per 1M tokens (25% premium)
  *
  * Token counts come from OpenClaw's usage metadata (Anthropic API).
  * Cache read/write are reported separately for accurate cost calculation.
  */
-const HAIKU_INPUT_RATE      = 1.00;   // $ per 1M non-cached input tokens
-const HAIKU_OUTPUT_RATE     = 5.00;   // $ per 1M output tokens
-const HAIKU_CACHE_READ_RATE = 0.10;   // $ per 1M cache read tokens
-const HAIKU_CACHE_WRITE_RATE = 1.25;  // $ per 1M cache write tokens
+const SONNET_INPUT_RATE      = 3.00;   // $ per 1M non-cached input tokens
+const SONNET_OUTPUT_RATE     = 15.00;  // $ per 1M output tokens
+const SONNET_CACHE_READ_RATE = 0.30;   // $ per 1M cache read tokens
+const SONNET_CACHE_WRITE_RATE = 3.75;  // $ per 1M cache write tokens
 // Blended fallback for rows without detailed breakdown
-const BLENDED_RATE = 0.40 * HAIKU_INPUT_RATE + 0.60 * HAIKU_OUTPUT_RATE;
+const BLENDED_RATE = 0.40 * SONNET_INPUT_RATE + 0.60 * SONNET_OUTPUT_RATE;
 
 // Dark-theme select styles (shared between dropdowns)
 const selectStyle = {
@@ -157,10 +157,10 @@ export default function TokenUsageView() {
             const cr = row.cache_read || 0;
             const cw = row.cache_write || 0;
             const nonCached = Math.max(0, inp - cr - cw);
-            cost = (nonCached / 1_000_000) * HAIKU_INPUT_RATE +
-                   (cr / 1_000_000) * HAIKU_CACHE_READ_RATE +
-                   (cw / 1_000_000) * HAIKU_CACHE_WRITE_RATE +
-                   (out / 1_000_000) * HAIKU_OUTPUT_RATE;
+            cost = (nonCached / 1_000_000) * SONNET_INPUT_RATE +
+                   (cr / 1_000_000) * SONNET_CACHE_READ_RATE +
+                   (cw / 1_000_000) * SONNET_CACHE_WRITE_RATE +
+                   (out / 1_000_000) * SONNET_OUTPUT_RATE;
         } else {
             // Fallback: blended rate
             cost = (tokens / 1_000_000) * BLENDED_RATE;
@@ -181,7 +181,7 @@ export default function TokenUsageView() {
                 <div>
                     <h1 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>Token Usage</h1>
                     <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                        Claude Haiku 4.5 &middot; $1.00/1M in &middot; $5.00/1M out &middot; ~${BLENDED_RATE.toFixed(2)}/1M blended
+                        Claude Sonnet 4.6 &middot; $3.00/1M in &middot; $15.00/1M out &middot; ~${BLENDED_RATE.toFixed(2)}/1M blended
                     </p>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -430,7 +430,7 @@ export default function TokenUsageView() {
             <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)', border: '1px solid var(--border)', fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
                 <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Methodology: </span>
                 Token counts are from Anthropic's API via OpenClaw.
-                Cost uses Claude Haiku 4.5 rates: $1.00/1M input, $5.00/1M output, $0.10/1M cache read, $1.25/1M cache write.
+                Cost uses Claude Sonnet 4.6 rates: $3.00/1M input, $15.00/1M output, $0.30/1M cache read, $3.75/1M cache write.
                 For exact billing, use Anthropic Console.
             </div>
         </div>

@@ -64,6 +64,8 @@ class ExecuteActionRequest(BaseModel):
     timezone: str = Field(..., description="User's timezone (e.g., 'Asia/Kolkata', 'America/New_York')")
     phone_number: Optional[str] = Field(None, description="User's phone number")
     credentials: Optional[Dict[str, Any]] = Field(None, description="User service credentials")
+    image_urls: Optional[List[str]] = Field(None, description="Twilio media URLs for attached images (MMS)")
+    num_media: Optional[int] = Field(0, description="Number of media attachments from Twilio")
 
     class Config:
         json_schema_extra = {
@@ -72,7 +74,9 @@ class ExecuteActionRequest(BaseModel):
                 "message": "Schedule a meeting tomorrow at 3pm",
                 "timezone": "Asia/Kolkata",
                 "phone_number": "+1234567890",
-                "credentials": None
+                "credentials": None,
+                "image_urls": ["https://api.twilio.com/2010-04-01/Accounts/.../Media/..."],
+                "num_media": 1
             }
         }
 

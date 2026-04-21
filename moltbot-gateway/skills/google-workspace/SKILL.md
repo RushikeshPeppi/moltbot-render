@@ -87,17 +87,28 @@ Common date patterns:
 - Next Tuesday: `$(TZ="$USER_TIMEZONE" date -d "next Tuesday" +%Y-%m-%d)`
 - In 3 days: `$(TZ="$USER_TIMEZONE" date -d "+3 days" +%Y-%m-%d)`
 
-Time conversion rules (convert ALL formats to HH:MM 24-hour):
-- "6pm" / "6 PM" / "6:00pm" / "6:00 p.m." → 18:00
-- "2 PM" / "2pm" / "2:00 PM" → 14:00
-- "10:00" / "at 10" / "10 AM" → 10:00
-- "0700" / "0700hrs" / "0700 hours" → 07:00 (military without colon)
-- "7" / "at 7" / "7 o'clock" → 07:00 (AM) or 19:00 (PM based on context)
-- "7.30" / "7:30" / "730" → 07:30 (dot, colon, or no separator)
-- "noon" / "midday" → 12:00
-- "midnight" → 00:00
-- "quarter past 2" → 14:15, "half past 3" → 15:30, "quarter to 5" → 16:45
-- No time specified → default to 9:00 for morning, 14:00 for afternoon
+**MANDATORY: You MUST normalize ALL user time inputs to `HH:MM` 24-hour format BEFORE using them in bash variables.** Never pass raw user input directly. The `TIME_PART` variable must ALWAYS match the pattern `[0-9]{2}:[0-9]{2}`.
+
+Time normalization table (input → output for `TIME_PART`):
+- "6pm" / "6 PM" / "6:00pm" / "6:00 p.m." → `18:00`
+- "2 PM" / "2pm" / "2:00 PM" → `14:00`
+- "10:00" / "at 10" / "10 AM" → `10:00`
+- "0700" / "0700hrs" / "0700 hours" → `07:00` (split 4-digit military: first 2 = hours, last 2 = minutes)
+- "730" → `07:30` (split 3-digit: first 1 = hour, last 2 = minutes)
+- "1430" → `14:30` (split 4-digit)
+- "7.30" / "7:30" → `07:30` (replace dot with colon, pad hour)
+- "7" / "at 7" / "7 o'clock" → `07:00` (AM) or `19:00` (PM) — see disambiguation below
+- "noon" / "midday" → `12:00`
+- "midnight" → `00:00`
+- "quarter past 2" → `14:15`, "half past 3" → `15:30`, "quarter to 5" → `16:45`
+- No time specified → default to `09:00` for morning, `14:00` for afternoon
+
+**Ambiguous hour disambiguation (when user says just a number like "7" or "at 8"):**
+- Hours 1-6 without AM/PM → assume **PM** (13:00-18:00). Nobody schedules meetings at 3 AM.
+- Hours 7-11 without AM/PM → assume **AM** (07:00-11:00). Morning meetings are common.
+- Hour 12 without AM/PM → `12:00` (noon)
+- If context says "evening"/"tonight"/"dinner" → always PM
+- If context says "morning"/"breakfast"/"wake up" → always AM
 
 ### 🎯 Example: Handling "tomorrow at 2pm" correctly
 
@@ -150,21 +161,34 @@ When user asks: "What meetings do I have today?" or "What's on my schedule tomor
 **YOU MUST execute the curl command and parse the JSON response. DO NOT just describe what to do - ACTUALLY RUN THE COMMAND.**
 
 ```bash
-# For TODAY's events
+# For TODAY's events (resolve "today" in user's timezone, not server UTC)
+TODAY_START_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
+TODAY_END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 23:59:59" +%s)
+TODAY_START=$(date -u -d "@${TODAY_START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+TODAY_END=$(date -u -d "@${TODAY_END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+
 RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT00:00:00Z)&timeMax=$(date -u +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TODAY_START}&timeMax=${TODAY_END}&singleEvents=true&orderBy=startTime")
 
 echo "$RESPONSE" | jq -r '.items[] | "\(.summary) at \(.start.dateTime // .start.date)"'
 
-# For THIS WEEK's events (next 7 days)
+# For THIS WEEK's events (next 7 days from user's today)
+WEEK_END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "+7 days 23:59:59" +%s)
+WEEK_END=$(date -u -d "@${WEEK_END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+
 RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT00:00:00Z)&timeMax=$(date -u -d '+7 days' +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TODAY_START}&timeMax=${WEEK_END}&singleEvents=true&orderBy=startTime")
 
 echo "$RESPONSE" | jq -r '.items[] | "\(.summary) at \(.start.dateTime // .start.date)"'
 
 # For TOMORROW's events
+TOMORROW_START_EPOCH=$(TZ="$USER_TIMEZONE" date -d "tomorrow 00:00:00" +%s)
+TOMORROW_END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "tomorrow 23:59:59" +%s)
+TOMORROW_START=$(date -u -d "@${TOMORROW_START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+TOMORROW_END=$(date -u -d "@${TOMORROW_END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+
 RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)&timeMax=$(date -u -d '+1 day' +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TOMORROW_START}&timeMax=${TOMORROW_END}&singleEvents=true&orderBy=startTime")
 
 echo "$RESPONSE" | jq -r '.items[] | "\(.summary) at \(.start.dateTime // .start.date)"'
 ```
@@ -181,8 +205,12 @@ When user asks: "What are my next 5 meetings?" or "Show upcoming appointments"
 # Extract N from user request (e.g., "next 5 meetings" → N=5)
 N=<USER_REQUESTED_COUNT>
 
+# Use user's current time as starting point
+NOW_EPOCH=$(TZ="$USER_TIMEZONE" date +%s)
+NOW_UTC=$(date -u -d "@${NOW_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=${N}&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?maxResults=${N}&singleEvents=true&orderBy=startTime&timeMin=${NOW_UTC}"
 ```
 
 ### Search Events by Keyword
@@ -256,20 +284,37 @@ EVENT_START="${EVENT_DATE}T${TIME_PART}:00"
 END_HOUR=$(( ${TIME_PART%%:*} + DURATION_MINUTES / 60 ))
 END_MIN=$(( ${TIME_PART##*:} + DURATION_MINUTES % 60 ))
 if [ $END_MIN -ge 60 ]; then END_HOUR=$((END_HOUR + 1)); END_MIN=$((END_MIN - 60)); fi
-EVENT_END="${EVENT_DATE}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
+# Handle midnight rollover (e.g., 23:30 + 90min = 01:00 next day)
+if [ $END_HOUR -ge 24 ]; then
+  END_HOUR=$((END_HOUR - 24))
+  EVENT_DATE_END=$(TZ="$USER_TIMEZONE" date -d "${EVENT_DATE} + 1 day" +%Y-%m-%d)
+else
+  EVENT_DATE_END="${EVENT_DATE}"
+fi
+EVENT_END="${EVENT_DATE_END}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
 
 # Step 4: Build JSON payload — Google Calendar handles timezone conversion!
+# ALWAYS include conferenceData to auto-generate Google Meet link
+REQUEST_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "meet-$(date +%s)-$RANDOM")
+
 JSON_PAYLOAD=$(jq -n \
   --arg title "$MEETING_TITLE" \
   --arg desc "${DESCRIPTION:-}" \
   --arg start "$EVENT_START" \
   --arg end "$EVENT_END" \
   --arg tz "$USER_TIMEZONE" \
+  --arg reqid "$REQUEST_ID" \
   '{
     summary: $title,
     description: $desc,
     start: {dateTime: $start, timeZone: $tz},
-    end: {dateTime: $end, timeZone: $tz}
+    end: {dateTime: $end, timeZone: $tz},
+    conferenceData: {
+      createRequest: {
+        requestId: $reqid,
+        conferenceSolutionKey: {type: "hangoutsMeet"}
+      }
+    }
   }')
 
 # Add attendees ONLY if email is provided or extracted
@@ -288,16 +333,19 @@ RESPONSE=$(curl -s -X POST \
   -d "$JSON_PAYLOAD" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1")
 
-# CRITICAL: Extract the event ID from the response (for internal reference/debugging)
-# We extract it here but DON'T show it to the user (looks messy)
-# When user wants to update/delete later, we use smart search instead
+# Extract event details and Meet link from response
 EVENT_ID=$(echo "$RESPONSE" | jq -r '.id')
 EVENT_LINK=$(echo "$RESPONSE" | jq -r '.htmlLink')
+MEET_LINK=$(echo "$RESPONSE" | jq -r '.conferenceData.entryPoints[]? | select(.entryPointType=="video") | .uri' 2>/dev/null)
 
-# IMPORTANT: Confirm success with clean, user-friendly message
-# DO NOT show Event ID - it's technical and ugly for end users
-# The smart search in Update/Delete sections will handle finding events
-echo "✅ Calendar event '${MEETING_TITLE}' created successfully for ${EVENT_START}"
+# IMPORTANT: Always confirm success with details AND meeting link
+if [ -n "$MEET_LINK" ] && [ "$MEET_LINK" != "null" ]; then
+  echo "✅ Calendar event '${MEETING_TITLE}' created for ${EVENT_START}"
+  echo "📹 Google Meet link: ${MEET_LINK}"
+else
+  echo "✅ Calendar event '${MEETING_TITLE}' created for ${EVENT_START}"
+  echo "📅 Calendar link: ${EVENT_LINK}"
+fi
 ```
 
 ### Create Event WITH Google Meet Link
@@ -320,7 +368,14 @@ EVENT_START="${EVENT_DATE}T${TIME_PART}:00"
 END_HOUR=$(( ${TIME_PART%%:*} + DURATION_MINUTES / 60 ))
 END_MIN=$(( ${TIME_PART##*:} + DURATION_MINUTES % 60 ))
 if [ $END_MIN -ge 60 ]; then END_HOUR=$((END_HOUR + 1)); END_MIN=$((END_MIN - 60)); fi
-EVENT_END="${EVENT_DATE}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
+# Handle midnight rollover (e.g., 23:30 + 90min = 01:00 next day)
+if [ $END_HOUR -ge 24 ]; then
+  END_HOUR=$((END_HOUR - 24))
+  EVENT_DATE_END=$(TZ="$USER_TIMEZONE" date -d "${EVENT_DATE} + 1 day" +%Y-%m-%d)
+else
+  EVENT_DATE_END="${EVENT_DATE}"
+fi
+EVENT_END="${EVENT_DATE_END}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
 
 # Generate a unique request ID for Meet link creation
 REQUEST_ID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "meet-$(date +%s)")
@@ -418,8 +473,12 @@ if [ -n "$SEARCH_TIME" ]; then
   if [ $MAX_MIN -ge 60 ]; then MAX_HOUR=$((MAX_HOUR + 1)); MAX_MIN=$((MAX_MIN - 60)); fi
 
   # Convert search window to UTC for API (search queries need UTC)
-  TIME_MIN=$(TZ="$USER_TIMEZONE" date -u -d "${SEARCH_DATE_RESOLVED} $(printf '%02d:%02d' $MIN_HOUR $MIN_MIN)" +%Y-%m-%dT%H:%M:%SZ)
-  TIME_MAX=$(TZ="$USER_TIMEZONE" date -u -d "${SEARCH_DATE_RESOLVED} $(printf '%02d:%02d' $MAX_HOUR $MAX_MIN)" +%Y-%m-%dT%H:%M:%SZ)
+  # Two-step epoch approach: parse in user's TZ → format as UTC
+  # (TZ= env var is overridden by -u flag, so we can't combine them)
+  EPOCH_MIN=$(TZ="$USER_TIMEZONE" date -d "${SEARCH_DATE_RESOLVED} $(printf '%02d:%02d' $MIN_HOUR $MIN_MIN)" +%s)
+  TIME_MIN=$(date -u -d "@${EPOCH_MIN}" +%Y-%m-%dT%H:%M:%SZ)
+  EPOCH_MAX=$(TZ="$USER_TIMEZONE" date -d "${SEARCH_DATE_RESOLVED} $(printf '%02d:%02d' $MAX_HOUR $MAX_MIN)" +%s)
+  TIME_MAX=$(date -u -d "@${EPOCH_MAX}" +%Y-%m-%dT%H:%M:%SZ)
 
   SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
     "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_MIN}&timeMax=${TIME_MAX}&singleEvents=true&orderBy=startTime")
@@ -427,12 +486,15 @@ if [ -n "$SEARCH_TIME" ]; then
 # OPTION B: If user mentioned keywords (title, attendee), search by query
 elif [ -n "$SEARCH_QUERY" ]; then
   SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-    "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime&timeMin=$(date -u -d "@$(TZ="$USER_TIMEZONE" date +%s)" +%Y-%m-%dT%H:%M:%SZ)")
 
 # OPTION C: User said "change my meeting" without specifics - search today's upcoming events
 else
+  NOW_UTC=$(date -u -d "@$(TZ="$USER_TIMEZONE" date +%s)" +%Y-%m-%dT%H:%M:%SZ)
+  TODAY_END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 23:59:59" +%s)
+  TODAY_END_UTC=$(date -u -d "@${TODAY_END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
   SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-    "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)&timeMax=$(date -u +%Y-%m-%dT23:59:59Z)&singleEvents=true&orderBy=startTime&maxResults=10")
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${NOW_UTC}&timeMax=${TODAY_END_UTC}&singleEvents=true&orderBy=startTime&maxResults=10")
 fi
 
 # Step 3: Handle search results - disambiguation logic
@@ -511,10 +573,18 @@ DURATION_MINUTES=$(( (END_EPOCH - START_EPOCH) / 60 ))
 END_HOUR=$(( ${NEW_TIME%%:*} + DURATION_MINUTES / 60 ))
 END_MIN=$(( ${NEW_TIME##*:} + DURATION_MINUTES % 60 ))
 if [ $END_MIN -ge 60 ]; then END_HOUR=$((END_HOUR + 1)); END_MIN=$((END_MIN - 60)); fi
-NEW_END="${NEW_DATE_RESOLVED}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
+# Handle midnight rollover
+if [ $END_HOUR -ge 24 ]; then
+  END_HOUR=$((END_HOUR - 24))
+  NEW_DATE_END=$(TZ="$USER_TIMEZONE" date -d "${NEW_DATE_RESOLVED} + 1 day" +%Y-%m-%d)
+else
+  NEW_DATE_END="${NEW_DATE_RESOLVED}"
+fi
+NEW_END="${NEW_DATE_END}T$(printf '%02d:%02d' $END_HOUR $END_MIN):00"
 
 # Step 6: Build update payload using jq for safety
 # CRITICAL: Use user's timezone, NOT "UTC" — Google handles conversion
+# IMPORTANT: Preserve conferenceData so existing Meet links survive the update
 UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
   --arg newStart "$NEW_START" \
   --arg newEnd "$NEW_END" \
@@ -524,6 +594,7 @@ UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
     description: .description,
     location: .location,
     attendees: .attendees,
+    conferenceData: .conferenceData,
     start: {
       dateTime: $newStart,
       timeZone: $tz
@@ -535,12 +606,12 @@ UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
     reminders: .reminders
   }')
 
-# Step 7: Update the event
+# Step 7: Update the event (conferenceDataVersion=1 preserves Meet link)
 UPDATE_RESPONSE=$(curl -s -X PUT \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$UPDATE_PAYLOAD" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}?conferenceDataVersion=1")
 
 # Step 8: Check for errors
 if echo "$UPDATE_RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
@@ -549,10 +620,15 @@ if echo "$UPDATE_RESPONSE" | jq -e '.error' > /dev/null 2>&1; then
   exit 1
 fi
 
-# IMPORTANT: Always confirm success with details
+# IMPORTANT: Always confirm with details AND Meet link if available
 UPDATED_SUMMARY=$(echo "$UPDATE_RESPONSE" | jq -r '.summary')
 UPDATED_TIME=$(echo "$UPDATE_RESPONSE" | jq -r '.start.dateTime')
+MEET_LINK=$(echo "$UPDATE_RESPONSE" | jq -r '.conferenceData.entryPoints[]? | select(.entryPointType=="video") | .uri' 2>/dev/null)
+
 echo "✅ Calendar event '${UPDATED_SUMMARY}' updated successfully to ${UPDATED_TIME}"
+if [ -n "$MEET_LINK" ] && [ "$MEET_LINK" != "null" ]; then
+  echo "📹 Google Meet link: ${MEET_LINK}"
+fi
 ```
 
 **Alternative: Simple Time-Only Update**
@@ -562,8 +638,10 @@ If you ONLY need to change the time (not date), use this simpler approach:
 ```bash
 # Find today's or tomorrow's events by title
 TITLE_SEARCH="<EVENT_TITLE>"
-TIME_MIN=$(date -u +%Y-%m-%dT00:00:00Z)
-TIME_MAX=$(date -u -d '+2 days' +%Y-%m-%dT23:59:59Z)
+SEARCH_START_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
+TIME_MIN=$(date -u -d "@${SEARCH_START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+SEARCH_END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "+2 days 23:59:59" +%s)
+TIME_MAX=$(date -u -d "@${SEARCH_END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
 
 EVENTS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_MIN}&timeMax=${TIME_MAX}&q=${TITLE_SEARCH}&singleEvents=true")
@@ -579,7 +657,14 @@ CURRENT_DATE=$(echo "$CURRENT_EVENT" | jq -r '.start.dateTime' | cut -d'T' -f1)
 # Combine current date with new LOCAL time (NO UTC conversion, NO -u, NO Z!)
 NEW_START="${CURRENT_DATE}T${NEW_TIME_LOCAL}:00"
 END_HOUR=$(( ${NEW_TIME_LOCAL%%:*} + 1 ))
-NEW_END="${CURRENT_DATE}T$(printf '%02d:%02d' $END_HOUR ${NEW_TIME_LOCAL##*:}):00"
+# Handle midnight rollover
+if [ $END_HOUR -ge 24 ]; then
+  END_HOUR=$((END_HOUR - 24))
+  END_DATE=$(TZ="$USER_TIMEZONE" date -d "${CURRENT_DATE} + 1 day" +%Y-%m-%d)
+else
+  END_DATE="${CURRENT_DATE}"
+fi
+NEW_END="${END_DATE}T$(printf '%02d:%02d' $END_HOUR ${NEW_TIME_LOCAL##*:}):00"
 
 # Update with jq — pass timeZone so Google handles conversion
 UPDATE_PAYLOAD=$(echo "$CURRENT_EVENT" | jq \
@@ -592,9 +677,18 @@ curl -s -X PUT \
   -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d "$UPDATE_PAYLOAD" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}"
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}?conferenceDataVersion=1"
 
-echo "✅ Updated to ${NEW_TIME_LOCAL}"
+# Extract updated event details including Meet link
+UPDATED_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EVENT_ID}")
+MEET_LINK=$(echo "$UPDATED_RESPONSE" | jq -r '.conferenceData.entryPoints[]? | select(.entryPointType=="video") | .uri' 2>/dev/null)
+UPDATED_SUMMARY=$(echo "$UPDATED_RESPONSE" | jq -r '.summary')
+UPDATED_TIME=$(echo "$UPDATED_RESPONSE" | jq -r '.start.dateTime')
+echo "✅ Calendar event '${UPDATED_SUMMARY}' updated to ${UPDATED_TIME}"
+if [ -n "$MEET_LINK" ] && [ "$MEET_LINK" != "null" ]; then
+  echo "📹 Google Meet link: ${MEET_LINK}"
+fi
 ```
 
 ### Delete Event
@@ -617,12 +711,14 @@ SEARCH_QUERY="<KEYWORD_FROM_REQUEST>"  # e.g., "Marvin" or "Testing Peppi"
 
 # Option A: Search by keyword (works for title, attendee names, etc.)
 SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime&timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=${SEARCH_QUERY}&singleEvents=true&orderBy=startTime&timeMin=$(date -u -d "@$(TZ="$USER_TIMEZONE" date +%s)" +%Y-%m-%dT%H:%M:%SZ)")
 
 # Option B: Search by specific date/time if user mentions a time
 # If user says "delete the 2 PM meeting", search for events at that time
-# TIME_SEARCH_START=$(TZ="$USER_TIMEZONE" date -u -d "today 14:00" +%Y-%m-%dT%H:%M:%SZ)
-# TIME_SEARCH_END=$(TZ="$USER_TIMEZONE" date -u -d "today 15:00" +%Y-%m-%dT%H:%M:%SZ)
+# EPOCH_START=$(TZ="$USER_TIMEZONE" date -d "today 14:00" +%s)
+# TIME_SEARCH_START=$(date -u -d "@${EPOCH_START}" +%Y-%m-%dT%H:%M:%SZ)
+# EPOCH_END=$(TZ="$USER_TIMEZONE" date -d "today 15:00" +%s)
+# TIME_SEARCH_END=$(date -u -d "@${EPOCH_END}" +%Y-%m-%dT%H:%M:%SZ)
 # SEARCH_RESPONSE=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 #   "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TIME_SEARCH_START}&timeMax=${TIME_SEARCH_END}&singleEvents=true")
 
@@ -684,8 +780,11 @@ TARGET_DATE="<DATE_FROM_REQUEST>"  # e.g., "tomorrow", "2026-02-24"
 EVENT_TITLE_SEARCH="<TITLE_FROM_REQUEST>"  # e.g., "Testing Peppi"
 
 # Calculate date range (whole day in user's timezone)
-DAY_START=$(TZ="$USER_TIMEZONE" date -u -d "$TARGET_DATE 00:00" +%Y-%m-%dT%H:%M:%SZ)
-DAY_END=$(TZ="$USER_TIMEZONE" date -u -d "$TARGET_DATE 23:59" +%Y-%m-%dT%H:%M:%SZ)
+# Two-step epoch approach: parse in user's TZ → format as UTC
+EPOCH_START=$(TZ="$USER_TIMEZONE" date -d "$TARGET_DATE 00:00" +%s)
+DAY_START=$(date -u -d "@${EPOCH_START}" +%Y-%m-%dT%H:%M:%SZ)
+EPOCH_END=$(TZ="$USER_TIMEZONE" date -d "$TARGET_DATE 23:59" +%s)
+DAY_END=$(date -u -d "@${EPOCH_END}" +%Y-%m-%dT%H:%M:%SZ)
 
 # Search for events
 EVENTS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \

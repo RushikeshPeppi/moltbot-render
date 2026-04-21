@@ -70,20 +70,27 @@ Parse user input to extract:
   - "February 20" → parse as 2026-02-20
   - "in 2 hours" → current time + 2 hours
   - "in 30 minutes" → current time + 30 minutes
-- **Time**: What time to fire (convert ALL formats to HH:MM 24-hour for the date command)
-  - "at 2pm" / "2 PM" / "2:00pm" / "2:00 p.m." → 14:00
-  - "9 AM" / "9am" / "9 a.m." / "9:00 AM" → 09:00
-  - "18:00" / "6:00 PM" → 18:00
-  - "0700" / "0700hrs" / "0700 hours" → 07:00 (military without colon)
-  - "7" / "at 7" / "7 o'clock" → 07:00 (assume AM if no context, PM if afternoon context)
-  - "7.30" / "7:30" / "730" → 07:30 (dot notation, colon, or no separator)
-  - "noon" / "12" / "midday" → 12:00
-  - "midnight" → 00:00
-  - "morning" → 09:00, "afternoon" → 14:00, "evening" → 18:00, "night" → 21:00
-  - "quarter past 7" → 07:15, "half past 3" → 15:30, "quarter to 5" → 16:45
+- **Time**: What time to fire — **MANDATORY: normalize to `HH:MM` 24-hour format BEFORE using in bash.** The `TIME_PART` variable must ALWAYS match `[0-9]{2}:[0-9]{2}`.
+  - "at 2pm" / "2 PM" / "2:00pm" / "2:00 p.m." → `14:00`
+  - "9 AM" / "9am" / "9 a.m." / "9:00 AM" → `09:00`
+  - "18:00" / "6:00 PM" → `18:00`
+  - "0700" / "0700hrs" / "0700 hours" → `07:00` (split 4-digit military: first 2 = hours, last 2 = minutes)
+  - "730" → `07:30` (split 3-digit: first 1 = hour, last 2 = minutes)
+  - "1430" → `14:30` (split 4-digit)
+  - "7.30" / "7:30" → `07:30` (replace dot with colon, pad hour)
+  - "7" / "at 7" / "7 o'clock" → see disambiguation below
+  - "noon" / "12" / "midday" → `12:00`
+  - "midnight" → `00:00`
+  - "morning" → `09:00`, "afternoon" → `14:00`, "evening" → `18:00`, "night" → `21:00`
+  - "quarter past 7" → `07:15`, "half past 3" → `15:30`, "quarter to 5" → `16:45`
   - "in 30 minutes" / "in half an hour" → current time + 30 min
   - "in 2 hours" / "in an hour" → current time + N hours
-  - Not specified → default to 09:00 (morning)
+  - Not specified → default to `09:00` (morning)
+  - **Ambiguous hour rule** (bare number like "7" or "at 8" without AM/PM):
+    - Hours 1-6 → assume **PM** (nobody sets 3 AM reminders)
+    - Hours 7-11 → assume **AM** (morning reminders are common)
+    - Hour 12 → `12:00` (noon)
+    - Override with context: "evening"/"tonight" → PM, "morning"/"wake" → AM
 - **Recurrence**: How often
   - "every day" / "daily" → recurrence = "daily"
   - "Monday to Friday" / "Mon-Fri" / "weekdays" → recurrence = "weekdays"
@@ -234,7 +241,7 @@ When user says: "remind me for my meetings" or "set reminders for all my events"
 ```bash
 # Step 1: Get upcoming events from Google Calendar
 EVENTS_JSON=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
-  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u +%Y-%m-%dT%H:%M:%SZ)&maxResults=10&singleEvents=true&orderBy=startTime")
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=$(date -u -d "@$(TZ="$USER_TIMEZONE" date +%s)" +%Y-%m-%dT%H:%M:%SZ)&maxResults=10&singleEvents=true&orderBy=startTime")
 
 EVENT_COUNT=$(echo "$EVENTS_JSON" | jq '.items | length')
 
@@ -383,8 +390,11 @@ if [ -n "$SEARCH_KEYWORDS" ]; then
 # Extract time from user request - e.g., "change my 10am reminder"
 elif [ -n "<EXTRACTED_TIME>" ]; then
   SEARCH_TIME="<EXTRACTED_TIME>"  # e.g., "10:00", "14:00"
-  # Note: Reminders are stored in UTC, so we need to convert search time to UTC range
-  SEARCH_TIME_UTC=$(TZ="$USER_TIMEZONE" date -u -d "today ${SEARCH_TIME}" +%H:%M)
+  # Note: Reminders are stored in UTC, so we need to convert search time to UTC
+  # Two-step epoch approach: parse in user's TZ → format as UTC
+  # (TZ= env var is overridden by -u flag, so we can't combine them)
+  EPOCH_SEARCH=$(TZ="$USER_TIMEZONE" date -d "today ${SEARCH_TIME}" +%s)
+  SEARCH_TIME_UTC=$(date -u -d "@${EPOCH_SEARCH}" +%H:%M)
 
   # Filter reminders that trigger around this time (±30 min window)
   MATCHED_REMINDERS=$(echo "$REMINDERS" | jq -s --arg time "$SEARCH_TIME_UTC" \

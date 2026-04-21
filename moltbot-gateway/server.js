@@ -77,7 +77,7 @@ async function fetchOAuthTokenFromFastAPI(userId) {
  * }
  */
 app.post('/execute', async (req, res) => {
-  const { session_id, message, user_id, credentials, history, timezone, user_context } = req.body;
+  const { session_id, message, user_id, credentials, history, timezone, user_context, image_urls } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'Message is required' });
@@ -112,7 +112,7 @@ app.post('/execute', async (req, res) => {
     );
 
     // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
-    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id, timezone || 'UTC');
+    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id, timezone || 'UTC', image_urls);
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -185,7 +185,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 /**
  * Execute OpenClaw command and return result
  */
-function executeOpenClaw(sessionId, message, context, credentials, userId, timezone) {
+function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls) {
   return new Promise((resolve, reject) => {
     const timeout = 180000; // 180 second timeout (3 min — Gemini with thinking needs more time for complex skills)
 
@@ -197,11 +197,20 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
       fullMessage = `${context}\n\nTask: ${message}`;
     }
 
+    // If images are present, append them to the message for Sonnet's vision
+    if (imageUrls && imageUrls.length > 0) {
+      fullMessage += '\n\n[Attached Images]';
+      imageUrls.forEach((url, i) => {
+        fullMessage += `\nImage ${i + 1}: ${url}`;
+      });
+      console.log(`[${sessionId}] ${imageUrls.length} image(s) attached to message`);
+    }
+
     // Stateless execution: Peppi's context already provides conversation history,
     // so we don't use --to or --session-id (which caused token bloat: 33K→292K).
     // Each request is independent — OpenClaw gets context from the message.
     // OpenClaw v2026.3.8+ requires --agent to route the request (new CLI requirement).
-    // NOTE: --thinking flag disabled for Claude Haiku (causes thinking leakage in output)
+    // NOTE: --thinking flag disabled for Claude Sonnet (causes thinking leakage in output)
     const args = ['agent', '--agent', 'main', '--message', fullMessage];
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
@@ -544,16 +553,20 @@ async function startOpenClaw() {
 
       // 1. Create openclaw.json - sets default model, session isolation, and TOOL PERMISSIONS
       // CRITICAL: Without tools.exec config, OpenClaw's security blocks bash execution
-      // and Haiku falls back to chatting about actions instead of executing them.
+      // and the model falls back to chatting about actions instead of executing them.
       const openclawConfig = {
         agents: {
           defaults: {
             model: {
-              primary: "anthropic/claude-haiku-4-5-20251001",
+              primary: "anthropic/claude-sonnet-4-6",
               fallbacks: ["google/gemini-2.5-pro"]
             },
-            // Claude Haiku thinking level: medium = enough reasoning for multi-step tool execution
-            // low was causing Haiku to skip complex bash operations (calendar curl commands)
+            // Vision-capable model for image processing (Sonnet 4.6 supports vision natively)
+            imageModel: {
+              primary: "anthropic/claude-sonnet-4-6"
+            },
+            // Claude Sonnet thinking level: medium = enough reasoning for multi-step tool execution
+            // low was causing model to skip complex bash operations (calendar curl commands)
             // high caused thinking-only payloads with no text response
             // medium gives ReAct-style reasoning without token bloat
             // Levels: minimal | low | medium | high | xhigh | adaptive
@@ -568,7 +581,7 @@ async function startOpenClaw() {
           exec: {
             // "off" = don't ask for human approval before running bash commands
             // Without this, OpenClaw hangs waiting for approval in CLI mode, 
-            // and Haiku falls back to chatting about the action instead
+            // and the model falls back to chatting about the action instead
             ask: "off",
             // "full" = allow all bash operations (curl, jq, date, etc.)
             security: "full"
@@ -600,13 +613,16 @@ async function startOpenClaw() {
           { command: "head", approved: true },
           { command: "tail", approved: true },
           { command: "sed", approved: true },
-          { command: "paste", approved: true }
+          { command: "paste", approved: true },
+          { command: "awk", approved: true },
+          { command: "wc", approved: true },
+          { command: "cut", approved: true }
         ]
       };
       fs.writeFileSync(execApprovalsPath, JSON.stringify(execApprovals, null, 2));
       console.log(`✓ Created exec-approvals.json (pre-approved: curl, jq, date, etc.)`);
 
-      // 1c. Create agent.md - Claude Haiku optimization: ANTI-HALLUCINATION system prompt
+      // 1c. Create agent.md - Claude Sonnet optimization: ANTI-HALLUCINATION system prompt
       // This is the agent identity file that OpenClaw auto-injects into the system prompt.
       // 
       // RESEARCH-BACKED TECHNIQUES APPLIED:
@@ -692,13 +708,43 @@ These rules prevent you from generating inaccurate information:
 </grounding_rules>
 
 <timezone_rules>
-When creating or updating Google Calendar events, pass the user's LOCAL time directly.
+These rules apply to ALL skills that involve dates/times (Calendar, Reminders, Image-based actions):
 
-- Use dateTime format WITHOUT "Z" suffix: "2026-03-26T10:00:00"
-- Always include timeZone: "$USER_TIMEZONE" in the event body — Google Calendar handles UTC conversion.
-- Use TZ="$USER_TIMEZONE" with the date command only to resolve relative words ("today" → YYYY-MM-DD).
-- Do not use "date -u" for event times.
+RULE 1 — ALWAYS resolve relative dates in the user's timezone:
+- Use TZ="$USER_TIMEZONE" date -d "tomorrow" +%Y-%m-%d to get the correct date
+- Without TZ=, "tomorrow" resolves in the server's UTC clock, which can be a different date than the user's local date (e.g., 11pm IST is still "today" in UTC)
+
+RULE 2 — NEVER add "Z" suffix or use "date -u" for times:
+- "Z" means UTC. The user speaks in LOCAL time. If you add Z, the event/reminder fires at the wrong time.
+- Wrong: "2026-03-26T10:00:00Z" (fires at 3:30 PM IST instead of 10 AM IST)
+- Correct: "2026-03-26T10:00:00" (no Z — local time)
+
+RULE 3 — For Google Calendar: pass local time + timeZone field:
+- Google Calendar API handles UTC conversion when you include timeZone in the event body
+- Format: {"dateTime": "2026-03-26T10:00:00", "timeZone": "$USER_TIMEZONE"}
+
+RULE 4 — For Reminders: pass local time + user_timezone in JSON:
+- The FastAPI backend's local_to_utc() converts to UTC before scheduling with QStash
+- Format: {"trigger_at": "2026-03-26T10:00:00", "user_timezone": "$USER_TIMEZONE"}
+- Same principle: NO Z, NO -u, let the backend handle conversion
 </timezone_rules>
+
+<image_handling>
+When the message contains [Attached Images], you have native vision capability and CAN see the images via their URLs.
+
+APPROACH (One-Turn PVE — describe then act in the same response):
+1. DESCRIBE: Tell the user what you see in the image ("I can see an event poster for 'Tech Meetup 2026' on March 20 at 6 PM at Convention Center, Mumbai.")
+2. VALIDATE: Immediately verify the image URL is accessible before downloading. If the URL returns an error, tell the user the image may have expired and ask them to resend.
+3. EXECUTE: In the same response, perform the requested action (create event, set reminder, send email) using the extracted details.
+4. CONFIRM: Show the result with the details you extracted, so the user can verify and ask for corrections if needed.
+
+This is NOT a multi-turn confirmation. You describe AND act in a single response. The user can correct afterward if needed ("change it to 7pm").
+
+IMPORTANT:
+- If you cannot clearly read the image, say so and ask the user to describe what they need
+- Never claim to have processed an image if no [Attached Images] section exists in the message
+- Twilio image URLs expire in ~2 hours — always process immediately
+</image_handling>
 
 <skill_inventory>
 Your installed skills and their triggers:
@@ -715,13 +761,25 @@ GMAIL (skill: google-workspace/SKILL.md)
   Triggers: "send email", "email to", "check email", "read email", "reply to"
   Action: Gmail API via curl with $GOOGLE_ACCESS_TOKEN
 
+IMAGE + WORKSPACE (skill: image-workspace/SKILL.md)
+  Triggers: User sends [Attached Images] AND workspace action ("send this to", "email this", "forward this", "add this to my calendar", "schedule this")
+  Action: Vision analysis + Gmail API or Calendar API via curl
+  Note: This skill takes priority over google-workspace when images are present.
+
+IMAGE + REMINDERS (skill: image-reminders/SKILL.md)
+  Triggers: User sends [Attached Images] AND reminder request ("remind me about this", "set reminder for this", "remind me to pay this", "don't forget about this")
+  Action: Vision analysis + POST to $FASTAPI_URL/api/v1/reminders/create via curl
+  Note: This skill takes priority over reminders when images are present.
+
 When the user's message matches any trigger above, you MUST read the corresponding SKILL.md and execute the bash commands defined there. This is not optional.
+When [Attached Images] is present, always prefer the image-specific skill over the text-only version.
 </skill_inventory>
 
 <response_guidelines>
-- Be concise and conversational
-- Use emojis for visual feedback: ✅ ❌ 📅 📧 ⏰ 📝
+- Be concise and conversational — aim for under 200 tokens in output
+- Use emojis for visual feedback: ✅ ❌ 📅 📧 ⏰ 📝 📸
 - Report outcomes with specific details from API responses
+- Do not repeat the user's message back to them
 - When the user asks something outside your skills, respond naturally as a helpful assistant
 - Maintain the persona and personality defined in the conversation context
 </response_guidelines>
@@ -753,7 +811,7 @@ When the user's message matches any trigger above, you MUST read the correspondi
       // Display configuration summary
       console.log('\nConfiguration Summary:');
       console.log(`- Provider: Anthropic Claude (via ANTHROPIC_API_KEY env var)`);
-      console.log(`- Model: anthropic/claude-haiku-4-5-20251001`);
+      console.log(`- Model: anthropic/claude-sonnet-4-6`);
       console.log(`- Fallback: google/gemini-2.5-pro`);
       console.log(`- Web Search: SearXNG (${process.env.SEARXNG_BASE_URL || 'Not configured'})`);
       console.log(`- Session Isolation: per-peer (multi-tenant)`);
@@ -786,7 +844,7 @@ When the user's message matches any trigger above, you MUST read the correspondi
     if (process.env.ANTHROPIC_API_KEY) {
       console.log('✓ ANTHROPIC_API_KEY is configured');
     } else {
-      console.error('❌ ANTHROPIC_API_KEY not set - Claude Haiku will NOT work!');
+      console.error('❌ ANTHROPIC_API_KEY not set - Claude Sonnet will NOT work!');
     }
 
     if (process.env.GEMINI_API_KEY) {
@@ -811,10 +869,11 @@ When the user's message matches any trigger above, you MUST read the correspondi
       console.log('  ✓ Gmail (via OAuth token)');
       console.log('  ✓ Google Calendar (via OAuth token)');
       console.log('  ✓ Reminders/Tasks');
+      console.log('  ✓ Image processing (via Sonnet vision)');
       console.log('  ✓ Memory/Context persistence');
       console.log('  ✓ Browser automation');
       console.log('\nMode: Local execution (--local flag)');
-      console.log('Model: Claude Haiku 4.5 (fallback: Gemini 2.5 Pro)');
+      console.log('Model: Claude Sonnet 4.6 (fallback: Gemini 2.5 Pro)');
       console.log('========================================\n');
 
       isReady = true;
