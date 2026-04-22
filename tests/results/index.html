@@ -31,7 +31,11 @@ tr:hover{background:#1a1a22}
 .id-col{font-weight:700;color:#818cf8;white-space:nowrap} .cat-col{color:#a1a1aa;font-size:11px} .tz-col{font-size:11px;color:#71717a}
 .msg-col{max-width:200px} .reply-col{max-width:300px;color:#a1a1aa}
 .img-preview{width:60px;height:60px;object-fit:cover;border-radius:4px;margin:2px;cursor:pointer;border:1px solid #3f3f46}
-.img-preview:hover{transform:scale(3);position:relative;z-index:10;border-color:#6366f1}
+.img-preview:hover{border-color:#6366f1;opacity:0.8}
+.modal{display:none;position:fixed;z-index:100;left:0;top:0;width:100%;height:100%;background-color:rgba(0,0,0,0.9);align-items:center;justify-content:center;padding:20px}
+.modal-content{max-width:90%;max-height:90vh;border-radius:8px;border:2px solid #3f3f46;object-fit:contain}
+.close-modal{position:absolute;top:20px;right:30px;color:#f1f1f1;font-size:40px;font-weight:bold;cursor:pointer}
+.close-modal:hover{color:#ef4444}
 details summary{cursor:pointer;color:#6366f1;font-size:11px} .json-pre{background:#0a0a0f;padding:8px;border-radius:4px;font-size:10px;max-height:200px;overflow:auto;color:#71717a;white-space:pre-wrap;word-break:break-all}
 .v-details{font-size:11px;color:#71717a;margin-top:4px} .fail-reason{font-size:11px;color:#ef4444;margin-top:4px}
 </style>
@@ -39,7 +43,7 @@ details summary{cursor:pointer;color:#6366f1;font-size:11px} .json-pre{backgroun
 <body>
 <div class="container">
 <h1>🤖 Moltbot Agent Test Report</h1>
-<div class="subtitle">Generated 2026-04-22 12:35 UTC • 193 scenarios • User: usr_84e773f8</div>
+<div class="subtitle">Generated 2026-04-22 12:43 UTC • 193 scenarios • User: usr_84e773f8</div>
 
 <div class="stats">
   <div class="stat stat-total"><div class="stat-val">193</div><div class="stat-label">Total</div></div>
@@ -4403,7 +4407,7 @@ Need anything else? 😊</td>
           <td class="reply-col"></td>
           <td>— </td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/event_poster.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/event_poster.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 500,
   &quot;message&quot;: &quot;Failed to process your request. Please try again.&quot;,
@@ -4428,7 +4432,7 @@ Need anything else? 😊</td>
           <td class="reply-col"></td>
           <td>— </td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/utility_bill.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/utility_bill.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 500,
   &quot;message&quot;: &quot;Failed to process your request. Please try again.&quot;,
@@ -4457,7 +4461,7 @@ Need anything else? 😊</td>
 - 📎 **Attachment:** restaurant_receip...</td>
           <td>✅ email_inbox</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/restaurant_receipt.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/restaurant_receipt.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4500,7 +4504,7 @@ Need anything else? 😊</td>
 🛒 *&quot;Shopping: Milk, Eggs, Bread, Chicken, Tomatoes,...</td>
           <td>✅ reminder_list</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/shopping_list.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/shopping_list.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4536,7 +4540,7 @@ Need anything else? 😊</td>
 I can see a Fall 2025 weekly class schedul...</td>
           <td>✅ reminder_list</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/class_schedule.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/class_schedule.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4571,7 +4575,7 @@ I can see a Fall 2025 weekly class schedul...</td>
           <td class="reply-col">I can see a chat screenshot — no time was specified, so let me ask! But given there's a clear event with a time, I'll set a reminder for the team dinn...</td>
           <td>✅ reminder_list</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/chat_screenshot.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/chat_screenshot.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4610,7 +4614,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 - 🕑 **Time:** ...</td>
           <td>✅ calendar_read</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/meeting_invite.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/meeting_invite.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4653,7 +4657,7 @@ I can see a Fall 2025 weekly class schedul...</td>
           <td class="reply-col"></td>
           <td>— </td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/whiteboard_notes.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/whiteboard_notes.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 500,
   &quot;message&quot;: &quot;Failed to process your request. Please try again.&quot;,
@@ -4678,7 +4682,7 @@ I can see a Fall 2025 weekly class schedul...</td>
           <td class="reply-col">⚠️ The image is too blurry for me to read any event details — I can see a desk with papers, but the text is too out of focus to make out a title, date...</td>
           <td>— </td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/blurry_image.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/blurry_image.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4716,7 +4720,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 🎵 **Summ...</td>
           <td>✅ calendar_read</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/event_poster.png" class="img-preview" loading="lazy"/><img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/meeting_invite.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/event_poster.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/><img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/meeting_invite.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4761,7 +4765,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 - 💊 **Amoxicillin** 5...</td>
           <td>✅ reminder_list</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/prescription.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/prescription.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4799,7 +4803,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 - 📋 **Subject:** Whiteboard No...</td>
           <td>✅ email_inbox</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/whiteboard_notes.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/whiteboard_notes.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4843,7 +4847,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 - 📅 **Due Date:**...</td>
           <td>— </td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/invoice.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/invoice.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4881,7 +4885,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 - 📝 *&quot;Project Alpha sprint: Login→Das...</td>
           <td>✅ reminder_list</td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/whiteboard_notes.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/whiteboard_notes.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -4918,7 +4922,7 @@ I can see a Fall 2025 weekly class schedul...</td>
 🛍️ *Milk, Eggs, Bread, Chicken, Tomatoes, Onions, Rice, Olive ...</td>
           <td>— </td>
           <td>
-            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/shopping_list.png" class="img-preview" loading="lazy"/>
+            <img src="https://raw.githubusercontent.com/RushikeshPeppi/moltbot-render/main/test-images/shopping_list.png" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>
             <details><summary>Full Response</summary><pre class="json-pre">{
   &quot;code&quot;: 200,
   &quot;message&quot;: &quot;Action executed successfully&quot;,
@@ -8033,6 +8037,11 @@ What would you like me to do? 😊</td>
 </table>
 </div>
 
+<div id="imageModal" class="modal" onclick="closeModal()">
+  <span class="close-modal">&times;</span>
+  <img class="modal-content" id="modalImg">
+</div>
+
 <script>
 function filterRows(type, btn) {
   document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
@@ -8040,6 +8049,15 @@ function filterRows(type, btn) {
   document.querySelectorAll('tbody tr').forEach(tr => {
     tr.style.display = (type === 'all' || tr.dataset.result === type) ? '' : 'none';
   });
+}
+
+function openModal(src) {
+  document.getElementById('imageModal').style.display = 'flex';
+  document.getElementById('modalImg').src = src;
+}
+
+function closeModal() {
+  document.getElementById('imageModal').style.display = 'none';
 }
 </script>
 </body></html>

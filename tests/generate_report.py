@@ -65,7 +65,7 @@ def generate_html(data):
         img_html = ""
         if img_urls:
             for u in img_urls:
-                img_html += f'<img src="{escape(u)}" class="img-preview" loading="lazy"/>'
+                img_html += f'<img src="{escape(u)}" class="img-preview" loading="lazy" onclick="openModal(this.src)"/>'
 
         rows_html += f"""
         <tr class="row-{result}" data-cat="{cat}" data-result="{result}">
@@ -132,7 +132,11 @@ tr:hover{{background:#1a1a22}}
 .id-col{{font-weight:700;color:#818cf8;white-space:nowrap}} .cat-col{{color:#a1a1aa;font-size:11px}} .tz-col{{font-size:11px;color:#71717a}}
 .msg-col{{max-width:200px}} .reply-col{{max-width:300px;color:#a1a1aa}}
 .img-preview{{width:60px;height:60px;object-fit:cover;border-radius:4px;margin:2px;cursor:pointer;border:1px solid #3f3f46}}
-.img-preview:hover{{transform:scale(3);position:relative;z-index:10;border-color:#6366f1}}
+.img-preview:hover{{border-color:#6366f1;opacity:0.8}}
+.modal{{display:none;position:fixed;z-index:100;left:0;top:0;width:100%;height:100%;background-color:rgba(0,0,0,0.9);align-items:center;justify-content:center;padding:20px}}
+.modal-content{{max-width:90%;max-height:90vh;border-radius:8px;border:2px solid #3f3f46;object-fit:contain}}
+.close-modal{{position:absolute;top:20px;right:30px;color:#f1f1f1;font-size:40px;font-weight:bold;cursor:pointer}}
+.close-modal:hover{{color:#ef4444}}
 details summary{{cursor:pointer;color:#6366f1;font-size:11px}} .json-pre{{background:#0a0a0f;padding:8px;border-radius:4px;font-size:10px;max-height:200px;overflow:auto;color:#71717a;white-space:pre-wrap;word-break:break-all}}
 .v-details{{font-size:11px;color:#71717a;margin-top:4px}} .fail-reason{{font-size:11px;color:#ef4444;margin-top:4px}}
 </style>
@@ -167,6 +171,11 @@ details summary{{cursor:pointer;color:#6366f1;font-size:11px}} .json-pre{{backgr
 </table>
 </div>
 
+<div id="imageModal" class="modal" onclick="closeModal()">
+  <span class="close-modal">&times;</span>
+  <img class="modal-content" id="modalImg">
+</div>
+
 <script>
 function filterRows(type, btn) {{
   document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
@@ -174,6 +183,15 @@ function filterRows(type, btn) {{
   document.querySelectorAll('tbody tr').forEach(tr => {{
     tr.style.display = (type === 'all' || tr.dataset.result === type) ? '' : 'none';
   }});
+}}
+
+function openModal(src) {{
+  document.getElementById('imageModal').style.display = 'flex';
+  document.getElementById('modalImg').src = src;
+}}
+
+function closeModal() {{
+  document.getElementById('imageModal').style.display = 'none';
 }}
 </script>
 </body></html>"""
