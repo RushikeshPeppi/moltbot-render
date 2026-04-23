@@ -41,21 +41,47 @@ def save_results(results: dict, run_meta: dict):
     print(f"\n💾 Results saved to {RESULTS_FILE}")
 
 
-def call_api(message: str, tz: str, image_urls=None, num_media=0) -> dict:
-    """Call the Moltbot execute-action API."""
+def call_api(message: str, tz: str, image_urls=None, num_media=0, _attempt: int = 1) -> dict:
+    """
+    Call the Moltbot execute-action API.
+
+    On non-JSON / empty bodies (Render edge flakes, WAF, mid-flight resets),
+    retry once before reporting REQUEST_ERROR. Always include the HTTP status
+    and a body snippet so failures are diagnosable from the saved results.
+    """
     payload = {
         "user_id": USER_ID,
         "message": message,
         "timezone": tz,
         "image_urls": image_urls,
-        "num_media": num_media
+        "num_media": num_media,
     }
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
             resp = client.post(f"{API_URL}/execute-action", json=payload)
+        try:
             return resp.json()
+        except json.JSONDecodeError as je:
+            body_snippet = (resp.text or "")[:500]
+            # One retry for transient empty/non-JSON responses (Render edge,
+            # cold start, etc.). Don't retry image payloads — they're already slow.
+            if _attempt < 2 and not image_urls:
+                time.sleep(1.5)
+                return call_api(message, tz, image_urls, num_media, _attempt=_attempt + 1)
+            return {
+                "code": resp.status_code or 0,
+                "error": "INVALID_JSON_RESPONSE",
+                "message": f"Server returned non-JSON body ({len(body_snippet)} chars): {body_snippet}",
+                "exception": str(je),
+                "data": None,
+            }
     except httpx.TimeoutException:
         return {"code": 0, "error": "TIMEOUT", "message": "Request timed out", "data": None}
+    except httpx.HTTPError as e:
+        if _attempt < 2 and not image_urls:
+            time.sleep(1.5)
+            return call_api(message, tz, image_urls, num_media, _attempt=_attempt + 1)
+        return {"code": 0, "error": "REQUEST_ERROR", "message": str(e), "data": None}
     except Exception as e:
         return {"code": 0, "error": "REQUEST_ERROR", "message": str(e), "data": None}
 

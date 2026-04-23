@@ -79,12 +79,34 @@ async function fetchOAuthTokenFromFastAPI(userId) {
 app.post('/execute', async (req, res) => {
   const { session_id, message, user_id, credentials, history, timezone, user_context, image_urls } = req.body;
 
-  if (!message) {
-    return res.status(400).json({ error: 'Message is required' });
+  // Image-only requests are valid: synthesize a default instruction so the agent
+  // still has something to act on. A truly empty payload (no text + no images)
+  // is the only invalid case.
+  const hasImages = Array.isArray(image_urls) && image_urls.length > 0;
+  const trimmedMessage = (message || '').trim();
+  let effectiveMessage = trimmedMessage;
+  if (!effectiveMessage) {
+    if (hasImages) {
+      effectiveMessage = 'Look at the attached image(s) and decide the most useful action. If the intent is unclear, briefly describe what you see and ask what I want to do.';
+    } else {
+      // No text and no images — nothing to act on. Return a graceful chat reply
+      // (200) instead of an HTTP error so the upstream UX stays sane.
+      return res.json({
+        success: true,
+        response: "I didn't catch a message. What would you like me to do? You can ask me to schedule a meeting, set a reminder, send an email, or share a photo.",
+        action_type: 'chat',
+        details: null,
+        tokens_used: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read: 0,
+        cache_write: 0
+      });
+    }
   }
 
   try {
-    console.log(`[${session_id}] Processing for user ${user_id}: ${message.substring(0, 50)}...`);
+    console.log(`[${session_id}] Processing for user ${user_id}: ${effectiveMessage.substring(0, 50)}...`);
 
     // OAuth token bridge: Fetch fresh token from FastAPI if user_id provided
     let enhancedCredentials = { ...credentials };
@@ -112,7 +134,7 @@ app.post('/execute', async (req, res) => {
     );
 
     // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
-    const result = await executeOpenClaw(session_id, message, context, enhancedCredentials, user_id, timezone || 'UTC', image_urls);
+    const result = await executeOpenClaw(session_id, effectiveMessage, context, enhancedCredentials, user_id, timezone || 'UTC', image_urls);
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -130,6 +152,28 @@ app.post('/execute', async (req, res) => {
 
   } catch (error) {
     console.error(`[${session_id}] Error:`, error.message);
+
+    // Timeout: the model/skill couldn't finish in the budget. Image-heavy flows
+    // (vision + multi-step bash) are the usual culprit. Return 200 with a
+    // user-facing message so the upstream wrapper doesn't surface a raw 500;
+    // side-effect actions may have partially completed, so we tell the user to verify.
+    if (error.message === 'Request timed out') {
+      const friendly = hasImages
+        ? "Processing your image is taking longer than usual. Please retry, or send a smaller/clearer image and tell me exactly what to do with it (schedule, remind, email)."
+        : "I'm taking longer than usual to finish that. Please try again — if it was an action like creating an event, double-check before retrying so we don't duplicate it.";
+      return res.json({
+        success: true,
+        response: friendly,
+        action_type: 'chat',
+        details: { timed_out: true },
+        tokens_used: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_read: 0,
+        cache_write: 0
+      });
+    }
+
     res.status(500).json({
       success: false,
       error: error.message,
@@ -187,7 +231,11 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
  */
 function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls) {
   return new Promise((resolve, reject) => {
-    const timeout = 180000; // 180 second timeout (3 min — Gemini with thinking needs more time for complex skills)
+    // Image-heavy tasks (vision + multi-step bash via skills) routinely need >3 min.
+    // Render Pro allows up to 600s per request; we cap below the wrapper's 280s
+    // upstream timeout so the wrapper sees the friendly fallback, not a socket reset.
+    const hasImages = Array.isArray(imageUrls) && imageUrls.length > 0;
+    const timeout = hasImages ? 260000 : 180000;
 
     // Build the command
     // OpenClaw CLI: openclaw agent --message "message" --thinking high
@@ -554,6 +602,14 @@ async function startOpenClaw() {
       // 1. Create openclaw.json - sets default model, session isolation, and TOOL PERMISSIONS
       // CRITICAL: Without tools.exec config, OpenClaw's security blocks bash execution
       // and the model falls back to chatting about actions instead of executing them.
+      // PROMPT CACHING: OpenClaw automatically applies Anthropic's prompt-cache
+      // headers (cache_control: ephemeral) to the system prompt + skills + tool
+      // schemas when the primary model is anthropic/*. Verified in production
+      // telemetry: cache_read ~99% of input tokens on warm requests
+      // (see test_results.json, scenario L3: cache_read=163975 / input=164054).
+      // Cache TTL is 5 min by default; staying below that between turns keeps
+      // hit rate high. Do NOT mutate SOUL.md / agent.md / skills mid-session,
+      // since any change busts the cache.
       const openclawConfig = {
         agents: {
           defaults: {

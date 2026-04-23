@@ -12,7 +12,9 @@ class Settings(BaseSettings):
     
     # Moltbot Gateway
     MOLTBOT_GATEWAY_URL: str = os.getenv("MOLTBOT_GATEWAY_URL", "http://moltbot-gateway:18789")
-    MOLTBOT_TIMEOUT: int = 190  # Must exceed gateway's 180s internal timeout for skill execution
+    # Must exceed the gateway's longest internal skill timeout (260s for image flows).
+    # Render Pro caps a single HTTP request at 600s, so 280s leaves comfortable margin.
+    MOLTBOT_TIMEOUT: int = 280
     
     # Upstash Redis
     UPSTASH_REDIS_URL: str = os.getenv("UPSTASH_REDIS_URL", "")

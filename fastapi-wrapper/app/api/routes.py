@@ -147,7 +147,32 @@ async def execute_action(request: ExecuteActionRequest):
     user_id = request.user_id
     log_id = None
     lock_acquired = False
-    
+
+    # 0a. Pre-validate input shape: must have *something* to act on.
+    # Empty text + no images is a no-op — return a friendly chat reply (200)
+    # instead of forwarding to the gateway just to get a 400 back.
+    has_images = bool(request.image_urls)
+    has_text = bool((request.message or "").strip())
+    if not has_text and not has_images:
+        return {
+            "code": ResponseCode.SUCCESS,
+            "message": "Action executed successfully",
+            "data": {
+                "session_id": "",
+                "response": "I didn't catch a message. What would you like me to do? I can schedule meetings, set reminders, send emails, or work with photos you send me.",
+                "action_performed": "chat",
+                "tokens_used": None,
+                "input_tokens": None,
+                "output_tokens": None,
+                "cache_read": None,
+                "cache_write": None,
+                "reminder_trigger_at": None,
+            },
+            "error": None,
+            "exception": None,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
     try:
         # 0. Validate user_id exists in database
         existing_user = await db.get_user(user_id)
@@ -232,14 +257,61 @@ async def execute_action(request: ExecuteActionRequest):
                 )
             except OpenClawClientError as e:
                 logger.error(f"OpenClaw call failed: {e.message} (type: {e.error_type})")
-                
+
+                # Special-case: gateway-side timeout for image-heavy requests.
+                # The gateway already returns a graceful 200 in that path, but if
+                # it ever surfaces as a 5xx (e.g., underlying socket reset), we
+                # still want to give the user a usable reply rather than HTTP 500.
+                msg_lower = (e.message or "").lower()
+                is_timeout_like = (
+                    e.error_type in ("TIMEOUT", "HTTP_ERROR")
+                    and ("timed out" in msg_lower or "timeout" in msg_lower)
+                )
+                if is_timeout_like:
+                    if request.image_urls:
+                        friendly = (
+                            "Processing your image is taking longer than usual. "
+                            "Please retry, or send a smaller/clearer image and tell me "
+                            "exactly what to do with it (schedule, remind, email)."
+                        )
+                    else:
+                        friendly = (
+                            "I'm taking longer than usual to finish that. Please try again "
+                            "— if it was an action like creating an event, double-check before "
+                            "retrying so we don't duplicate it."
+                        )
+                    if log_id:
+                        await db.update_action_log(
+                            log_id=log_id,
+                            status="failed",
+                            error_message=f"timeout fallback: {e.message}",
+                        )
+                    return {
+                        "code": ResponseCode.SUCCESS,
+                        "message": "Action executed successfully",
+                        "data": {
+                            "session_id": session_id,
+                            "response": friendly,
+                            "action_performed": "chat",
+                            "tokens_used": None,
+                            "input_tokens": None,
+                            "output_tokens": None,
+                            "cache_read": None,
+                            "cache_write": None,
+                            "reminder_trigger_at": None,
+                        },
+                        "error": None,
+                        "exception": None,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+
                 if log_id:
                     await db.update_action_log(
                         log_id=log_id,
                         status="failed",
                         error_message=e.message
                     )
-                
+
                 return create_error_response(
                     code=ResponseCode.SERVICE_UNAVAILABLE if e.retryable else ResponseCode.INTERNAL_ERROR,
                     message="Failed to process your request. Please try again.",

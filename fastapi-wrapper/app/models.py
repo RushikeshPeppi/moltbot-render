@@ -60,12 +60,20 @@ class BaseResponse(BaseModel):
 class ExecuteActionRequest(BaseModel):
     """Request to execute an action via OpenClaw"""
     user_id: str = Field(..., description="User ID from Peppi system")
-    message: str = Field(..., description="User's SMS message/action request")
+    message: str = Field(..., description="User's SMS message/action request (may be empty if image_urls is provided)")
     timezone: str = Field(..., description="User's timezone (e.g., 'Asia/Kolkata', 'America/New_York')")
     phone_number: Optional[str] = Field(None, description="User's phone number")
     credentials: Optional[Dict[str, Any]] = Field(None, description="User service credentials")
     image_urls: Optional[List[str]] = Field(None, description="Twilio media URLs for attached images (MMS)")
     num_media: Optional[int] = Field(0, description="Number of media attachments from Twilio")
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def coerce_message(cls, v):
+        """Coerce None to empty string so empty image-only payloads validate."""
+        if v is None:
+            return ""
+        return v
 
     class Config:
         json_schema_extra = {
