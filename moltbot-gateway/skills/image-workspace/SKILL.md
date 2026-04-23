@@ -40,15 +40,14 @@ Use this skill when the user's message includes `[Attached Images]` AND involves
 </trigger_patterns>
 
 <environment_variables>
-## 🔑 Environment Variables
+## 🔑 Environment Variables (set by the per-turn preamble below)
 
-After you run the per-turn context block below, these are guaranteed to be set:
 - `$GOOGLE_ACCESS_TOKEN` — OAuth 2.0 bearer token (auto-refreshed by FastAPI backend)
-- `$USER_TIMEZONE` — The user's timezone (e.g., `Asia/Kolkata`, `America/New_York`)
-- `$MOLTBOT_USER_ID` — The current user's ID from Peppi
-- `$FASTAPI_URL` — The Moltbot FastAPI backend URL
+- `$USER_TIMEZONE` — user's IANA timezone
+- `$MOLTBOT_USER_ID` — user's Peppi id
+- `$FASTAPI_URL` — Moltbot FastAPI backend base URL
 
-Don't assume these are pre-populated — the gateway may run in persistent-daemon (HTTP) mode, where per-request values only reach skills via the context broker. The preamble below works in BOTH transports.
+These are NOT pre-populated. Run the preamble block below first, then every operation works as before.
 </environment_variables>
 
 <pre_operation_setup>
@@ -56,24 +55,18 @@ Don't assume these are pre-populated — the gateway may run in persistent-daemo
 
 **MANDATORY:** As your first `exec` call in every turn that uses this skill, run this block. It resolves per-request values from the gateway's loopback broker and `export`s them for the rest of the turn.
 
-The agent MUST substitute `<SESSION_KEY_FROM_CONTEXT>` with the value on the `SessionKey:` line in the system context above. If `$OPENCLAW_SESSION_KEY` is already set in env (legacy spawn path), that wins and no substitution is needed.
+The agent MUST substitute `<SESSION_KEY_FROM_CONTEXT>` with the value on the `SessionKey:` line in the system context above.
 
 ```bash
 # ── PER-TURN CONTEXT ───────────────────────────────────────────────────
-SESSION_KEY="${OPENCLAW_SESSION_KEY:-<SESSION_KEY_FROM_CONTEXT>}"
+SESSION_KEY="<SESSION_KEY_FROM_CONTEXT>"
 BROKER_URL="${INTERNAL_BROKER_URL:-http://127.0.0.1:8788}"
 
-CTX=$(curl -sf --max-time 5 "${BROKER_URL}/internal/context/${SESSION_KEY}" 2>/dev/null || echo "")
-if [ -n "$CTX" ]; then
-  _TOK=$(echo "$CTX" | jq -r '.google_access_token // empty')
-  _UID=$(echo "$CTX" | jq -r '.user_id // empty')
-  _TZ=$(echo  "$CTX" | jq -r '.user_timezone // empty')
-  _API=$(echo "$CTX" | jq -r '.fastapi_url // empty')
-  [ -n "$_TOK" ] && export GOOGLE_ACCESS_TOKEN="$_TOK"
-  [ -n "$_UID" ] && export MOLTBOT_USER_ID="$_UID"
-  [ -n "$_TZ"  ] && export USER_TIMEZONE="$_TZ"
-  [ -n "$_API" ] && export FASTAPI_URL="$_API"
-fi
+CTX=$(curl -sf --max-time 5 "${BROKER_URL}/internal/context/${SESSION_KEY}")
+export GOOGLE_ACCESS_TOKEN=$(echo "$CTX" | jq -r '.google_access_token // empty')
+export MOLTBOT_USER_ID=$(echo    "$CTX" | jq -r '.user_id // empty')
+export USER_TIMEZONE=$(echo      "$CTX" | jq -r '.user_timezone // empty')
+export FASTAPI_URL=$(echo        "$CTX" | jq -r '.fastapi_url // empty')
 
 if [ -z "$GOOGLE_ACCESS_TOKEN" ]; then
   echo "⚠️ Couldn't resolve Google OAuth token — your Google connection may need to be refreshed in Settings."
@@ -81,8 +74,6 @@ if [ -z "$GOOGLE_ACCESS_TOKEN" ]; then
 fi
 # ───────────────────────────────────────────────────────────────────────
 ```
-
-After this runs successfully, every operation below uses `$GOOGLE_ACCESS_TOKEN` / `$USER_TIMEZONE` / etc. as before.
 </pre_operation_setup>
 
 <image_context>

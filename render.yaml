@@ -112,13 +112,6 @@ services:
       # FastAPI URL for OAuth token bridge
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
-      # ── HTTP gateway migration (feat/http-gateway) ─────────────────────
-      # Flip to "true" on the staging service first, prod last. When false
-      # (default), server.js runs the legacy spawn-per-request path and
-      # this block is inert. See HTTP_MIGRATION_PLAN.md for the cut-over
-      # procedure.
-      - key: OPENCLAW_HTTP_MODE
-        value: "false"
       # Bearer token the daemon expects on /v1/chat/completions. Loopback
       # traffic inside the container bypasses remote auth, but we set a
       # token anyway as defence in depth. Generate with `openssl rand -hex 32`
@@ -129,5 +122,4 @@ services:
       # collide with $PORT (which server.js owns and Render exposes).
       - key: OPENCLAW_DAEMON_PORT
         value: "18790"
-      # ───────────────────────────────────────────────────────────────────
 

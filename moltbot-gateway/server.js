@@ -7,19 +7,12 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 18789;
 
-// Two transports are supported:
-//  - spawn  (legacy): fork `openclaw agent` per request. Env vars like
-//    GOOGLE_ACCESS_TOKEN are set per-fork and skills read them directly.
-//  - http   (target):  talk to a long-lived `openclaw gateway` daemon over
-//    loopback HTTP. Per-request env vars are injected via the loopback
-//    context broker (see below) since a persistent daemon has one env.
-// OPENCLAW_HTTP_MODE=true flips us onto the HTTP path. Default is spawn so
-// code-only deploys are zero-risk; flip the env var on Render to switch.
-const HTTP_MODE = process.env.OPENCLAW_HTTP_MODE === 'true';
-// The OpenClaw daemon runs INSIDE the same Render container as server.js.
-// It must bind to a different port than server.js (which owns $PORT, the
-// port Render exposes externally). 18790 is arbitrary-but-fixed; change
-// via OPENCLAW_DAEMON_PORT if something else grabs it inside the box.
+// This service talks to a long-lived `openclaw gateway` daemon over
+// loopback HTTP. server.js forks the daemon as a child, polls /health,
+// then routes /execute calls to the daemon's OpenAI-compatible endpoint.
+// Per-request values (OAuth token, user id, timezone) reach skills via
+// the loopback context broker below — the daemon's own env is fixed at
+// boot and can't be mutated per request.
 const DAEMON_PORT = Number(process.env.OPENCLAW_DAEMON_PORT || 18790);
 const GATEWAY_URL = `http://127.0.0.1:${DAEMON_PORT}`;
 const INTERNAL_BROKER_PORT = Number(process.env.INTERNAL_BROKER_PORT || 8788);
@@ -27,11 +20,11 @@ const INTERNAL_BROKER_URL = `http://127.0.0.1:${INTERNAL_BROKER_PORT}`;
 
 app.use(express.json());
 
-// Gateway-daemon readiness (HTTP mode only). server.js must refuse traffic
-// until the daemon is actually up, otherwise Render will happily route
-// requests during the 5-15s cold start and every one will 5xx.
+// Readiness. server.js must refuse traffic until the daemon is actually
+// up, otherwise Render will happily route during the 5-15s cold start
+// and every one will 5xx.
 let isReady = false;
-let gatewayReady = !HTTP_MODE; // spawn path has no daemon; always "ready"
+let gatewayReady = false;
 let gatewayChild = null;
 
 // In-memory context broker. Each /execute turn generates a session key,
@@ -47,25 +40,22 @@ function mintSessionKey() {
   return crypto.randomBytes(16).toString('hex');
 }
 
-// Health check. In HTTP mode we MUST refuse traffic until the OpenClaw
-// daemon is actually reachable, otherwise Render will route requests during
-// cold start and every one will time out inside executeViaHttp(). In spawn
-// mode the daemon is irrelevant and we just mirror the legacy behavior.
+// Health check. Refuse traffic until the daemon is reachable — otherwise
+// Render routes requests during the 5-15s cold start and every one times
+// out inside executeViaHttp().
 app.get('/health', (req, res) => {
-  if (HTTP_MODE && !gatewayReady) {
+  if (!gatewayReady) {
     return res.status(503).json({
       status: 'starting',
       service: 'openclaw-gateway',
-      mode: 'http',
       gateway_ready: false,
     });
   }
   res.json({
     status: 'online',
     service: 'openclaw-gateway',
-    mode: HTTP_MODE ? 'http' : 'spawn',
     openclaw_ready: isReady,
-    gateway_ready: gatewayReady,
+    gateway_ready: true,
   });
 });
 
@@ -257,11 +247,7 @@ app.post('/execute', async (req, res) => {
       sessionKey
     );
 
-    // Pick the executor. HTTP mode talks to the persistent daemon; spawn
-    // mode forks `openclaw agent` per request (legacy). Both end up at the
-    // same OpenClaw agent — only the transport differs.
-    const executor = HTTP_MODE ? executeViaHttp : executeOpenClaw;
-    const result = await executor(
+    const result = await executeViaHttp(
       session_id,
       effectiveMessage,
       context,
@@ -375,294 +361,23 @@ function buildContext(credentials, history, userId, timezone, userContext = {}, 
   return context;
 }
 
-/**
- * Execute OpenClaw command and return result
- */
-function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls, sessionKey) {
-  return new Promise((resolve, reject) => {
-    // Image-heavy tasks (vision + multi-step bash via skills) routinely need >3 min.
-    // Render Pro allows up to 600s per request; we cap below the wrapper's 280s
-    // upstream timeout so the wrapper sees the friendly fallback, not a socket reset.
-    const hasImages = Array.isArray(imageUrls) && imageUrls.length > 0;
-    const timeout = hasImages ? 260000 : 180000;
-
-    // Build the command
-    // OpenClaw CLI: openclaw agent --message "message" --thinking high
-    // Note: --context is unknown in version 2026.2.3-1, so we prepend it to the message
-    let fullMessage = message;
-    if (context) {
-      fullMessage = `${context}\n\nTask: ${message}`;
-    }
-
-    // If images are present, append them to the message for Sonnet's vision
-    if (imageUrls && imageUrls.length > 0) {
-      fullMessage += '\n\n[Attached Images]';
-      imageUrls.forEach((url, i) => {
-        fullMessage += `\nImage ${i + 1}: ${url}`;
-      });
-      console.log(`[${sessionId}] ${imageUrls.length} image(s) attached to message`);
-    }
-
-    // Stateless execution: Peppi's context already provides conversation history,
-    // so we don't use --to or --session-id (which caused token bloat: 33K→292K).
-    // Each request is independent — OpenClaw gets context from the message.
-    // OpenClaw v2026.3.8+ requires --agent to route the request (new CLI requirement).
-    // NOTE: --thinking flag disabled for Claude Sonnet (causes thinking leakage in output)
-    const args = ['agent', '--agent', 'main', '--message', fullMessage];
-
-    // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
-    const extraEnv = {};
-    if (credentials && credentials.google_access_token) {
-      // OpenClaw skills may look for different environment variable names
-      // Set all common variations to ensure compatibility
-      extraEnv.GOOGLE_ACCESS_TOKEN = credentials.google_access_token;
-      extraEnv.GOOGLE_TOKEN = credentials.google_access_token;
-      extraEnv.GMAIL_TOKEN = credentials.google_access_token;
-      extraEnv.GOOGLE_CALENDAR_TOKEN = credentials.google_access_token;
-      extraEnv.CALENDAR_TOKEN = credentials.google_access_token;
-
-      console.log(`[${sessionId}] Google OAuth token configured for skills`);
-    }
-
-    // Pass user's timezone for date/time calculations in skills
-    if (timezone) {
-      extraEnv.USER_TIMEZONE = timezone;
-      console.log(`[${sessionId}] User timezone set to: ${timezone}`);
-    }
-
-    // FastAPI URL for reminder skill API calls
-    extraEnv.FASTAPI_URL = process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com';
-
-    // User ID for reminder ownership
-    if (userId) {
-      extraEnv.MOLTBOT_USER_ID = String(userId);
-    }
-
-    // Broker coordinates. Skills can either read the direct env vars above
-    // (legacy spawn behavior — still works) OR curl the broker using the
-    // SessionKey they extract from the system context (new pattern). Both
-    // work on the spawn path; only the broker path works on the HTTP path.
-    extraEnv.INTERNAL_BROKER_URL = INTERNAL_BROKER_URL;
-    if (sessionKey) {
-      extraEnv.OPENCLAW_SESSION_KEY = sessionKey;
-    }
-
-    // Request JSON output
-    args.push('--json');
-
-    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --json`);
-
-    const openclaw = spawn('openclaw', args, {
-      env: {
-        ...process.env,
-        // OpenClaw supports Anthropic via ANTHROPIC_API_KEY env var
-        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-        // Keep Gemini as fallback
-        GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-        // SearXNG URL for free web search (NO API keys needed)
-        SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
-        // Google OAuth tokens for skills
-        ...extraEnv,
-        // Ensure HOME is set for config file location
-        HOME: process.env.HOME || '/root'
-      },
-      timeout: timeout
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    openclaw.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    openclaw.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    const timer = setTimeout(() => {
-      openclaw.kill();
-      reject(new Error('Request timed out'));
-    }, timeout);
-
-    openclaw.on('close', (code) => {
-      clearTimeout(timer);
-
-      if (code !== 0 && !stdout) {
-        console.error('OpenClaw stderr:', stderr);
-        reject(new Error(stderr || 'OpenClaw execution failed'));
-        return;
-      }
-
-      // OpenClaw 2026.4.5+ may write JSON to stderr instead of stdout.
-      // If stdout is empty but stderr has content, use stderr as the response source.
-      if (!stdout.trim() && stderr.trim()) {
-        console.log(`[${sessionId}] stdout empty — trying stderr as response (${stderr.length} chars)`);
-        stdout = stderr;
-        stderr = '';
-      } else if (!stdout.trim()) {
-        console.warn(`[${sessionId}] Both stdout and stderr are empty (OpenClaw produced no output)`);
-      }
-
-      try {
-        // Attempt to extract JSON from mixed output (CLI often prints logs + JSON)
-        let result = null;
-
-        // 1. Try parsing the whole thing first
-        try {
-          result = JSON.parse(stdout);
-        } catch (e) {
-          // 2. Try finding the JSON block
-          // Look for line starting with {
-          const jsonStart = stdout.indexOf('{');
-          const jsonEnd = stdout.lastIndexOf('}');
-
-          if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-            const jsonStr = stdout.substring(jsonStart, jsonEnd + 1);
-            try {
-              result = JSON.parse(jsonStr);
-            } catch (e2) {
-              console.warn('Failed to extract JSON from stdout substring');
-            }
-          }
-        }
-
-        if (result) {
-          // DEBUG: Log the actual structure Gemini/OpenClaw returns
-          const resultPreview = JSON.stringify(result).substring(0, 500);
-          console.log(`[${sessionId}] OpenClaw raw result keys: [${Object.keys(result).join(', ')}]`);
-          console.log(`[${sessionId}] OpenClaw raw result (first 500c): ${resultPreview}`);
-
-          // Extract text from OpenClaw's payloads format (preferred)
-          // Skip thinking blocks (type: "thinking") — only extract actual text responses
-          let responseText = null;
-          if (result.payloads && Array.isArray(result.payloads) && result.payloads.length > 0) {
-            responseText = result.payloads
-              .filter(p => p.type !== 'thinking')
-              .map(p => p.text || p.content || '')
-              .filter(t => t.length > 0)
-              .join('\n') || null;
-          }
-
-          // Fallback chain: payloads → standard fields → raw stringify
-          if (!responseText) {
-            responseText = result.response || result.message || result.text;
-          }
-          if (!responseText && typeof result === 'string') {
-            responseText = result;
-          }
-          if (!responseText) {
-            // Last resort: stringify but log warning
-            console.warn(`[${sessionId}] OpenClaw returned empty payloads, falling back to raw JSON`);
-            responseText = JSON.stringify(result);
-          }
-
-          // ── Token Usage Extraction ──
-          // Anthropic uses prompt caching, which splits input into 3 fields:
-          //   input: non-cached input (often just ~10 tokens)
-          //   cacheRead: tokens served from cache (90% cheaper)
-          //   cacheWrite: tokens written to cache for future use
-          // The "total" field from OpenClaw is the accurate grand total.
-          let tokensUsed = 0;
-          const meta = result.meta || {};
-          const agentMeta = meta.agentMeta || meta.agent_meta || {};
-          const usage = agentMeta.usage || meta.usage || result.usage || {};
-
-          // Extract raw components from OpenClaw/Anthropic
-          const rawInput = usage.promptTokenCount || usage.prompt_token_count || usage.input_tokens || usage.input || 0;
-          const rawOutput = usage.candidatesTokenCount || usage.candidates_token_count || usage.output_tokens || usage.output || 0;
-          const cacheRead = usage.cacheRead || usage.cache_read_input_tokens || usage.cachedContentTokenCount || 0;
-          const cacheWrite = usage.cacheWrite || usage.cache_creation_input_tokens || 0;
-          const totalReported = usage.totalTokenCount || usage.total_token_count || usage.total_tokens || usage.total || 0;
-
-          // TRUE input = non-cached + cache read + cache write (all tokens sent TO the model)
-          const inputTokens = rawInput + cacheRead + cacheWrite;
-          const outputTokens = rawOutput;
-
-          // Total: prefer OpenClaw's reported total, fallback to computed sum
-          tokensUsed = totalReported > 0 ? totalReported : (inputTokens + outputTokens);
-
-          // If still nothing, try top-level fields
-          if (!tokensUsed) {
-            tokensUsed = result.tokens_used || result.total_tokens || 0;
-          }
-
-          // Log full breakdown for debugging
-          console.log(`[${sessionId}] Tokens: total=${tokensUsed} input=${inputTokens} [raw=${rawInput} cacheRead=${cacheRead} cacheWrite=${cacheWrite}] output=${outputTokens}`);
-
-          // Fallback: Estimate tokens from text (~3.5 chars/token for Claude)
-          if (!tokensUsed && responseText) {
-            const inputChars = (message || '').length + (context || '').length;
-            const outputChars = responseText.length;
-            tokensUsed = Math.round((inputChars + outputChars) / 3.5);
-            console.log(`[${sessionId}] Token estimation fallback: input=${inputChars}chars output=${outputChars}chars → ~${tokensUsed} tokens`);
-          }
-
-          resolve({
-            response: responseText,
-            action_type: result.action_type || result.tool || result.agent || 'chat',
-            details: result.details || result.metadata || result.data || null,
-            tokens_used: tokensUsed,
-            input_tokens: inputTokens,
-            output_tokens: outputTokens,
-            cache_read: cacheRead,
-            cache_write: cacheWrite
-          });
-        } else {
-          // Fallback if no JSON found
-          throw new Error('No valid JSON found');
-        }
-      } catch (e) {
-        // If not JSON, return as plain response but CLEAN UP the output
-        // Remove the ASCII config table if present
-        let cleanResponse = stdout.trim();
-
-        // Estimate tokens even for non-JSON responses
-        const inputChars = (message || '').length + (context || '').length;
-        const outputChars = cleanResponse.length;
-        const estimatedTokens = Math.round((inputChars + outputChars) / 3.5);
-        console.log(`[${sessionId}] Plain text fallback, estimated ~${estimatedTokens} tokens`);
-
-        resolve({
-          response: cleanResponse,
-          action_type: 'chat',
-          details: null,
-          tokens_used: estimatedTokens,
-          input_tokens: Math.round(inputChars / 3.5),
-          output_tokens: Math.round(outputChars / 3.5),
-          cache_read: 0,
-          cache_write: 0
-        });
-      }
-    });
-
-    openclaw.on('error', (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
-}
 
 /**
- * Execute via persistent OpenClaw daemon (HTTP mode).
+ * Execute a turn against the persistent OpenClaw daemon.
  *
- * Talks to the daemon on 127.0.0.1:18789 via its OpenAI-compatible
- * /v1/chat/completions endpoint. Uses `x-openclaw-agent-id: main` to route
- * to the agent we configure in startOpenClaw().
- *
- * Response shape mapping (OpenAI → our gateway response):
- *   choices[0].message.content               → response
- *   usage.total_tokens                       → tokens_used
- *   usage.prompt_tokens                      → input_tokens
- *   usage.completion_tokens                  → output_tokens
+ * Talks to 127.0.0.1:${DAEMON_PORT}/v1/chat/completions with
+ * `x-openclaw-agent-id: main`. Maps the OpenAI response shape to our
+ * /execute response shape:
+ *   choices[0].message.content                → response
+ *   usage.total_tokens                        → tokens_used
+ *   usage.prompt_tokens                       → input_tokens
+ *   usage.completion_tokens                   → output_tokens
  *   usage.prompt_tokens_details.cached_tokens → cache_read
- *   (cache_write is not exposed by OpenAI-compat — set to 0, accept the
- *    telemetry gap, cache still works server-side)
- *   action_type — not returned by OpenAI shape, always "chat"
+ *   (cache_write not exposed by OpenAI-compat; reported as 0)
+ *   action_type not returned; always "chat"
  *
- * Timeout mirrors the spawn path: 260s for image flows, 180s otherwise.
- * Axios timeout fires at the HTTP layer — the gateway may keep working on
- * the request, but we return a graceful fallback to the caller.
+ * 260s timeout for image flows, 180s otherwise. On timeout axios rejects
+ * and /execute's catch returns the user-facing friendly fallback.
  */
 function executeViaHttp(sessionId, message, context, credentials, userId, timezone, imageUrls, sessionKey) {
   const hasImages = Array.isArray(imageUrls) && imageUrls.length > 0;
@@ -766,11 +481,6 @@ function executeViaHttp(sessionId, message, context, credentials, userId, timezo
  * (silent daemon death would hang every request for 280s otherwise).
  */
 async function bootGateway() {
-  if (!HTTP_MODE) {
-    console.log('[bootGateway] OPENCLAW_HTTP_MODE != "true" — staying on spawn path, skipping daemon boot');
-    return;
-  }
-
   console.log(`[bootGateway] Starting openclaw gateway daemon on port ${DAEMON_PORT}...`);
 
   gatewayChild = spawn('openclaw', ['gateway', 'run', '--port', String(DAEMON_PORT)], {
@@ -1062,7 +772,7 @@ These rules determine the quality of your work:
 
 3. You are capable of building complex curl commands with JSON payloads, multiple headers, and jq parsing. This is routine work for you. Build the command exactly as the SKILL.md specifies and execute it.
 
-4. Environment variables ($FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN) are NOT pre-loaded. Your first bash call in every turn MUST run the \`<pre_operation_setup>\` block from the triggered skill — it resolves these from the loopback broker using the SessionKey line in this system context. After that block runs, all subsequent bash calls in this turn can use \$GOOGLE_ACCESS_TOKEN etc. as normal. Both spawn-per-request and persistent-daemon transports populate the broker — this pattern works identically either way.
+4. Environment variables ($FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN) are NOT pre-loaded. Your first bash call in every turn MUST run the \`<pre_operation_setup>\` block from the triggered skill — it resolves these from the loopback context broker using the SessionKey line in this system context. After that block runs, all subsequent bash calls in this turn can use \$GOOGLE_ACCESS_TOKEN etc. as normal.
 
 5. For multi-step operations (e.g., search then update), execute each step and use the output of each step as input to the next. Do not skip steps or assume intermediate results.
 </tool_execution_rules>
@@ -1264,22 +974,19 @@ When [Attached Images] is present, always prefer the image-specific skill over t
       console.log('  ✓ Image processing (via Sonnet vision)');
       console.log('  ✓ Memory/Context persistence');
       console.log('  ✓ Browser automation');
-      console.log(`\nTransport: ${HTTP_MODE ? 'HTTP (persistent daemon)' : 'spawn (per-request CLI fork)'}`);
+      console.log('Transport: HTTP (persistent daemon)');
       console.log('Model: Claude Sonnet 4.6 (fallback: Gemini 2.5 Pro)');
       console.log('========================================\n');
 
       isReady = true;
 
-      // Boot the persistent daemon only after config is on disk. The
-      // daemon reads ~/.openclaw/openclaw.json on startup, so order
-      // matters: startOpenClaw() writes the config above, then bootGateway
-      // spawns the child and waits for /health.
-      if (HTTP_MODE) {
-        bootGateway().catch((err) => {
-          console.error(`[bootGateway] fatal: ${err.message}`);
-          process.exit(1);
-        });
-      }
+      // Boot the persistent daemon now that config is on disk. Order
+      // matters: startOpenClaw() writes ~/.openclaw/openclaw.json above,
+      // then bootGateway spawns the child and waits for /health.
+      bootGateway().catch((err) => {
+        console.error(`[bootGateway] fatal: ${err.message}`);
+        process.exit(1);
+      });
     });
   });
 }
