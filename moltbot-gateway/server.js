@@ -1062,7 +1062,7 @@ These rules determine the quality of your work:
 
 3. You are capable of building complex curl commands with JSON payloads, multiple headers, and jq parsing. This is routine work for you. Build the command exactly as the SKILL.md specifies and execute it.
 
-4. Environment variables are pre-loaded and available: $FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN. Use them directly in your bash commands.
+4. Environment variables ($FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN) are NOT pre-loaded. Your first bash call in every turn MUST run the \`<pre_operation_setup>\` block from the triggered skill — it resolves these from the loopback broker using the SessionKey line in this system context. After that block runs, all subsequent bash calls in this turn can use \$GOOGLE_ACCESS_TOKEN etc. as normal. Both spawn-per-request and persistent-daemon transports populate the broker — this pattern works identically either way.
 
 5. For multi-step operations (e.g., search then update), execute each step and use the output of each step as input to the next. Do not skip steps or assume intermediate results.
 </tool_execution_rules>

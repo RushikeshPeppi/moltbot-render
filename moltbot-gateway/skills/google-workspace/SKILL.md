@@ -9,6 +9,11 @@ metadata: {"openclaw": {"emoji": "📧"}}
 CRITICAL: When this skill is triggered, you MUST execute the bash commands directly using the bash tool.
 DO NOT describe what you would do. DO NOT explain the steps you plan to take.
 DO NOT ask for confirmation unless disambiguation is genuinely required (e.g., multiple matching events).
+
+**ORDER OF OPERATIONS (mandatory):**
+1. FIRST `exec` call this turn: run the `<pre_operation_setup>` block below. It exports `$GOOGLE_ACCESS_TOKEN`, `$USER_TIMEZONE`, `$MOLTBOT_USER_ID`, `$FASTAPI_URL` for the rest of the turn.
+2. THEN run the operation the user asked for. All operations below assume step 1 has completed.
+
 EXECUTE the curl/bash command immediately, parse the API response, and report the result to the user.
 You are an agent — act, don't narrate.
 </tool_execution_directive>
@@ -30,9 +35,52 @@ Use this skill when the user asks about:
 <environment_variables>
 ## 🔑 Environment Variables
 
-The OAuth access token is automatically available:
-- `$GOOGLE_ACCESS_TOKEN` - OAuth 2.0 bearer token (auto-refreshed by FastAPI backend)
+After you run the per-turn context block below, these are guaranteed to be set:
+- `$GOOGLE_ACCESS_TOKEN` — OAuth 2.0 bearer token (auto-refreshed by FastAPI backend)
+- `$USER_TIMEZONE` — user's IANA timezone (e.g. `Asia/Kolkata`)
+- `$MOLTBOT_USER_ID` — user's Peppi id
+- `$FASTAPI_URL` — the Moltbot FastAPI backend base URL
+
+Don't assume these are pre-populated — the gateway may be running in persistent-daemon (HTTP) mode, where per-request values only reach skills via the context broker. The preamble below works in BOTH transports.
 </environment_variables>
+
+<pre_operation_setup>
+## ⚡ PER-TURN CONTEXT (run this FIRST, before any other bash in this turn)
+
+**MANDATORY:** As your first `exec` call in every turn that uses this skill, run this block. It resolves per-request values from the gateway's loopback broker and `export`s them for the rest of the turn. All operations below assume it has run.
+
+The agent MUST substitute `<SESSION_KEY_FROM_CONTEXT>` with the value on the `SessionKey:` line in the system context above. If `$OPENCLAW_SESSION_KEY` is already set in env (legacy spawn path), that wins and no substitution is needed.
+
+```bash
+# ── PER-TURN CONTEXT ───────────────────────────────────────────────────
+# Works identically on spawn (env pre-set) and HTTP (broker) transports.
+SESSION_KEY="${OPENCLAW_SESSION_KEY:-<SESSION_KEY_FROM_CONTEXT>}"
+BROKER_URL="${INTERNAL_BROKER_URL:-http://127.0.0.1:8788}"
+
+CTX=$(curl -sf --max-time 5 "${BROKER_URL}/internal/context/${SESSION_KEY}" 2>/dev/null || echo "")
+if [ -n "$CTX" ]; then
+  _TOK=$(echo "$CTX" | jq -r '.google_access_token // empty')
+  _UID=$(echo "$CTX"  | jq -r '.user_id // empty')
+  _TZ=$(echo  "$CTX"  | jq -r '.user_timezone // empty')
+  _API=$(echo "$CTX"  | jq -r '.fastapi_url // empty')
+  # Only overwrite when broker returned a non-empty value — don't clobber
+  # existing env with blanks when both transports populate.
+  [ -n "$_TOK" ] && export GOOGLE_ACCESS_TOKEN="$_TOK"
+  [ -n "$_UID" ] && export MOLTBOT_USER_ID="$_UID"
+  [ -n "$_TZ"  ] && export USER_TIMEZONE="$_TZ"
+  [ -n "$_API" ] && export FASTAPI_URL="$_API"
+fi
+
+# Fail loudly rather than silently making unauthenticated calls below.
+if [ -z "$GOOGLE_ACCESS_TOKEN" ]; then
+  echo "⚠️ Couldn't resolve Google OAuth token — your Google connection may need to be refreshed in Settings."
+  exit 1
+fi
+# ───────────────────────────────────────────────────────────────────────
+```
+
+After this runs successfully, every operation below uses `$GOOGLE_ACCESS_TOKEN` etc. as before — no change to any curl/jq command.
+</pre_operation_setup>
 
 <operation name="calendar">
 ## 📅 GOOGLE CALENDAR API
