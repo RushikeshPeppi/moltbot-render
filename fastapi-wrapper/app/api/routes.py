@@ -12,13 +12,14 @@ All responses follow the standardized DTO format:
 Note: Rate limiting is handled by Peppi (Laravel), not here.
 """
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import logging
 import traceback
+from ..utils.timezone_utils import now_utc_naive
 
 from ..models import (
     BaseResponse,
@@ -39,6 +40,7 @@ from ..core.credential_manager import CredentialManager
 from ..core.moltbot_client import OpenClawClient, OpenClawClientError
 from ..core.database import db
 from ..core.redis_client import redis_client
+from ..core.auth import require_internal_secret
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -66,7 +68,7 @@ def create_error_response(
             "data": None,
             "error": error,
             "exception": exception,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     )
 
@@ -99,7 +101,7 @@ async def health_check():
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     except Exception as e:
         logger.error(f"Health check error: {e}")
@@ -113,7 +115,10 @@ async def health_check():
 
 # ==================== Action Execution ====================
 
-@router.post("/execute-action")
+@router.post(
+    "/execute-action",
+    dependencies=[Depends(require_internal_secret)],
+)
 async def execute_action(request: ExecuteActionRequest):
     """
     Execute action via OpenClaw.
@@ -146,7 +151,7 @@ async def execute_action(request: ExecuteActionRequest):
     """
     user_id = request.user_id
     log_id = None
-    lock_acquired = False
+    lock_token: Optional[str] = None
 
     # 0a. Pre-validate input shape: must have *something* to act on.
     # Empty text + no images is a no-op — return a friendly chat reply (200)
@@ -170,7 +175,7 @@ async def execute_action(request: ExecuteActionRequest):
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc_naive().isoformat(),
         }
 
     try:
@@ -185,9 +190,12 @@ async def execute_action(request: ExecuteActionRequest):
                 exception=None
             )
 
-        # 1. Acquire user lock to prevent concurrent processing
-        lock_acquired = await session_manager.acquire_user_lock(user_id)
-        if not lock_acquired:
+        # 1. Acquire user lock to prevent concurrent processing. Token is
+        # threaded to release so we only ever DEL the lock if we still own
+        # it — protects against mid-turn TTL expiry handing the lock to a
+        # second request, which our `finally` would otherwise release.
+        lock_token = await session_manager.acquire_user_lock(user_id)
+        if not lock_token:
             return create_error_response(
                 code=ResponseCode.SERVICE_UNAVAILABLE,
                 message="Request already in progress for this user, please wait",
@@ -302,7 +310,7 @@ async def execute_action(request: ExecuteActionRequest):
                         },
                         "error": None,
                         "exception": None,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": now_utc_naive().isoformat(),
                     }
 
                 if log_id:
@@ -513,7 +521,7 @@ async def execute_action(request: ExecuteActionRequest):
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
         
     except Exception as e:
@@ -535,9 +543,12 @@ async def execute_action(request: ExecuteActionRequest):
         )
     
     finally:
-        # Always release lock if acquired
-        if lock_acquired:
-            await session_manager.release_user_lock(user_id)
+        # Always release the lock if we acquired it. The token ensures we
+        # only DEL the key when WE still own it — a mid-turn TTL expiry
+        # that handed the lock to another request leaves that request's
+        # lock alone.
+        if lock_token:
+            await session_manager.release_user_lock(user_id, lock_token)
 
 
 # ==================== Session Management ====================
@@ -578,7 +589,7 @@ async def get_user_session(user_id: str):
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     except Exception as e:
         logger.error(f"Error getting session: {e}")
@@ -603,7 +614,7 @@ async def clear_user_session(user_id: str):
                 "data": {"cleared": False},
                 "error": None,
                 "exception": None,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": now_utc_naive().isoformat()
             }
         
         await session_manager.delete_session(session_id, user_id)
@@ -614,7 +625,7 @@ async def clear_user_session(user_id: str):
             "data": {"cleared": True, "session_id": session_id},
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     except Exception as e:
         logger.error(f"Error clearing session: {e}")
@@ -652,7 +663,7 @@ async def get_conversation_history(user_id: str, limit: int = 20):
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     except Exception as e:
         logger.error(f"Error getting history: {e}")
@@ -683,7 +694,7 @@ async def store_credentials(request: StoreCredentialsRequest):
                 "data": {"stored": True, "service": request.service},
                 "error": None,
                 "exception": None,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": now_utc_naive().isoformat()
             }
         else:
             return create_error_response(
@@ -715,7 +726,7 @@ async def delete_credentials(user_id: str, service: str):
                 "data": {"deleted": True, "service": service},
                 "error": None,
                 "exception": None,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": now_utc_naive().isoformat()
             }
         else:
             return create_error_response(
@@ -755,7 +766,7 @@ async def get_credentials_status(user_id: str):
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     except Exception as e:
         logger.error(f"Error getting credentials status: {e}")
@@ -792,7 +803,7 @@ async def get_action_history(user_id: str, limit: int = 50, offset: int = 0):
             },
             "error": None,
             "exception": None,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
     except Exception as e:
         logger.error(f"Error getting action history: {e}")

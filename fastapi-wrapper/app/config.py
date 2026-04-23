@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # Security
     API_SECRET_KEY: str = os.getenv("API_SECRET_KEY", "")
     ALLOWED_ORIGINS: List[str] = ["*"]
+    # Shared bearer secret between Peppi → wrapper → gateway for inter-service
+    # auth. Set via env on all three services. If blank, services fail closed
+    # in production (ENV=production). Rotate by updating everywhere at once.
+    MOLTBOT_INTERNAL_SECRET: str = os.getenv("MOLTBOT_INTERNAL_SECRET", "")
+    # "production" | "staging" | "dev". Production requires the shared secret.
+    # Dev/staging tolerate missing secret for local testing.
+    ENV: str = os.getenv("ENV", "production")
     
     # Peppi Website
     PEPPI_WEBSITE_URL: str = os.getenv("PEPPI_WEBSITE_URL", "https://peppi.app")

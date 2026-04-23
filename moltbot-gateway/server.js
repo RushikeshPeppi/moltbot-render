@@ -2,10 +2,22 @@ const express = require('express');
 const { spawn, exec } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 18789;
+
+// Single shared http.Agent with keep-alive for loopback calls. Every
+// executeViaHttp() request stays on the same TCP connection to the
+// daemon instead of re-TCP-handshaking each turn. Cheap but noticeable
+// at even modest throughput.
+const loopbackAgent = new http.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 30000,
+  maxSockets: 64,
+  maxFreeSockets: 16,
+});
 
 // This service talks to a long-lived `openclaw gateway` daemon over
 // loopback HTTP. server.js forks the daemon as a child, polls /health,
@@ -18,7 +30,39 @@ const GATEWAY_URL = `http://127.0.0.1:${DAEMON_PORT}`;
 const INTERNAL_BROKER_PORT = Number(process.env.INTERNAL_BROKER_PORT || 8788);
 const INTERNAL_BROKER_URL = `http://127.0.0.1:${INTERNAL_BROKER_PORT}`;
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+
+// Require MOLTBOT_INTERNAL_SECRET bearer on mutating/sensitive endpoints.
+// Health and diagnose stay open so Render's health check and ops debugging
+// keep working. Enforced when the secret env is set; in dev (no env) we log
+// and allow through so local testing keeps working.
+function requireInternalSecret(req, res, next) {
+  const expected = process.env.MOLTBOT_INTERNAL_SECRET || '';
+  if (!expected) {
+    if ((process.env.ENV || 'production').toLowerCase() === 'production') {
+      console.error('[auth] MOLTBOT_INTERNAL_SECRET missing in production — refusing');
+      return res.status(503).json({ error: 'inter-service auth not configured' });
+    }
+    return next(); // dev/staging tolerates missing secret
+  }
+  const hdr = req.headers['authorization'] || '';
+  if (!hdr.toLowerCase().startsWith('bearer ')) {
+    return res.status(401).json({ error: 'missing bearer token' });
+  }
+  const supplied = hdr.slice(7).trim();
+  // constant-time string compare to avoid timing attacks on the shared secret
+  if (supplied.length !== expected.length) {
+    return res.status(401).json({ error: 'invalid bearer token' });
+  }
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= supplied.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  if (diff !== 0) {
+    return res.status(401).json({ error: 'invalid bearer token' });
+  }
+  next();
+}
 
 // Readiness. server.js must refuse traffic until the daemon is actually
 // up, otherwise Render will happily route during the 5-15s cold start
@@ -26,18 +70,67 @@ app.use(express.json());
 let isReady = false;
 let gatewayReady = false;
 let gatewayChild = null;
+// Set by our own SIGTERM/SIGINT handlers. The gatewayChild exit trap
+// checks this so a clean deploy doesn't look like a crash in Render logs.
+let isShuttingDown = false;
 
-// In-memory context broker. Each /execute turn generates a session key,
+// In-memory context broker. Each /execute turn mints a session key,
 // stashes { google_access_token, user_id, user_timezone, fastapi_url }
 // under that key, injects the key into the agent's system context, and
-// deletes the entry when the response finishes. Skills fetch this via
-// loopback HTTP so the persistent daemon can serve per-request values.
-// Keyed by a 128-bit hex token (not the upstream session_id) so the key
-// itself is unguessable — defence in depth on the loopback broker.
+// deletes the entry when the response finishes.
+//
+// Defence in depth:
+//   - Key is 128 random bits (unguessable).
+//   - Broker is bound loopback-only (see below).
+//   - Entries auto-expire after SESSION_CONTEXT_TTL_MS even if `finally`
+//     never runs (process crash mid-turn). This prevents OAuth tokens
+//     from leaking into a long-lived Map.
+//   - Map size is hard-capped at SESSION_CONTEXT_MAX_ENTRIES; if we ever
+//     exceed, we evict oldest + log — the daemon is misbehaving.
+//   - A `_reads` counter is kept per entry so we can detect the case
+//     where Sonnet skips the skill preamble (zero reads for a turn that
+//     involved a skill trigger).
+const SESSION_CONTEXT_TTL_MS = 300_000;      // 5 min — comfortably longer than image-flow timeout
+const SESSION_CONTEXT_MAX_ENTRIES = 2000;    // well above peak concurrent turns
 const sessionContext = new Map();
 
 function mintSessionKey() {
   return crypto.randomBytes(16).toString('hex');
+}
+
+function sessionContextSet(key, value) {
+  // Enforce size cap before insert. If we're above, drop the oldest entry
+  // — Maps iterate in insertion order so `keys().next()` is the oldest.
+  if (sessionContext.size >= SESSION_CONTEXT_MAX_ENTRIES) {
+    const oldest = sessionContext.keys().next().value;
+    sessionContext.delete(oldest);
+    console.warn(`[broker] sessionContext cap hit (${SESSION_CONTEXT_MAX_ENTRIES}), evicted oldest`);
+  }
+  sessionContext.set(key, {
+    ...value,
+    _reads: 0,
+    _expiresAt: Date.now() + SESSION_CONTEXT_TTL_MS,
+  });
+  // Schedule a forced delete even if the /execute handler never reaches its
+  // finally (uncaught throw, process crash partway through, etc.). We use
+  // unref() so this timer doesn't keep the event loop alive on shutdown.
+  setTimeout(() => {
+    if (sessionContext.has(key)) {
+      sessionContext.delete(key);
+      console.warn(`[broker] sessionContext entry for ${key.slice(0, 8)}… TTL-expired; something didn't clean up.`);
+    }
+  }, SESSION_CONTEXT_TTL_MS).unref();
+}
+
+function sessionContextGet(key) {
+  const entry = sessionContext.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry._expiresAt) {
+    sessionContext.delete(key);
+    return null;
+  }
+  entry._reads++;
+  return entry;
 }
 
 // Health check. Refuse traffic until the daemon is reachable — otherwise
@@ -98,11 +191,15 @@ internalApp.use((req, res, next) => {
 });
 
 internalApp.get('/internal/context/:sessionKey', (req, res) => {
-  const ctx = sessionContext.get(req.params.sessionKey);
+  // sessionContextGet() bumps the _reads counter so we can detect skill-
+  // preamble skips (zero reads at end of turn for a skill-triggered turn).
+  const ctx = sessionContextGet(req.params.sessionKey);
   if (!ctx) {
     return res.status(404).json({ error: 'unknown_session_key' });
   }
-  res.json(ctx);
+  // Strip private fields from the response sent to skills.
+  const { _reads, _expiresAt, ...publicCtx } = ctx;
+  res.json(publicCtx);
 });
 
 internalApp.get('/internal/health', (req, res) => {
@@ -112,8 +209,16 @@ internalApp.get('/internal/health', (req, res) => {
 // Bind ONLY to 127.0.0.1 — this is the critical security control. If you
 // ever need to change this, think twice: the broker hands out OAuth tokens
 // to any caller that knows a session key.
-internalApp.listen(INTERNAL_BROKER_PORT, '127.0.0.1', () => {
+//
+// Fatal on bind error: if port 8788 is taken we WILL NOT serve requests
+// (every skill would silently fail to fetch context). Better to crashloop
+// the container so Render's deploy shows red than to serve bad data.
+const brokerServer = internalApp.listen(INTERNAL_BROKER_PORT, '127.0.0.1', () => {
   console.log(`[broker] loopback context broker listening on 127.0.0.1:${INTERNAL_BROKER_PORT}`);
+});
+brokerServer.on('error', (err) => {
+  console.error(`[broker] FATAL: failed to bind ${INTERNAL_BROKER_PORT}: ${err.message}`);
+  process.exit(1);
 });
 
 // Diagnostic check
@@ -145,8 +250,14 @@ async function fetchOAuthTokenFromFastAPI(userId) {
   try {
     const fastApiUrl = process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com';
 
+    const headers = {};
+    if (process.env.MOLTBOT_INTERNAL_SECRET) {
+      headers['Authorization'] = `Bearer ${process.env.MOLTBOT_INTERNAL_SECRET}`;
+    }
+
     const response = await axios.get(`${fastApiUrl}/api/v1/oauth/google/token/${userId}`, {
-      timeout: 10000
+      headers,
+      timeout: 10000,
     });
 
     if (response.data && response.data.data && response.data.data.access_token) {
@@ -172,7 +283,7 @@ async function fetchOAuthTokenFromFastAPI(userId) {
  *   history: array
  * }
  */
-app.post('/execute', async (req, res) => {
+app.post('/execute', requireInternalSecret, async (req, res) => {
   const { session_id, message, user_id, credentials, history, timezone, user_context, image_urls } = req.body;
 
   // Image-only requests are valid: synthesize a default instruction so the agent
@@ -221,10 +332,9 @@ app.post('/execute', async (req, res) => {
       }
     }
 
-    // Populate the loopback broker with everything a skill might need. We
-    // do this unconditionally (both spawn and HTTP modes) so skills can be
-    // written once and work the same either way.
-    sessionContext.set(sessionKey, {
+    // Populate the loopback broker with everything a skill might need.
+    // Uses the guarded helper so the entry gets a TTL + size cap.
+    sessionContextSet(sessionKey, {
       google_access_token: enhancedCredentials.google_access_token || null,
       user_id: user_id ? String(user_id) : null,
       user_timezone: timezone || 'UTC',
@@ -302,6 +412,20 @@ app.post('/execute', async (req, res) => {
       });
     }
   } finally {
+    // Preamble-skip detection: if this turn used a skill trigger word but
+    // the agent never hit the broker, it almost certainly skipped the
+    // `<pre_operation_setup>` preamble — which means any skill action it
+    // took ran with empty $GOOGLE_ACCESS_TOKEN / $FASTAPI_URL. Surface this
+    // in logs so we can catch agent-prompt regressions early.
+    const entry = sessionContext.get(sessionKey);
+    const skillTrigger = /\b(schedule|remind|email|inbox|calendar|meeting|book|send|set up)\b/i;
+    if (entry && entry._reads === 0 && skillTrigger.test(effectiveMessage || '')) {
+      console.warn(
+        `[preamble-skip] sessionKey=${sessionKey.slice(0, 8)}… turn triggered a skill ` +
+        `word but broker had ZERO reads — agent likely skipped the preamble block.`
+      );
+    }
+
     // CRITICAL: always drop the broker entry. Leaking entries here = OAuth
     // tokens piling up in memory across turns.
     sessionContext.delete(sessionKey);
@@ -421,7 +545,11 @@ function executeViaHttp(sessionId, message, context, credentials, userId, timezo
 
   console.log(`[${sessionId}] POST ${GATEWAY_URL}/v1/chat/completions (sessionKey=${sessionKey?.slice(0, 8)}…, timeout=${timeoutMs}ms)`);
 
-  return axios.post(`${GATEWAY_URL}/v1/chat/completions`, payload, { headers, timeout: timeoutMs })
+  return axios.post(`${GATEWAY_URL}/v1/chat/completions`, payload, {
+    headers,
+    timeout: timeoutMs,
+    httpAgent: loopbackAgent,
+  })
     .then((resp) => {
       const data = resp.data || {};
       const choice = Array.isArray(data.choices) && data.choices[0];
@@ -501,14 +629,21 @@ async function bootGateway() {
   });
 
   gatewayChild.on('exit', (code, signal) => {
-    console.error(`[bootGateway] gateway daemon exited (code=${code}, signal=${signal}) — exiting process so Render restarts the container`);
-    // Fatal: we cannot serve requests without the daemon in HTTP mode.
-    // process.exit triggers Render's auto-restart. DO NOT try to respawn
-    // in-process — a persistently-broken daemon would busy-loop.
+    // If WE initiated shutdown, the daemon exiting is expected — don't
+    // pollute Render's crash-loop metrics with a bogus non-zero exit.
+    if (isShuttingDown) {
+      console.log(`[bootGateway] daemon exited during graceful shutdown (code=${code}, signal=${signal})`);
+      return;
+    }
+    console.error(`[bootGateway] gateway daemon exited unexpectedly (code=${code}, signal=${signal}) — exiting process so Render restarts the container`);
+    // Fatal: we cannot serve requests without the daemon. process.exit
+    // triggers Render's auto-restart. DO NOT try to respawn in-process —
+    // a persistently-broken daemon would busy-loop.
     process.exit(1);
   });
 
   gatewayChild.on('error', (err) => {
+    if (isShuttingDown) return;
     console.error(`[bootGateway] failed to spawn gateway daemon: ${err.message}`);
     process.exit(1);
   });
@@ -991,8 +1126,26 @@ When [Attached Images] is present, always prefer the image-specific skill over t
   });
 }
 
+// Graceful shutdown. Render sends SIGTERM on redeploy; we mark the
+// shutdown flag first so the gatewayChild.on('exit') handler knows this
+// wasn't a crash, then close our listeners and let Node exit naturally.
+function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[shutdown] received ${signal} — closing servers`);
+  try { brokerServer.close(); } catch (_e) {}
+  try { mainServer.close(); } catch (_e) {}
+  if (gatewayChild && !gatewayChild.killed) {
+    try { gatewayChild.kill('SIGTERM'); } catch (_e) {}
+  }
+  // Give in-flight turns ~10s to drain before we force-exit.
+  setTimeout(() => process.exit(0), 10_000).unref();
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // Initialize
-app.listen(PORT, '0.0.0.0', () => {
+const mainServer = app.listen(PORT, '0.0.0.0', () => {
   console.log(`OpenClaw Gateway listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Execute endpoint: http://localhost:${PORT}/execute`);

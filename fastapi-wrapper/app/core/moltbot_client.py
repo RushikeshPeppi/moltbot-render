@@ -78,15 +78,23 @@ class OpenClawClient:
         }
         
         last_exception = None
-        
+
+        # Bearer secret shared with the gateway. Set by ops on both services.
+        # If unset in production, the gateway will reject us with 503; we
+        # still send the request to surface the config error in logs.
+        headers = {}
+        if settings.MOLTBOT_INTERNAL_SECRET:
+            headers["Authorization"] = f"Bearer {settings.MOLTBOT_INTERNAL_SECRET}"
+
         for attempt in range(1, self.MAX_RETRIES + 1):
             try:
                 logger.info(f"[{session_id}] Attempt {attempt}/{self.MAX_RETRIES}: Sending message")
-                
+
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.post(
                         f"{self.base_url}/execute",
-                        json=payload
+                        json=payload,
+                        headers=headers,
                     )
                     
                     # Check if response is retryable

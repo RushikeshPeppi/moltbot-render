@@ -14,14 +14,16 @@ import logging
 import secrets
 from typing import Optional
 from datetime import datetime
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
 import httpx
+from ..utils.timezone_utils import now_utc_naive
 
 from ..config import settings
 from ..core.credential_manager import CredentialManager
 from ..core.database import db
 from ..core.redis_client import redis_client
+from ..core.auth import require_internal_secret
 from ..models import ResponseCode
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ def create_response(
         "data": data,
         "error": error,
         "exception": exception,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_utc_naive().isoformat()
     }
 
 
@@ -349,12 +351,16 @@ async def google_oauth_status(user_id: str):
         )
 
 
-@router.delete("/google/disconnect/{user_id}")
+@router.delete(
+    "/google/disconnect/{user_id}",
+    dependencies=[Depends(require_internal_secret)],
+)
 async def google_oauth_disconnect(user_id: str):
     """
-    Disconnect (revoke) a user's Google connection.
-    
-    This revokes the tokens at Google and deletes them from the database.
+    Disconnect (revoke) a user's Google connection. **Internal only** —
+    requires Authorization: Bearer <MOLTBOT_INTERNAL_SECRET>.
+
+    Revokes tokens at Google and deletes them from the database.
     """
     try:
         success = await credential_manager.revoke_google_token(user_id)
@@ -391,13 +397,16 @@ async def google_oauth_disconnect(user_id: str):
         )
 
 
-@router.post("/google/refresh/{user_id}")
+@router.post(
+    "/google/refresh/{user_id}",
+    dependencies=[Depends(require_internal_secret)],
+)
 async def google_oauth_refresh(user_id: str):
     """
-    Manually refresh a user's Google access token.
+    Manually refresh a user's Google access token. **Internal only** —
+    requires Authorization: Bearer <MOLTBOT_INTERNAL_SECRET>.
 
-    Normally tokens are refreshed automatically, but this endpoint
-    allows manual refresh if needed.
+    Normally tokens are refreshed automatically.
     """
     try:
         token = await credential_manager.get_valid_google_token(user_id)
@@ -425,15 +434,17 @@ async def google_oauth_refresh(user_id: str):
         )
 
 
-@router.get("/google/token/{user_id}")
+@router.get(
+    "/google/token/{user_id}",
+    dependencies=[Depends(require_internal_secret)],
+)
 async def google_oauth_get_token(user_id: str):
     """
-    Get a valid Google access token for a user.
+    Get a valid Google access token for a user. **Internal only** — requires
+    Authorization: Bearer <MOLTBOT_INTERNAL_SECRET>.
 
-    This endpoint is used by the OpenClaw Gateway to fetch OAuth tokens
-    for GOG skill integration. The token is automatically refreshed if expired.
-
-    Used internally for OAuth token bridge between FastAPI and OpenClaw.
+    Called by the OpenClaw Gateway to bridge OAuth tokens to bash skills.
+    The token auto-refreshes if expired.
     """
     try:
         # Get valid token (auto-refreshes if expired)

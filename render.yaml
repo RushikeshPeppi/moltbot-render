@@ -18,6 +18,15 @@ services:
       # API secret for authentication
       - key: API_SECRET_KEY
         generateValue: true
+      # Shared bearer secret for Peppi -> wrapper -> gateway inter-service
+      # auth. Generate with `openssl rand -hex 32` and set the SAME value on
+      # Peppi + wrapper + gateway services. Rotate all three together.
+      - key: MOLTBOT_INTERNAL_SECRET
+        sync: false
+      # Environment tier — production requires MOLTBOT_INTERNAL_SECRET to be
+      # set; staging/dev tolerate missing secret for local testing.
+      - key: ENV
+        value: production
       # OpenClaw Gateway URL (internal service)
       - key: MOLTBOT_GATEWAY_URL
         value: https://openclaw-gateway-dg3y.onrender.com
@@ -118,6 +127,12 @@ services:
       # and paste into the Render dashboard — do not commit.
       - key: OPENCLAW_GATEWAY_TOKEN
         sync: false
+      # Shared bearer secret for Peppi -> wrapper -> gateway inter-service
+      # auth (SAME value on all three services).
+      - key: MOLTBOT_INTERNAL_SECRET
+        sync: false
+      - key: ENV
+        value: production
       # Internal port the daemon binds to inside the container. Must not
       # collide with $PORT (which server.js owns and Render exposes).
       - key: OPENCLAW_DAEMON_PORT
