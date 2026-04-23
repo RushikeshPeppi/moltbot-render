@@ -1,23 +1,129 @@
 const express = require('express');
 const { spawn, exec } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 18789;
 
+// Two transports are supported:
+//  - spawn  (legacy): fork `openclaw agent` per request. Env vars like
+//    GOOGLE_ACCESS_TOKEN are set per-fork and skills read them directly.
+//  - http   (target):  talk to a long-lived `openclaw gateway` daemon over
+//    loopback HTTP. Per-request env vars are injected via the loopback
+//    context broker (see below) since a persistent daemon has one env.
+// OPENCLAW_HTTP_MODE=true flips us onto the HTTP path. Default is spawn so
+// code-only deploys are zero-risk; flip the env var on Render to switch.
+const HTTP_MODE = process.env.OPENCLAW_HTTP_MODE === 'true';
+// The OpenClaw daemon runs INSIDE the same Render container as server.js.
+// It must bind to a different port than server.js (which owns $PORT, the
+// port Render exposes externally). 18790 is arbitrary-but-fixed; change
+// via OPENCLAW_DAEMON_PORT if something else grabs it inside the box.
+const DAEMON_PORT = Number(process.env.OPENCLAW_DAEMON_PORT || 18790);
+const GATEWAY_URL = `http://127.0.0.1:${DAEMON_PORT}`;
+const INTERNAL_BROKER_PORT = Number(process.env.INTERNAL_BROKER_PORT || 8788);
+const INTERNAL_BROKER_URL = `http://127.0.0.1:${INTERNAL_BROKER_PORT}`;
+
 app.use(express.json());
 
-// Store for active OpenClaw processes
+// Gateway-daemon readiness (HTTP mode only). server.js must refuse traffic
+// until the daemon is actually up, otherwise Render will happily route
+// requests during the 5-15s cold start and every one will 5xx.
 let isReady = false;
+let gatewayReady = !HTTP_MODE; // spawn path has no daemon; always "ready"
+let gatewayChild = null;
 
-// Health check
+// In-memory context broker. Each /execute turn generates a session key,
+// stashes { google_access_token, user_id, user_timezone, fastapi_url }
+// under that key, injects the key into the agent's system context, and
+// deletes the entry when the response finishes. Skills fetch this via
+// loopback HTTP so the persistent daemon can serve per-request values.
+// Keyed by a 128-bit hex token (not the upstream session_id) so the key
+// itself is unguessable — defence in depth on the loopback broker.
+const sessionContext = new Map();
+
+function mintSessionKey() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// Health check. In HTTP mode we MUST refuse traffic until the OpenClaw
+// daemon is actually reachable, otherwise Render will route requests during
+// cold start and every one will time out inside executeViaHttp(). In spawn
+// mode the daemon is irrelevant and we just mirror the legacy behavior.
 app.get('/health', (req, res) => {
+  if (HTTP_MODE && !gatewayReady) {
+    return res.status(503).json({
+      status: 'starting',
+      service: 'openclaw-gateway',
+      mode: 'http',
+      gateway_ready: false,
+    });
+  }
   res.json({
     status: 'online',
     service: 'openclaw-gateway',
-    openclaw_ready: isReady
+    mode: HTTP_MODE ? 'http' : 'spawn',
+    openclaw_ready: isReady,
+    gateway_ready: gatewayReady,
   });
+});
+
+/**
+ * Loopback context broker.
+ *
+ * Purpose: with a persistent OpenClaw daemon, we can't mutate env vars per
+ * request — the daemon has one env set at boot. This broker exposes
+ * per-turn values (OAuth token, user id, timezone, fastapi URL) on a
+ * loopback-only port so skill bash can curl them at the top of each
+ * operation.
+ *
+ * Security:
+ *  - Bound to 127.0.0.1 only — not reachable from public internet regardless
+ *    of firewall state.
+ *  - Keyed by a 128-bit random hex token minted per turn (not by user_id /
+ *    session_id, which are predictable). Token lifetime = one agent turn.
+ *  - Entries deleted in a finally{} block when /execute returns.
+ *  - Skills receive the token via the system context, not via a fixed env
+ *    var — so even if two concurrent turns overlap they can't read each
+ *    other's context.
+ *
+ * NOT used on the spawn path (env vars still work there), but we populate
+ * the broker regardless so skills can be written once and work in both
+ * modes.
+ */
+const internalApp = express();
+internalApp.use(express.json());
+
+// Defence in depth: reject any request whose remote IP isn't loopback.
+// Express binds to 127.0.0.1 only (below), but this also catches the case
+// where someone accidentally rebinds the broker to 0.0.0.0.
+internalApp.use((req, res, next) => {
+  const ip = req.ip || req.socket?.remoteAddress || '';
+  if (ip !== '127.0.0.1' && ip !== '::1' && ip !== '::ffff:127.0.0.1') {
+    console.warn(`[broker] rejected non-loopback request from ${ip}`);
+    return res.status(403).json({ error: 'forbidden' });
+  }
+  next();
+});
+
+internalApp.get('/internal/context/:sessionKey', (req, res) => {
+  const ctx = sessionContext.get(req.params.sessionKey);
+  if (!ctx) {
+    return res.status(404).json({ error: 'unknown_session_key' });
+  }
+  res.json(ctx);
+});
+
+internalApp.get('/internal/health', (req, res) => {
+  res.json({ status: 'ok', active_sessions: sessionContext.size });
+});
+
+// Bind ONLY to 127.0.0.1 — this is the critical security control. If you
+// ever need to change this, think twice: the broker hands out OAuth tokens
+// to any caller that knows a session key.
+internalApp.listen(INTERNAL_BROKER_PORT, '127.0.0.1', () => {
+  console.log(`[broker] loopback context broker listening on 127.0.0.1:${INTERNAL_BROKER_PORT}`);
 });
 
 // Diagnostic check
@@ -105,6 +211,10 @@ app.post('/execute', async (req, res) => {
     }
   }
 
+  // Per-turn broker key. Populated before the executor runs, deleted in the
+  // finally block regardless of success/error/timeout path.
+  const sessionKey = mintSessionKey();
+
   try {
     console.log(`[${session_id}] Processing for user ${user_id}: ${effectiveMessage.substring(0, 50)}...`);
 
@@ -121,20 +231,46 @@ app.post('/execute', async (req, res) => {
       }
     }
 
+    // Populate the loopback broker with everything a skill might need. We
+    // do this unconditionally (both spawn and HTTP modes) so skills can be
+    // written once and work the same either way.
+    sessionContext.set(sessionKey, {
+      google_access_token: enhancedCredentials.google_access_token || null,
+      user_id: user_id ? String(user_id) : null,
+      user_timezone: timezone || 'UTC',
+      fastapi_url: process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com',
+    });
+
     // Extract user context for personalization
     const userContext = user_context || {};
 
-    // Build dynamic context (static rules are now in SOUL.md, injected by OpenClaw)
+    // Build dynamic context (static rules are now in SOUL.md, injected by
+    // OpenClaw). The sessionKey goes into the context so skills can extract
+    // it and call the broker — this is how we survive a persistent daemon
+    // with no per-request env injection.
     const context = buildContext(
       enhancedCredentials,
       history,
       user_id,
       timezone || 'UTC',
-      userContext
+      userContext,
+      sessionKey
     );
 
-    // Execute OpenClaw command (pass user_id for workspace isolation and timezone for skills)
-    const result = await executeOpenClaw(session_id, effectiveMessage, context, enhancedCredentials, user_id, timezone || 'UTC', image_urls);
+    // Pick the executor. HTTP mode talks to the persistent daemon; spawn
+    // mode forks `openclaw agent` per request (legacy). Both end up at the
+    // same OpenClaw agent — only the transport differs.
+    const executor = HTTP_MODE ? executeViaHttp : executeOpenClaw;
+    const result = await executor(
+      session_id,
+      effectiveMessage,
+      context,
+      enhancedCredentials,
+      user_id,
+      timezone || 'UTC',
+      image_urls,
+      sessionKey
+    );
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
@@ -161,7 +297,7 @@ app.post('/execute', async (req, res) => {
       const friendly = hasImages
         ? "Processing your image is taking longer than usual. Please retry, or send a smaller/clearer image and tell me exactly what to do with it (schedule, remind, email)."
         : "I'm taking longer than usual to finish that. Please try again — if it was an action like creating an event, double-check before retrying so we don't duplicate it.";
-      return res.json({
+      res.json({
         success: true,
         response: friendly,
         action_type: 'chat',
@@ -172,13 +308,17 @@ app.post('/execute', async (req, res) => {
         cache_read: 0,
         cache_write: 0
       });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: error.message,
+        response: "I'm sorry, I encountered an error processing your request. Please try again."
+      });
     }
-
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      response: "I'm sorry, I encountered an error processing your request. Please try again."
-    });
+  } finally {
+    // CRITICAL: always drop the broker entry. Leaking entries here = OAuth
+    // tokens piling up in memory across turns.
+    sessionContext.delete(sessionKey);
   }
 });
 
@@ -188,7 +328,7 @@ app.post('/execute', async (req, res) => {
  * which OpenClaw auto-injects into the system prompt every turn.
  * This function only provides per-request dynamic data: capabilities, user info, and history.
  */
-function buildContext(credentials, history, userId, timezone, userContext = {}) {
+function buildContext(credentials, history, userId, timezone, userContext = {}, sessionKey = '') {
   let context = '';
 
   // Dynamic user info
@@ -211,6 +351,15 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 
   context += '\n';
 
+  // SessionKey: per-turn token for the loopback context broker. Skills read
+  // this line, extract the value, and curl
+  // http://127.0.0.1:${INTERNAL_BROKER_PORT}/internal/context/<key> to
+  // resolve runtime env (OAuth token, user id, timezone, fastapi URL).
+  // The token is unguessable (128 random bits) and lives only for this turn.
+  if (sessionKey) {
+    context += `SessionKey: ${sessionKey}\n`;
+  }
+
 
 
   // Recent conversation history (dynamic per-request)
@@ -229,7 +378,7 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 /**
  * Execute OpenClaw command and return result
  */
-function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls) {
+function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls, sessionKey) {
   return new Promise((resolve, reject) => {
     // Image-heavy tasks (vision + multi-step bash via skills) routinely need >3 min.
     // Render Pro allows up to 600s per request; we cap below the wrapper's 280s
@@ -287,6 +436,15 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // User ID for reminder ownership
     if (userId) {
       extraEnv.MOLTBOT_USER_ID = String(userId);
+    }
+
+    // Broker coordinates. Skills can either read the direct env vars above
+    // (legacy spawn behavior — still works) OR curl the broker using the
+    // SessionKey they extract from the system context (new pattern). Both
+    // work on the spawn path; only the broker path works on the HTTP path.
+    extraEnv.INTERNAL_BROKER_URL = INTERNAL_BROKER_URL;
+    if (sessionKey) {
+      extraEnv.OPENCLAW_SESSION_KEY = sessionKey;
     }
 
     // Request JSON output
@@ -483,6 +641,184 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
       reject(err);
     });
   });
+}
+
+/**
+ * Execute via persistent OpenClaw daemon (HTTP mode).
+ *
+ * Talks to the daemon on 127.0.0.1:18789 via its OpenAI-compatible
+ * /v1/chat/completions endpoint. Uses `x-openclaw-agent-id: main` to route
+ * to the agent we configure in startOpenClaw().
+ *
+ * Response shape mapping (OpenAI → our gateway response):
+ *   choices[0].message.content               → response
+ *   usage.total_tokens                       → tokens_used
+ *   usage.prompt_tokens                      → input_tokens
+ *   usage.completion_tokens                  → output_tokens
+ *   usage.prompt_tokens_details.cached_tokens → cache_read
+ *   (cache_write is not exposed by OpenAI-compat — set to 0, accept the
+ *    telemetry gap, cache still works server-side)
+ *   action_type — not returned by OpenAI shape, always "chat"
+ *
+ * Timeout mirrors the spawn path: 260s for image flows, 180s otherwise.
+ * Axios timeout fires at the HTTP layer — the gateway may keep working on
+ * the request, but we return a graceful fallback to the caller.
+ */
+function executeViaHttp(sessionId, message, context, credentials, userId, timezone, imageUrls, sessionKey) {
+  const hasImages = Array.isArray(imageUrls) && imageUrls.length > 0;
+  const timeoutMs = hasImages ? 260000 : 180000;
+
+  // System prompt carries the static SOUL.md + agent.md (injected by the
+  // daemon from its config) plus our per-turn context block, which now
+  // includes the SessionKey line that skills use to call the broker.
+  let userMessage = message;
+  if (hasImages) {
+    userMessage += '\n\n[Attached Images]';
+    imageUrls.forEach((url, i) => {
+      userMessage += `\nImage ${i + 1}: ${url}`;
+    });
+    console.log(`[${sessionId}] ${imageUrls.length} image(s) attached to message`);
+  }
+
+  const payload = {
+    // Per OpenClaw OpenAI-compat docs: model "openclaw" + x-openclaw-agent-id
+    // header routes to the named agent. Keeping the model string generic so
+    // the header is the source of truth for agent selection.
+    model: 'openclaw',
+    messages: [
+      { role: 'system', content: context },
+      { role: 'user',   content: userMessage },
+    ],
+    // user is OpenAI's session-routing field; OpenClaw uses it for session
+    // isolation (dmScope: per-peer). Passing the upstream session_id here
+    // keeps the daemon's session bookkeeping aligned with ours.
+    user: sessionId,
+  };
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-openclaw-agent-id': 'main',
+    'x-openclaw-session-key': sessionId,
+  };
+  if (process.env.OPENCLAW_GATEWAY_TOKEN) {
+    headers['Authorization'] = `Bearer ${process.env.OPENCLAW_GATEWAY_TOKEN}`;
+  }
+
+  console.log(`[${sessionId}] POST ${GATEWAY_URL}/v1/chat/completions (sessionKey=${sessionKey?.slice(0, 8)}…, timeout=${timeoutMs}ms)`);
+
+  return axios.post(`${GATEWAY_URL}/v1/chat/completions`, payload, { headers, timeout: timeoutMs })
+    .then((resp) => {
+      const data = resp.data || {};
+      const choice = Array.isArray(data.choices) && data.choices[0];
+      const usage = data.usage || {};
+
+      // OpenAI-compat puts cached input under prompt_tokens_details.
+      // Anthropic-via-OpenClaw should populate it; Gemini fallback won't,
+      // that's fine — we just report 0 cache_read for non-Anthropic turns.
+      const cacheRead = usage.prompt_tokens_details?.cached_tokens || 0;
+      const inputTokens = usage.prompt_tokens || 0;
+      const outputTokens = usage.completion_tokens || 0;
+      const totalTokens = usage.total_tokens || (inputTokens + outputTokens);
+
+      let responseText = '';
+      if (choice?.message?.content) {
+        responseText = typeof choice.message.content === 'string'
+          ? choice.message.content
+          // OpenAI's newer shape can be a content-parts array; join text parts.
+          : choice.message.content.filter(p => p.type === 'text').map(p => p.text).join('\n');
+      }
+
+      console.log(`[${sessionId}] HTTP tokens: total=${totalTokens} input=${inputTokens} cached=${cacheRead} output=${outputTokens}`);
+
+      return {
+        response: responseText,
+        action_type: 'chat', // OpenAI shape doesn't surface skill/tool name
+        details: null,
+        tokens_used: totalTokens,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cache_read: cacheRead,
+        cache_write: 0, // not exposed by OpenAI-compat endpoint
+      };
+    })
+    .catch((err) => {
+      // Normalize errors so the /execute handler can map timeouts to the
+      // friendly fallback exactly as it does for the spawn path.
+      if (err.code === 'ECONNABORTED' || /timeout/i.test(err.message || '')) {
+        throw new Error('Request timed out');
+      }
+      // Surface daemon error bodies when available — much easier to debug
+      // than "500 Internal Server Error".
+      const body = err.response?.data;
+      const detail = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : err.message;
+      throw new Error(`openclaw gateway error: ${detail}`);
+    });
+}
+
+/**
+ * Boot the OpenClaw daemon as a child of this server (HTTP mode only).
+ *
+ * Called AFTER startOpenClaw() writes the config files so the daemon reads
+ * a correct ~/.openclaw/openclaw.json on its first start. Polls /health
+ * until the daemon is reachable, then flips gatewayReady=true. If the
+ * daemon exits for any reason, we treat it as fatal and exit the whole
+ * process — Render restarts the container, which is the right recovery
+ * (silent daemon death would hang every request for 280s otherwise).
+ */
+async function bootGateway() {
+  if (!HTTP_MODE) {
+    console.log('[bootGateway] OPENCLAW_HTTP_MODE != "true" — staying on spawn path, skipping daemon boot');
+    return;
+  }
+
+  console.log(`[bootGateway] Starting openclaw gateway daemon on port ${DAEMON_PORT}...`);
+
+  gatewayChild = spawn('openclaw', ['gateway', 'run', '--port', String(DAEMON_PORT)], {
+    env: {
+      ...process.env,
+      OPENCLAW_HEADLESS: 'true',
+      // The daemon's env cannot change per request. We only put stuff here
+      // that's truly static for the life of the process. Per-request values
+      // (OAuth token, user id, timezone) flow via the broker.
+      FASTAPI_URL: process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com',
+      INTERNAL_BROKER_URL,
+      ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      SEARXNG_URL: process.env.SEARXNG_BASE_URL || '',
+      HOME: process.env.HOME || '/root',
+    },
+    stdio: 'inherit',
+  });
+
+  gatewayChild.on('exit', (code, signal) => {
+    console.error(`[bootGateway] gateway daemon exited (code=${code}, signal=${signal}) — exiting process so Render restarts the container`);
+    // Fatal: we cannot serve requests without the daemon in HTTP mode.
+    // process.exit triggers Render's auto-restart. DO NOT try to respawn
+    // in-process — a persistently-broken daemon would busy-loop.
+    process.exit(1);
+  });
+
+  gatewayChild.on('error', (err) => {
+    console.error(`[bootGateway] failed to spawn gateway daemon: ${err.message}`);
+    process.exit(1);
+  });
+
+  // Poll /health until reachable. 60s budget (daemon cold start is ~5-15s
+  // plus skill-file indexing; we leave headroom for CI/slow cold starts).
+  const maxAttempts = 60;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await axios.get(`${GATEWAY_URL}/health`, { timeout: 1000 });
+      gatewayReady = true;
+      console.log(`[bootGateway] daemon ready after ${attempt}s`);
+      return;
+    } catch (_err) {
+      // Not up yet. Wait 1s and try again.
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+
+  throw new Error(`Gateway daemon did not become ready in ${maxAttempts}s`);
 }
 
 /**
@@ -928,11 +1264,22 @@ When [Attached Images] is present, always prefer the image-specific skill over t
       console.log('  ✓ Image processing (via Sonnet vision)');
       console.log('  ✓ Memory/Context persistence');
       console.log('  ✓ Browser automation');
-      console.log('\nMode: Local execution (--local flag)');
+      console.log(`\nTransport: ${HTTP_MODE ? 'HTTP (persistent daemon)' : 'spawn (per-request CLI fork)'}`);
       console.log('Model: Claude Sonnet 4.6 (fallback: Gemini 2.5 Pro)');
       console.log('========================================\n');
 
       isReady = true;
+
+      // Boot the persistent daemon only after config is on disk. The
+      // daemon reads ~/.openclaw/openclaw.json on startup, so order
+      // matters: startOpenClaw() writes the config above, then bootGateway
+      // spawns the child and waits for /health.
+      if (HTTP_MODE) {
+        bootGateway().catch((err) => {
+          console.error(`[bootGateway] fatal: ${err.message}`);
+          process.exit(1);
+        });
+      }
     });
   });
 }
