@@ -35,25 +35,67 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup and shutdown events"""
+    """
+    Application startup and shutdown events.
+
+    Production stance: fail-fast. If any required dependency is missing
+    or unreachable at boot, refuse to serve — better a loud crashloop in
+    Render than a service that boots green and 500s on first write.
+
+    Dev/staging stance: warn and continue so local work without real
+    infra keeps running.
+    """
     logger.info("Starting Moltbot Wrapper API...")
-    
-    # Initialize database connection pool
+    env = (settings.ENV or "production").lower()
+    is_prod = env == "production"
+
+    # 1. Database — required in prod.
+    db_ok = False
     try:
         await db.initialize()
-        logger.info("Database initialized")
+        db_ok = await db.health_check()
+        if db_ok:
+            logger.info("Database initialized + health check OK")
+        else:
+            logger.error("Database initialized but health check failed")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
-        # Continue anyway - database might not be configured yet
-    
-    # Check Redis connection
-    if redis_client.is_connected:
+    if is_prod and not db_ok:
+        raise RuntimeError("Database unavailable at startup — refusing to serve in production")
+
+    # 2. Redis — required in prod (session manager, locks, OAuth state).
+    redis_ok = False
+    try:
+        redis_ok = await redis_client.health_check()
+    except Exception as e:
+        logger.error(f"Redis health check raised: {e}")
+    if redis_ok:
         logger.info("Redis connected")
     else:
-        logger.warning("Redis not configured - sessions will not persist")
-    
+        logger.warning("Redis not available")
+    if is_prod and not redis_ok:
+        raise RuntimeError("Redis unavailable at startup — refusing to serve in production")
+
+    # 3. Encryption key — required to read/write any credential.
+    if not settings.ENCRYPTION_KEY:
+        if is_prod:
+            raise RuntimeError("ENCRYPTION_KEY missing — cannot decrypt stored credentials")
+        logger.warning("ENCRYPTION_KEY missing (dev/staging tolerated)")
+
+    # 4. Shared bearer secret — required in prod for inter-service auth.
+    if not settings.MOLTBOT_INTERNAL_SECRET:
+        if is_prod:
+            raise RuntimeError("MOLTBOT_INTERNAL_SECRET missing — inter-service auth would fail open")
+        logger.warning("MOLTBOT_INTERNAL_SECRET missing (dev/staging tolerated)")
+
+    # 5. QStash signing keys — required in prod; /reminders/deliver refuses
+    # to accept webhooks without them (see reminders.py).
+    if is_prod and (not settings.QSTASH_CURRENT_SIGNING_KEY or not settings.QSTASH_NEXT_SIGNING_KEY):
+        raise RuntimeError("QSTASH_*_SIGNING_KEY missing — would accept forged reminder webhooks")
+
+    logger.info(f"Startup checks passed (ENV={env})")
     yield
-    
+
     # Cleanup
     logger.info("Shutting down Moltbot Wrapper API...")
     await db.close()

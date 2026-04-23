@@ -11,6 +11,7 @@ from datetime import datetime
 from cryptography.fernet import Fernet
 from supabase import create_client, Client
 from ..config import settings
+from ..utils.timezone_utils import now_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class Database:
                 "service": service,
                 "encrypted_credentials": encrypted,
                 "expires_at": expires_at.isoformat() if expires_at else None,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": now_utc_naive().isoformat()
             }
             
             self._client.table("tbl_clawdbot_credentials").upsert(
@@ -531,7 +532,7 @@ class Database:
                 "user_id": user_id,
                 "name": name,
                 "google_connected": google_connected,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": now_utc_naive().isoformat()
             }
             if email:
                 data["email"] = email
@@ -588,8 +589,14 @@ class Database:
             return None
     
     async def generate_user_id(self) -> str:
-        """Generate a unique alphanumeric user_id (e.g. 'usr_a1b2c3d4')."""
-        return f"usr_{secrets.token_hex(4)}"
+        """
+        Generate a unique alphanumeric user_id (e.g. 'usr_a1b2c3d4e5f6g7h8').
+
+        16 hex chars = 64 bits of entropy. Birthday collision at ~4 billion
+        users, which is plenty for a consumer SMS product. The previous 32-bit
+        version (8 hex chars) would have collided around 65k users.
+        """
+        return f"usr_{secrets.token_hex(8)}"
     
     async def update_user_timezone(self, user_id: str, timezone: str) -> bool:
         """Update a user's timezone setting."""
@@ -601,7 +608,7 @@ class Database:
 
             self._client.table("tbl_clawdbot_users").update({
                 "timezone": timezone,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": now_utc_naive().isoformat()
             }).eq("user_id", user_id).execute()
 
             logger.info(f"Updated timezone for user {user_id}: {timezone}")
@@ -620,7 +627,7 @@ class Database:
 
             self._client.table("tbl_clawdbot_users").update({
                 "google_connected": connected,
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": now_utc_naive().isoformat()
             }).eq("user_id", user_id).execute()
 
             logger.info(f"Updated google_connected for user {user_id}: {connected}")

@@ -10,6 +10,7 @@ from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
 from .redis_client import redis_client
 from ..config import settings
+from ..utils.timezone_utils import now_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,8 @@ class SessionManager:
         session_data = {
             "session_id": session_id,
             "user_id": str(user_id),
-            "created_at": datetime.utcnow().isoformat(),
-            "last_activity": datetime.utcnow().isoformat(),
+            "created_at": now_utc_naive().isoformat(),
+            "last_activity": now_utc_naive().isoformat(),
             "conversation_history": [],
             "context": {
                 "pending_action": None,
@@ -69,18 +70,35 @@ class SessionManager:
             raise Exception("Failed to create session")
     
     async def get_session(self, session_id: str, user_id: str = None) -> Optional[Dict[str, Any]]:
-        """Retrieve session data"""
+        """
+        Retrieve session data. Enforces tenancy: if the fetched session's
+        stored user_id doesn't match the requested user_id, we refuse to
+        return the payload (defence against upstream bugs that mis-quote
+        user_id and would otherwise leak session data across tenants).
+        """
         if not user_id:
-            # Extract user_id from session_id pattern if stored
             logger.warning("user_id not provided, session lookup may fail")
             return None
-        
+
         data = await self.redis.get_session(user_id, session_id)
-        
-        if data:
-            # Refresh TTL on access (sliding expiration)
-            await self.redis.refresh_session_ttl(user_id, session_id)
-        
+
+        if data is None:
+            return None
+
+        # Defensive check: the Redis key is already keyed by (user_id, session_id),
+        # so a mismatch here means either our key-building is wrong or someone
+        # has tampered with the stored payload. Fail-safe.
+        stored_uid = data.get("user_id")
+        if stored_uid is not None and str(stored_uid) != str(user_id):
+            logger.error(
+                f"Session tenancy mismatch: requested user_id={user_id} but "
+                f"session stored user_id={stored_uid}. Refusing to return."
+            )
+            return None
+
+        # Refresh TTL on access (sliding expiration)
+        await self.redis.refresh_session_ttl(user_id, session_id)
+
         return data
     
     async def get_active_session_for_user(self, user_id: str) -> Optional[str]:
@@ -102,7 +120,7 @@ class SessionManager:
     async def update_session(self, session_id: str, user_id: str, data: Dict[str, Any]) -> bool:
         """Update session data"""
         # Update timestamps
-        data['last_activity'] = datetime.utcnow().isoformat()
+        data['last_activity'] = now_utc_naive().isoformat()
         
         return await self.redis.set_session(user_id, session_id, data, self.ttl)
     
@@ -128,7 +146,7 @@ class SessionManager:
         message = {
             "role": role,
             "content": content,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": now_utc_naive().isoformat()
         }
         
         if metadata:
@@ -233,16 +251,29 @@ class SessionManager:
         """Count active sessions across all users"""
         return await self.redis.get_active_sessions_count()
     
-    async def acquire_user_lock(self, user_id: str, timeout: int = 30) -> bool:
+    async def acquire_user_lock(
+        self, user_id: str, timeout: int = 320
+    ) -> Optional[str]:
         """
-        Acquire a lock for user to prevent concurrent request processing.
-        This ensures a user's requests are processed one at a time.
+        Acquire a per-user lock and return the ownership token (or None if
+        already held). The caller MUST thread the token back to
+        release_user_lock; otherwise we can't prove we still own the key.
+
+        Default TTL bumped to 320s so image-flow turns (up to 260s inside
+        the gateway) can't outlive the lock — a lock that expires mid-turn
+        lets a concurrent request sneak in.
         """
         return await self.redis.acquire_lock(user_id, timeout)
-    
-    async def release_user_lock(self, user_id: str) -> bool:
-        """Release user lock after request processing"""
-        return await self.redis.release_lock(user_id)
+
+    async def release_user_lock(self, user_id: str, token: str) -> bool:
+        """Release a user lock using the token from acquire_user_lock."""
+        return await self.redis.release_lock(user_id, token)
+
+    async def extend_user_lock(
+        self, user_id: str, token: str, timeout: int = 320
+    ) -> bool:
+        """Refresh TTL on a held lock (owner-checked)."""
+        return await self.redis.extend_lock(user_id, token, timeout)
     
     async def health_check(self) -> bool:
         """Check if session manager is healthy (Redis connected)"""

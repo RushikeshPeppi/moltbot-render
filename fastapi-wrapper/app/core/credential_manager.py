@@ -17,6 +17,7 @@ import httpx
 from .database import db
 from .redis_client import redis_client
 from ..config import settings
+from ..utils.timezone_utils import now_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class CredentialManager:
         scope: str = ""
     ) -> bool:
         """Store Google OAuth tokens"""
-        expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+        expires_at = now_utc_naive() + timedelta(seconds=expires_in)
         
         credentials = {
             "access_token": access_token,
@@ -107,7 +108,7 @@ class CredentialManager:
                 # Remove timezone info if present to compare with utcnow()
                 if exp_time.tzinfo is not None:
                     exp_time = exp_time.replace(tzinfo=None)
-                if datetime.utcnow() > exp_time - timedelta(minutes=5):
+                if now_utc_naive() > exp_time - timedelta(minutes=5):
                     # Token expired or about to expire, refresh it
                     logger.info(f"Refreshing expired token for user {user_id}")
                     new_token = await self.refresh_google_token(user_id, creds['refresh_token'])

@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 from upstash_redis import Redis
 from ..config import settings
+from ..utils.timezone_utils import now_utc_naive
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ class RedisClient:
             ttl = ttl or settings.SESSION_TTL
             
             # Add metadata
-            data["_stored_at"] = datetime.utcnow().isoformat()
-            data["_expires_at"] = (datetime.utcnow() + timedelta(seconds=ttl)).isoformat()
+            data["_stored_at"] = now_utc_naive().isoformat()
+            data["_expires_at"] = (now_utc_naive() + timedelta(seconds=ttl)).isoformat()
             
             self._redis.setex(key, ttl, json.dumps(data))
             logger.debug(f"Session stored: {key}")
@@ -195,7 +196,7 @@ class RedisClient:
         
         try:
             daily_limit = daily_limit or settings.FREE_TIER_DAILY_LIMIT
-            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today = now_utc_naive().strftime("%Y-%m-%d")
             key = f"rate_limit:{user_id}:{today}"
             
             # Get current count
@@ -204,7 +205,7 @@ class RedisClient:
             
             if current_count >= daily_limit:
                 # Calculate reset time (midnight UTC)
-                tomorrow = datetime.utcnow().replace(
+                tomorrow = now_utc_naive().replace(
                     hour=0, minute=0, second=0, microsecond=0
                 ) + timedelta(days=1)
                 
@@ -221,7 +222,7 @@ class RedisClient:
             if new_count == 1:
                 # Expire at midnight + 1 hour buffer
                 seconds_until_midnight = (
-                    (datetime.utcnow().replace(hour=23, minute=59, second=59) - datetime.utcnow()).seconds + 3600
+                    (now_utc_naive().replace(hour=23, minute=59, second=59) - now_utc_naive()).seconds + 3600
                 )
                 self._redis.expire(key, seconds_until_midnight)
             
@@ -241,7 +242,7 @@ class RedisClient:
         
         try:
             daily_limit = daily_limit or settings.FREE_TIER_DAILY_LIMIT
-            today = datetime.utcnow().strftime("%Y-%m-%d")
+            today = now_utc_naive().strftime("%Y-%m-%d")
             key = f"rate_limit:{user_id}:{today}"
             
             current = self._redis.get(key)
@@ -257,35 +258,103 @@ class RedisClient:
             return {"used": 0, "limit": daily_limit, "remaining": daily_limit}
     
     # ==================== Request Locking ====================
-    
-    async def acquire_lock(self, user_id: str, lock_timeout: int = 30) -> bool:
+    #
+    # Ownership-token Redlock pattern (per Redis docs):
+    #   - acquire: SET key <token> NX EX <ttl>  — token is an unguessable UUID
+    #   - release: Lua script that DELs only if stored value == our token
+    # Without the ownership check, a lock that times out mid-turn could be
+    # released by the original holder after another request has grabbed the
+    # same key — classic double-release bug.
+    #
+    # TTL default bumped to 320s because image-flow agent turns can take up
+    # to 260s (260s gateway + 60s buffer for FastAPI framing + network).
+    # Callers can refresh TTL mid-turn via extend_lock().
+
+    # Lua for atomic, owner-checked release. Run via Redis's EVAL command.
+    _RELEASE_LUA = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('del', KEYS[1]) "
+        "else return 0 end"
+    )
+    # Lua for atomic, owner-checked TTL extension.
+    _EXTEND_LUA = (
+        "if redis.call('get', KEYS[1]) == ARGV[1] then "
+        "return redis.call('expire', KEYS[1], ARGV[2]) "
+        "else return 0 end"
+    )
+
+    async def acquire_lock(
+        self, user_id: str, lock_timeout: int = 320
+    ) -> Optional[str]:
         """
-        Acquire a lock for user to prevent concurrent request processing.
-        Returns True if lock acquired, False if already locked.
+        Acquire a per-user lock. Returns the unique ownership token on
+        success, or None if the lock is already held. Callers MUST pass the
+        same token back to release_lock() — a blind DEL could release some
+        other request's lock if this one expired mid-turn.
+
+        Return type changed from bool to Optional[str] (breaking). Old
+        callers that didn't thread a token around were buggy anyway.
         """
         if not self._redis:
-            return True  # Allow if Redis is down
-        
+            # Redis down: sentinel token so release is a no-op. Preserves
+            # the prior "allow through when Redis is down" behaviour.
+            return "redis-down-sentinel"
+
         try:
             key = f"lock:{user_id}"
-            # SET NX (only if not exists) with expiry
-            result = self._redis.set(key, "locked", ex=lock_timeout, nx=True)
-            return result is not None
+            import uuid
+            token = uuid.uuid4().hex
+            result = self._redis.set(key, token, ex=lock_timeout, nx=True)
+            return token if result else None
         except Exception as e:
-            logger.error(f"Error acquiring lock: {e}")
-            return True
-    
-    async def release_lock(self, user_id: str) -> bool:
-        """Release user lock"""
+            logger.error(f"Error acquiring lock for {user_id}: {e}")
+            return None  # Fail-closed on unexpected errors.
+
+    async def release_lock(self, user_id: str, token: str) -> bool:
+        """
+        Release the lock iff the stored value matches our token. Passing
+        the wrong token is a no-op.
+        """
         if not self._redis:
             return True
-        
+        if token == "redis-down-sentinel":
+            return True
+
         try:
             key = f"lock:{user_id}"
-            self._redis.delete(key)
+            # upstash-redis exposes the EVAL primitive directly so we can
+            # run the Redlock-release Lua script atomically on the server.
+            result = self._redis.execute("EVAL", self._RELEASE_LUA, 1, key, token)
+            if result == 0:
+                logger.warning(
+                    f"release_lock: token mismatch or key expired for {user_id}; "
+                    f"skipping DEL to protect a subsequent holder."
+                )
             return True
         except Exception as e:
-            logger.error(f"Error releasing lock: {e}")
+            logger.error(f"Error releasing lock for {user_id}: {e}")
+            return False
+
+    async def extend_lock(
+        self, user_id: str, token: str, lock_timeout: int = 320
+    ) -> bool:
+        """
+        Refresh TTL on a lock we still own. Use during long agent turns
+        to keep the lock alive past the original acquire TTL.
+        """
+        if not self._redis:
+            return True
+        if token == "redis-down-sentinel":
+            return True
+
+        try:
+            key = f"lock:{user_id}"
+            result = self._redis.execute(
+                "EVAL", self._EXTEND_LUA, 1, key, token, str(lock_timeout)
+            )
+            return result == 1
+        except Exception as e:
+            logger.error(f"Error extending lock for {user_id}: {e}")
             return False
     
     # ==================== Utility ====================

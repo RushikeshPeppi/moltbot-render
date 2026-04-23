@@ -16,6 +16,7 @@ Production hardening (April 2026):
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+from ..utils.timezone_utils import now_utc_naive
 
 from fastapi import APIRouter, Request, HTTPException
 from qstash import Receiver
@@ -110,13 +111,30 @@ async def _mark_permanently_failed(reminder: dict, reminder_id: int, reason: str
 def _verify_qstash_signature(raw_body: bytes, signature: str) -> bool:
     """
     Verify the QStash webhook signature using current + next signing keys.
-    Returns True if valid, raises on failure.
+    Returns True if valid, False otherwise.
+
+    SECURITY: in production, refuse to serve the /deliver endpoint if the
+    signing keys aren't configured — skipping the check would let anyone
+    POST a forged reminder payload (spam SMS + pollute audit log).
+    In dev/staging, allow-through with a loud warning so local QStash stubs
+    can still exercise the code path.
     """
     current_key = settings.QSTASH_CURRENT_SIGNING_KEY
     next_key = settings.QSTASH_NEXT_SIGNING_KEY
 
     if not current_key or not next_key:
-        logger.warning("QStash signing keys not configured — skipping signature verification")
+        env = (settings.ENV or "production").lower()
+        if env == "production":
+            logger.error(
+                "QStash signing keys not configured in production — "
+                "rejecting webhook (would be a forgery attack surface otherwise)."
+            )
+            return False
+        logger.warning(
+            "QStash signing keys not configured (ENV=%s) — skipping verification. "
+            "This is only acceptable in dev/staging.",
+            env,
+        )
         return True
 
     try:
@@ -159,7 +177,7 @@ async def create_reminder(request: CreateReminderRequest):
         trigger_at_unix = int(trigger_at_utc.timestamp())
 
         # Validate: trigger time must be in the future
-        if trigger_at_unix <= int(datetime.utcnow().timestamp()):
+        if trigger_at_unix <= int(now_utc_naive().timestamp()):
             return error_response(
                 message="Reminder time must be in the future",
                 error="invalid_trigger_time",
@@ -171,7 +189,7 @@ async def create_reminder(request: CreateReminderRequest):
         #    This prevents the gateway's empty-payload retries from creating duplicates.
         try:
             existing_reminders = await db.get_user_reminders(request.user_id, status='pending')
-            dedup_cutoff = datetime.utcnow() - timedelta(minutes=2)
+            dedup_cutoff = now_utc_naive() - timedelta(minutes=2)
 
             for existing in existing_reminders:
                 existing_trigger = existing.get("trigger_at", "")
@@ -341,10 +359,15 @@ async def deliver_reminder(request: Request):
         raw_body = await request.body()
         signature = request.headers.get("upstash-signature", "")
 
-        # 1. Verify QStash signature
+        # 1. Verify QStash signature. Return 401 on failure so monitoring
+        # catches forgery attempts — the previous 200 was invisible in logs.
         if not _verify_qstash_signature(raw_body, signature):
             logger.error("QStash signature verification failed — rejecting request")
-            return {"status": "rejected", "reason": "invalid_signature"}
+            from fastapi.responses import JSONResponse as _JR
+            return _JR(
+                status_code=401,
+                content={"status": "rejected", "reason": "invalid_signature"},
+            )
 
         # 2. Parse payload
         import json
@@ -413,14 +436,14 @@ async def _deliver_to_playground(
             "type": "reminder_delivery",
             "message": payload.message,
             "reminder_id": payload.reminder_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc_naive().isoformat(),
         })
 
         # Update status
         if reminder.get("recurrence") == "none":
             await db.update_reminder(payload.reminder_id, {
                 "status": "delivered",
-                "delivered_at": datetime.utcnow().isoformat(),
+                "delivered_at": now_utc_naive().isoformat(),
             })
 
         # Create audit log
@@ -497,7 +520,7 @@ async def _deliver_via_peppi_sms(
     if reminder.get("recurrence") == "none":
         await db.update_reminder(payload.reminder_id, {
             "status": "delivered",
-            "delivered_at": datetime.utcnow().isoformat(),
+            "delivered_at": now_utc_naive().isoformat(),
         })
 
     # Create audit log + push playground notification
@@ -507,7 +530,7 @@ async def _deliver_via_peppi_sms(
             "type": "reminder_delivery",
             "message": payload.message,
             "reminder_id": payload.reminder_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": now_utc_naive().isoformat(),
         })
     except Exception as push_error:
         logger.warning(f"Could not push playground message for reminder {payload.reminder_id}: {push_error}")
@@ -694,7 +717,7 @@ async def update_reminder(request: UpdateReminderRequest):
             new_trigger_at_unix = int(trigger_at_utc.timestamp())
 
             # Validate: trigger time must be in the future
-            if new_trigger_at_unix <= int(datetime.utcnow().timestamp()):
+            if new_trigger_at_unix <= int(now_utc_naive().timestamp()):
                 return error_response(
                     message="New reminder time must be in the future",
                     error="invalid_trigger_time",
