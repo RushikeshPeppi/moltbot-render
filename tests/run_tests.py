@@ -1,10 +1,12 @@
 """
 Moltbot Test Runner — Executes all 193 scenarios sequentially.
 Usage:
-  python run_tests.py                  # Run all
-  python run_tests.py --category A     # Run category A only  
-  python run_tests.py --rerun-failed   # Re-run only failed
-  python run_tests.py --scenario A1    # Run single scenario
+  python run_tests.py                         # Run all (against prod)
+  python run_tests.py --target staging        # Run against staging deploy
+  python run_tests.py --api-url <url>         # Override API base URL explicitly
+  python run_tests.py --category A            # Run category A only
+  python run_tests.py --rerun-failed          # Re-run only failed
+  python run_tests.py --scenario A1           # Run single scenario
 """
 
 import json
@@ -14,10 +16,22 @@ import httpx
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scenarios import SCENARIOS, API_URL, USER_ID, V_CAL_READ, V_REM_LIST, V_EMAIL_READ
+from scenarios import SCENARIOS, API_URL as PROD_API_URL, USER_ID, V_CAL_READ, V_REM_LIST, V_EMAIL_READ
 
 RESULTS_FILE = Path(__file__).parent / "results" / "test_results.json"
-TIMEOUT = 200  # seconds — agent can take 30-60s for complex tasks
+TIMEOUT = 300  # seconds — matches the wrapper's MOLTBOT_TIMEOUT (280s) + slack
+
+# Named targets: prod stays the default so existing invocations don't break.
+# Staging is the feat/http-gateway services stood up on Render. Add more
+# targets here rather than littering --api-url flags across invocations.
+TARGETS = {
+    "prod":    PROD_API_URL,
+    "staging": "https://moltbot-fastapi-staging.onrender.com/api/v1",
+}
+
+# Module-level; set in main() from args. call_api() reads this so existing
+# call sites don't need a new parameter.
+API_URL = PROD_API_URL
 
 
 def load_existing_results() -> dict:
@@ -209,7 +223,26 @@ def main():
     parser.add_argument("--scenario", "-s", help="Run single scenario by ID (e.g. A1)")
     parser.add_argument("--rerun-failed", "-r", action="store_true", help="Re-run only failed scenarios")
     parser.add_argument("--skip-verify", action="store_true", help="Skip cross-verification")
+    parser.add_argument("--target", "-t", choices=list(TARGETS.keys()), default="prod",
+                        help="Named target (prod/staging). Default: prod.")
+    parser.add_argument("--api-url", help="Override the API base URL directly (wins over --target)")
+    parser.add_argument("--results-file", help="Write results to this path instead of the default")
     args = parser.parse_args()
+
+    # Resolve the API URL: explicit override > --target > default "prod".
+    # Mutate the module-level API_URL so call_api() and the verify_* helpers
+    # pick it up without needing a new parameter threaded through them.
+    global API_URL, RESULTS_FILE
+    if args.api_url:
+        API_URL = args.api_url
+    else:
+        API_URL = TARGETS[args.target]
+    if args.results_file:
+        RESULTS_FILE = Path(args.results_file)
+
+    print(f"🎯 Target: {args.target} → {API_URL}")
+    if RESULTS_FILE != Path(__file__).parent / "results" / "test_results.json":
+        print(f"📄 Results → {RESULTS_FILE}")
 
     # Filter scenarios
     to_run = SCENARIOS[:]
