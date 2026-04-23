@@ -12,6 +12,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from datetime import datetime
+from ..utils.timezone_utils import now_utc_naive
 
 from ..core.database import db
 from ..core.redis_client import redis_client
@@ -29,7 +30,7 @@ def create_response(code, message, data=None, error=None, exception=None):
         "data": data,
         "error": error,
         "exception": exception,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc_naive().isoformat(),
     }
 
 

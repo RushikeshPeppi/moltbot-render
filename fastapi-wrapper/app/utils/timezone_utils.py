@@ -2,11 +2,26 @@
 Timezone conversion utilities for reminders.
 Handles local-to-UTC conversions and CRON expression generation.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def now_utc_naive() -> datetime:
+    """
+    Current UTC time as a **naive** datetime.
+
+    `datetime.utcnow()` is deprecated in Python 3.12+ but returns naive UTC.
+    This helper provides the same semantics without the deprecation warning,
+    so we can silence the warning without touching comparison sites that
+    still expect naive datetimes.
+
+    TODO: migrate the codebase to aware UTC datetimes across the board, then
+    switch this helper to return `datetime.now(timezone.utc)` directly.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def local_to_utc(dt_str: str, timezone: str) -> datetime:

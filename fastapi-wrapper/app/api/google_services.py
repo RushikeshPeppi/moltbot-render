@@ -8,6 +8,7 @@ from typing import Optional, List
 from datetime import datetime
 from fastapi import APIRouter, Query, Body
 from pydantic import BaseModel, EmailStr
+from ..utils.timezone_utils import now_utc_naive
 
 from ..services.google_calendar import GoogleCalendarService
 from ..services.gmail import GmailService
@@ -29,7 +30,7 @@ def create_response(code: int, message: str, data=None, error=None, exception=No
         "data": data,
         "error": error,
         "exception": exception,
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": now_utc_naive().isoformat()
     }
 
 
@@ -67,8 +68,8 @@ async def list_calendar_events(
     Returns events from now until the specified number of days in the future.
     """
     try:
-        time_min = datetime.utcnow()
-        time_max = datetime.utcnow()
+        time_min = now_utc_naive()
+        time_max = now_utc_naive()
         time_max = time_max.replace(day=time_max.day + days) if days <= 28 else time_max
 
         result = await calendar_service.list_events(

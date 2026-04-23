@@ -11,6 +11,7 @@ to point to their server — zero code changes needed.
 import uuid
 import logging
 from datetime import datetime
+from ..utils.timezone_utils import now_utc_naive
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
@@ -48,7 +49,7 @@ async def send_message_stub(request: SendMessageRequest):
     Logs the payload to Supabase and returns a mock success response.
     """
     message_id = str(uuid.uuid4())
-    received_at = datetime.utcnow().isoformat()
+    received_at = now_utc_naive().isoformat()
 
     try:
         await db.log_outbound_sms(

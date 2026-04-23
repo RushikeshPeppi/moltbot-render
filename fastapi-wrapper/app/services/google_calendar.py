@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from ..utils.timezone_utils import now_utc_naive
 
 from ..core.credential_manager import CredentialManager
 
@@ -66,7 +67,7 @@ class GoogleCalendarService:
 
             # Default time range: now to 7 days from now
             if not time_min:
-                time_min = datetime.utcnow()
+                time_min = now_utc_naive()
             if not time_max:
                 time_max = time_min + timedelta(days=7)
 

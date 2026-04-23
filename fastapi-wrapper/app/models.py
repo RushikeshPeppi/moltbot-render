@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List, Dict, Any, Generic, TypeVar
 from datetime import datetime
 from enum import IntEnum
+from .utils.timezone_utils import now_utc_naive
 
 # Generic type for response data
 T = TypeVar('T')
@@ -40,7 +41,7 @@ class BaseResponse(BaseModel):
     data: Optional[Any] = Field(None, description="Response payload")
     error: Optional[str] = Field(None, description="Error type/code if any")
     exception: Optional[str] = Field(None, description="Exception details for debugging")
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=lambda: now_utc_naive().isoformat())
 
     class Config:
         json_schema_extra = {
