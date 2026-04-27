@@ -72,7 +72,8 @@ services:
       - key: VITE_API_URL
         value: https://moltbot-fastapi.onrender.com
 
-  # SearXNG - Free self-hosted search engine (NO API keys needed!)
+  # SearXNG - Privacy-preserving meta-search backend for the gateway's web-search skill.
+  # Hardened per searxng_research.md (settings.yml + limiter.toml + entrypoint-shim.sh).
   - type: web
     name: searxng
     runtime: docker
@@ -80,7 +81,17 @@ services:
     plan: starter
     dockerfilePath: ./searxng/Dockerfile
     dockerContext: ./searxng
-    healthCheckPath: /
+    healthCheckPath: /healthz
+    envVars:
+      # Flask SECRET_KEY. The entrypoint-shim substitutes this into
+      # settings.yml's `secret_key: "ultrasecretkey"` placeholder on every
+      # container start. If unset, the shim auto-generates a random value.
+      - key: SEARXNG_SECRET
+        generateValue: true
+      # Belt-and-suspenders: explicitly tell Render which port the container
+      # listens on, in case auto-detection of EXPOSE 8080 fails on cold starts.
+      - key: PORT
+        value: "8080"
 
   # OpenClaw Gateway - Runs the AI agent
   - type: web

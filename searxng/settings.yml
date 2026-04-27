@@ -1,56 +1,107 @@
-# SearXNG Configuration for Render.com deployment
-# https://docs.searxng.org/admin/settings/
+# Peppi SearXNG configuration
+# Hardened for Render deployment behind the moltbot-gateway.
+# See ../../searxng_research.md for the full derivation.
+#
+# IMPORTANT: secret_key holds the literal placeholder "ultrasecretkey" because
+# the upstream container/entrypoint.sh ONLY substitutes that string when
+# settings.yml is being created from scratch. Since we ship our own settings.yml
+# via Dockerfile COPY, the upstream substitution is skipped — our entrypoint
+# shim (entrypoint-shim.sh) handles the substitution explicitly using the
+# SEARXNG_SECRET env var.
 
 use_default_settings: true
 
+general:
+  debug: false
+  instance_name: "Peppi Search"
+  enable_metrics: true
+
 server:
-  # Bind to all interfaces for Docker
-  bind_address: "0.0.0.0"
   port: 8080
-  secret_key: "replace_this_with_a_random_secret_key_for_production"
-
-  # Trust Render.com reverse proxy headers
-  limiter: false  # Disable rate limiting (handled by Render)
-  image_proxy: true
-
-  # HTTP settings for reverse proxy compatibility
+  bind_address: "0.0.0.0"
+  # Substituted by entrypoint-shim.sh on every container start, using
+  # SEARXNG_SECRET env var (set on Render). If SEARXNG_SECRET is unset, the
+  # shim auto-generates a random value (matches upstream behaviour). The
+  # placeholder string MUST stay literally "ultrasecretkey" so the shim's
+  # sed pattern matches.
+  secret_key: "ultrasecretkey"
+  # Required behind a reverse proxy (Render edge). Trailing slash matters.
+  base_url: "https://searxng-09k9.onrender.com/"
+  # See research doc III.2: bot detection is neutralised via limiter.toml,
+  # so we do not need Valkey/Redis here.
+  limiter: false
+  # MUST be false for an agent backend (forces link_token, breaks JSON callers).
+  public_instance: false
+  # We don't display thumbnails to SMS users.
+  image_proxy: false
+  # Matches the upstream Granian server (HTTP/1.1-capable, but using "1.0"
+  # remains compatible and is what searxng/searxng:latest uses internally
+  # for legacy reasons. Leave at "1.0" unless we change the entrypoint.)
   http_protocol_version: "1.0"
+  method: "POST"
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Robots-Tag: noindex, nofollow
+    Referrer-Policy: no-referrer
 
 ui:
   static_use_hash: true
   default_locale: "en"
-  query_in_title: true
+  query_in_title: false
   infinite_scroll: false
-  theme_args:
-    simple_style: auto
 
 search:
-  safe_search: 0
-  autocomplete: "google"
+  # Moderate by default; agent can override per-request via &safesearch=N.
+  safe_search: 1
+  # Disabled. Agents don't autocomplete.
+  autocomplete: ""
   default_lang: "auto"
-
-  # Format results
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
   formats:
     - html
-    - json
+    - json    # MUST be present or every JSON call returns 403 Forbidden.
+
+outgoing:
+  request_timeout: 4.0
+  max_request_timeout: 10.0
+  pool_connections: 100
+  pool_maxsize: 20
+  enable_http2: true
+  retries: 1
+  # Always set in production. Engines can email this contact instead of
+  # silently rate-limiting our IP.
+  useragent_suffix: "Peppi/1.0 contact:peppishared@gmail.com"
 
 enabled_plugins:
-  - 'Hash plugin'
-  - 'Search on category select'
-  - 'Self Information'
   - 'Tracker URL remover'
+  - 'Self Information'
   - 'Hostnames plugin'
 
-# Disable bot detection since we're behind Render's reverse proxy
-# and don't have access to real client IPs
-outgoing:
-  request_timeout: 3.0
-  max_request_timeout: 15.0
-
 engines:
-  # Keep default engines enabled
-  # Disable engines that are failing
+  # Disable engines that block on Render's shared cloud egress (/24 ranges).
+  # Symptom: 200 OK responses with empty results[] after the first ~5–10
+  # requests. See research doc II.1.5 + II.4.6.
+  - name: google
+    disabled: true
+  - name: google news
+    disabled: true
+  - name: google scholar
+    disabled: true
+  - name: google images
+    disabled: true
+  - name: google videos
+    disabled: true
+  # Tor-only; not relevant for a clearnet agent.
   - name: ahmia
     disabled: true
   - name: torch
     disabled: true
+  # Tighten timeouts on slower engines so they don't dominate request_timeout.
+  - name: wikidata
+    timeout: 4.0
+  - name: wikipedia
+    timeout: 4.0
+  # The remaining defaults stay enabled (duckduckgo, brave, bing, qwant,
+  # mojeek, mwmbl, bing news, qwant news, openstreetmap, etc.) — see
+  # research doc II.1.5 for the reliability matrix.

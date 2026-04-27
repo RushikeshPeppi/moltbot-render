@@ -1,0 +1,38 @@
+# Peppi SearXNG limiter / botdetection config.
+#
+# server.limiter is set to false in settings.yml, but searx.botdetection still
+# runs and would block server-to-server callers (curl, httpx, anything not
+# whitelisted as a real browser) without explicit pass-allow rules.
+# This config neutralises bot detection for our deployment.
+#
+# Threat model: SearXNG is reachable only from openclaw-gateway, which is in
+# the same Render workspace + region. The IP allowlist below trusts everything
+# because there is no untrusted public traffic to filter.
+#
+# If/when this instance is opened to the public, switch to:
+#   - server.limiter = true (settings.yml)
+#   - Stand up Valkey or Render Key Value
+#   - Replace `pass_ip` with the gateway's egress CIDR only
+#   - Configure `trusted_proxies` with Render's edge ranges
+
+[real_ip]
+ipv4_prefix = 32
+ipv6_prefix = 48
+
+[botdetection]
+# Trust all upstream proxies. Safe because nothing untrusted can reach us
+# under the current threat model.
+trusted_proxies = ["0.0.0.0/0", "::/0"]
+
+[botdetection.ip_limit]
+filter_link_local = false
+# MUST stay false. link_token requires the client to first fetch a one-shot
+# CSS URL (/client<token>.css), which JSON callers (curl) cannot do.
+link_token = false
+
+[botdetection.ip_lists]
+pass_searxng_org = false
+# Allow all traffic without bot-detection checks. Matches the threat model
+# above (private network, single trusted caller via Render's edge).
+pass_ip = ["0.0.0.0/0", "::/0"]
+block_ip = []
