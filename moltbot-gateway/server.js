@@ -517,6 +517,129 @@ app.get('/status/:jobId', (req, res) => {
 });
 
 /**
+ * TEST-ONLY: deep diagnostics on the installed openclaw CLI + on-disk state.
+ *
+ * Captures ground-truth answers to questions the production-fix research could
+ * not verify from outside (which flags this version of `openclaw` actually
+ * accepts, which subcommands exist, what state lives where on disk). Run this
+ * once, read the response, design the fix, then revert this commit.
+ *
+ * Auth: same X-Test-Reset-Token gate as /reset. Returns 403 if the token env
+ * is unset or the header doesn't match. The endpoint runs nothing destructive.
+ */
+app.post('/diagnose-deep', async (req, res) => {
+  const expectedToken = process.env.TEST_RESET_TOKEN;
+  if (!expectedToken) {
+    return res.status(403).json({ ok: false, error: 'TEST_RESET_TOKEN not configured' });
+  }
+  if (req.header('x-test-reset-token') !== expectedToken) {
+    return res.status(403).json({ ok: false, error: 'Missing or invalid X-Test-Reset-Token' });
+  }
+
+  // execFileSync — no shell, no injection. All commands are hardcoded below.
+  const { execFileSync } = require('child_process');
+  const homeDir = process.env.HOME || '/root';
+
+  function runCmd(file, args = [], timeoutMs = 10000) {
+    try {
+      const out = execFileSync(file, args, {
+        timeout: timeoutMs,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { ok: true, stdout: out, stderr: '' };
+    } catch (e) {
+      return {
+        ok: false,
+        code: e.status,
+        signal: e.signal,
+        stdout: (e.stdout || '').toString(),
+        stderr: (e.stderr || '').toString(),
+        message: e.message,
+      };
+    }
+  }
+
+  function listDir(p) {
+    try {
+      if (!fs.existsSync(p)) return { exists: false };
+      const entries = fs.readdirSync(p, { withFileTypes: true }).map((e) => ({
+        name: e.name,
+        type: e.isDirectory() ? 'dir' : (e.isFile() ? 'file' : 'other'),
+      }));
+      return { exists: true, entries };
+    } catch (e) {
+      return { exists: 'error', error: e.message };
+    }
+  }
+
+  const probes = {
+    versions: {
+      openclaw: runCmd('openclaw', ['--version']),
+      node:     runCmd('node', ['--version']),
+    },
+    // --help is the primary source of truth for which flags this version
+    // actually accepts. Each capture stdout AND stderr separately so we can
+    // see if the binary writes help to one or the other.
+    cli_help: {
+      top:      runCmd('openclaw', ['--help']),
+      agent:    runCmd('openclaw', ['agent', '--help']),
+      // Probe subcommands the research stream claimed exist. Failures here
+      // are informative — they tell us the subcommand is fictional in this
+      // version. No-op if missing.
+      doctor:   runCmd('openclaw', ['doctor', '--help']),
+      gateway:  runCmd('openclaw', ['gateway', '--help']),
+      sessions: runCmd('openclaw', ['sessions', '--help']),
+      reset:    runCmd('openclaw', ['reset', '--help']),
+      onboard:  runCmd('openclaw', ['onboard', '--help']),
+    },
+    on_disk: {
+      openclaw_root:     listDir(path.join(homeDir, '.openclaw')),
+      agents_main:       listDir(path.join(homeDir, '.openclaw', 'agents', 'main')),
+      agents_main_agent: listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'agent')),
+      sessions_dir:      listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'sessions')),
+      memory_dir:        listDir(path.join(homeDir, '.openclaw', 'memory')),
+      workspace_dir:     listDir(path.join(homeDir, '.openclaw', 'workspace')),
+    },
+    // Smoke tests — short message ("ping") so API cost is trivial. We
+    // capture stdout + stderr separately for each, so we can finally see
+    // what each flag combination actually produces on THIS version.
+    //
+    // Variant matrix:
+    //   baseline      — current production flags only (--agent main --json)
+    //   local         — adds --local (research hypothesis: skip gateway probe)
+    //   silent        — adds --log-level silent (research hypothesis: silence
+    //                   embedded fallback diagnostics on stderr)
+    //   local_silent  — both
+    //
+    // If the binary rejects any flag with "unknown option ...", that itself
+    // tells us the flag doesn't exist on 2026.3.8.
+    smoke_baseline: runCmd(
+      'openclaw',
+      ['agent', '--agent', 'main', '--json', '--message', 'ping'],
+      60000,
+    ),
+    smoke_local: runCmd(
+      'openclaw',
+      ['agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
+      60000,
+    ),
+    smoke_silent: runCmd(
+      'openclaw',
+      ['agent', '--agent', 'main', '--log-level', 'silent', '--json', '--message', 'ping'],
+      60000,
+    ),
+    smoke_local_silent: runCmd(
+      'openclaw',
+      ['agent', '--agent', 'main', '--local', '--log-level', 'silent', '--json', '--message', 'ping'],
+      60000,
+    ),
+  };
+
+  res.json({ ok: true, probes });
+});
+
+/**
  * TEST-ONLY: reset session state for a user.
  *
  * Wipes BOTH layers that accumulate context across calls:
