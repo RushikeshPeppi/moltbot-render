@@ -593,34 +593,50 @@ app.post('/diagnose-deep', async (req, res) => {
   }
 
   // Run all the cheap probes in parallel. Each finishes in well under 1s
-  // so total wall-clock for the response is sub-second.
+  // so total wall-clock for the response is sub-second. Subcommand --help
+  // calls (agent, doctor, gateway, etc.) hang waiting for the gateway in
+  // 2026.4.24 — even with --help they probe ws://127.0.0.1:18789 first —
+  // so they get killed at 5s and produce empty output. That itself is data.
   const [
-    ocVersion, nodeVersion,
-    helpTop, helpAgent, helpDoctor, helpGateway, helpSessions, helpReset, helpOnboard,
+    ocVersion, nodeVersion, npmRootGlobal,
+    helpTop, helpAgent,
+    // Newly-added: dump the openclaw.json the gateway boot wrote. If the
+    // production fix needs config changes, we want to see what's actually
+    // there now.
   ] = await Promise.all([
     runCmdAsync('openclaw', ['--version'], 5000),
     runCmdAsync('node', ['--version'], 5000),
+    runCmdAsync('npm', ['root', '-g'], 5000),
     runCmdAsync('openclaw', ['--help'], 5000),
-    runCmdAsync('openclaw', ['agent', '--help'], 5000),
-    runCmdAsync('openclaw', ['doctor', '--help'], 5000),
-    runCmdAsync('openclaw', ['gateway', '--help'], 5000),
-    runCmdAsync('openclaw', ['sessions', '--help'], 5000),
-    runCmdAsync('openclaw', ['reset', '--help'], 5000),
-    runCmdAsync('openclaw', ['onboard', '--help'], 5000),
+    runCmdAsync('openclaw', ['agent', '--help'], 8000),
   ]);
+
+  // Find openclaw's global install dir from `npm root -g`. The plugin
+  // runtime-dep installer probably lives under there.
+  const npmRoot = (npmRootGlobal.stdout || '').trim();
+  const openclawPkgRoot = npmRoot ? path.join(npmRoot, 'openclaw') : null;
 
   res.json({
     ok: true,
     probes: {
       versions: { openclaw: ocVersion, node: nodeVersion },
-      cli_help: {
-        top: helpTop,
-        agent: helpAgent,
-        doctor: helpDoctor,
-        gateway: helpGateway,
-        sessions: helpSessions,
-        reset: helpReset,
-        onboard: helpOnboard,
+      npm_root_global: npmRootGlobal,
+      cli_help: { top: helpTop, agent: helpAgent },
+      // Runtime config files — what the gateway boot wrote.
+      configs: {
+        openclaw_json: (() => {
+          try {
+            return { path: path.join(homeDir, '.openclaw', 'openclaw.json'),
+                     contents: JSON.parse(fs.readFileSync(path.join(homeDir, '.openclaw', 'openclaw.json'), 'utf8')) };
+          } catch (e) { return { error: e.message }; }
+        })(),
+        agent_md_size: (() => {
+          try {
+            const p = path.join(homeDir, '.openclaw', 'agents', 'main', 'agent', 'agent.md');
+            const s = fs.statSync(p);
+            return { path: p, size: s.size, mtime: s.mtime };
+          } catch (e) { return { error: e.message }; }
+        })(),
       },
       on_disk: {
         openclaw_root:     listDir(path.join(homeDir, '.openclaw')),
@@ -629,6 +645,12 @@ app.post('/diagnose-deep', async (req, res) => {
         sessions_dir:      listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'sessions')),
         memory_dir:        listDir(path.join(homeDir, '.openclaw', 'memory')),
         workspace_dir:     listDir(path.join(homeDir, '.openclaw', 'workspace')),
+        logs_dir:          listDir(path.join(homeDir, '.openclaw', 'logs')),
+        // Where openclaw is actually installed + plugin layout.
+        npm_root:          npmRoot ? listDir(npmRoot) : { error: 'no npm root' },
+        openclaw_pkg:      openclawPkgRoot ? listDir(openclawPkgRoot) : { error: 'no pkg root' },
+        openclaw_plugins:  openclawPkgRoot ? listDir(path.join(openclawPkgRoot, 'plugins')) : { error: 'no pkg root' },
+        openclaw_node_modules: openclawPkgRoot ? listDir(path.join(openclawPkgRoot, 'node_modules')) : { error: 'no pkg root' },
       },
     },
   });
@@ -655,24 +677,35 @@ app.post('/diagnose-smoke', async (req, res) => {
   if (!_diagAuthOk(req, res)) return;
 
   const variant = (req.query.variant || 'baseline').toString();
+  // Note: --log-level is a TOP-LEVEL flag in openclaw 2026.4.24 (rejected as
+  // "unknown option" if placed after the agent subcommand). All "silent_*"
+  // variants below place it before agent.
   const flags = {
-    baseline:     ['agent', '--agent', 'main', '--json', '--message', 'ping'],
-    local:        ['agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
-    silent:       ['agent', '--agent', 'main', '--log-level', 'silent', '--json', '--message', 'ping'],
-    local_silent: ['agent', '--agent', 'main', '--local', '--log-level', 'silent', '--json', '--message', 'ping'],
+    baseline:            ['agent', '--agent', 'main', '--json', '--message', 'ping'],
+    local:               ['agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
+    silent:              ['--log-level', 'silent', 'agent', '--agent', 'main', '--json', '--message', 'ping'],
+    local_silent:        ['--log-level', 'silent', 'agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
+    // Warm-only paths: skip plugins by setting --no-color (helps test if
+    // plugin install is the bottleneck) and try with --container=none
+    // (longer-shot — checking if any flag short-circuits plugin loading).
+    silent_no_color:     ['--log-level', 'silent', '--no-color', 'agent', '--agent', 'main', '--json', '--message', 'ping'],
+    // Just print version — pure CLI smoke, no agent call. Tells us how
+    // long the binary takes to *start* (i.e. plugin-install overhead).
+    version_only:        ['--version'],
   }[variant];
 
   if (!flags) {
     return res.status(400).json({
       ok: false,
-      error: `Unknown variant: ${variant}. Valid: baseline | local | silent | local_silent`,
+      error: `Unknown variant: ${variant}. Valid: baseline | local | silent | local_silent | silent_no_color | version_only`,
     });
   }
 
+  // Allow ?timeout=N seconds (default 55, max 110 to stay under Render edge).
+  const timeoutSec = Math.min(110, Math.max(5, parseInt(req.query.timeout, 10) || 55));
+
   const t0 = Date.now();
-  // Cap at 55s so we return BEFORE Render's edge 502s us. If openclaw
-  // doesn't finish in that window, we report it as a timeout-class result.
-  const result = await runCmdAsync('openclaw', flags, 55000);
+  const result = await runCmdAsync('openclaw', flags, timeoutSec * 1000);
   const elapsedMs = Date.now() - t0;
 
   res.json({
