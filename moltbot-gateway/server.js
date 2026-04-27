@@ -516,49 +516,68 @@ app.get('/status/:jobId', (req, res) => {
   });
 });
 
-/**
- * TEST-ONLY: deep diagnostics on the installed openclaw CLI + on-disk state.
- *
- * Captures ground-truth answers to questions the production-fix research could
- * not verify from outside (which flags this version of `openclaw` actually
- * accepts, which subcommands exist, what state lives where on disk). Run this
- * once, read the response, design the fix, then revert this commit.
- *
- * Auth: same X-Test-Reset-Token gate as /reset. Returns 403 if the token env
- * is unset or the header doesn't match. The endpoint runs nothing destructive.
- */
-app.post('/diagnose-deep', async (req, res) => {
+// Auth helper for the diagnostic endpoints below — TEST-ONLY, gated by the
+// same TEST_RESET_TOKEN env as /reset. Returns null if auth ok, otherwise
+// sends 403 and returns a sentinel so the caller can early-out.
+function _diagAuthOk(req, res) {
   const expectedToken = process.env.TEST_RESET_TOKEN;
   if (!expectedToken) {
-    return res.status(403).json({ ok: false, error: 'TEST_RESET_TOKEN not configured' });
+    res.status(403).json({ ok: false, error: 'TEST_RESET_TOKEN not configured' });
+    return false;
   }
   if (req.header('x-test-reset-token') !== expectedToken) {
-    return res.status(403).json({ ok: false, error: 'Missing or invalid X-Test-Reset-Token' });
+    res.status(403).json({ ok: false, error: 'Missing or invalid X-Test-Reset-Token' });
+    return false;
   }
+  return true;
+}
 
-  // execFileSync — no shell, no injection. All commands are hardcoded below.
-  const { execFileSync } = require('child_process');
+// Async wrapper around execFile so the Express event loop is NOT blocked
+// while a smoke test waits 30-60s for openclaw to return. execFile (not exec)
+// avoids shell injection. Returns the same envelope shape regardless of exit.
+function runCmdAsync(file, args = [], timeoutMs = 10000) {
+  return new Promise((resolve) => {
+    const { execFile } = require('child_process');
+    execFile(
+      file, args,
+      { timeout: timeoutMs, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          resolve({
+            ok: false,
+            code: err.code,
+            signal: err.signal,
+            killed: err.killed,
+            stdout: (stdout || '').toString(),
+            stderr: (stderr || '').toString(),
+            message: err.message,
+          });
+        } else {
+          resolve({ ok: true, stdout: stdout || '', stderr: stderr || '' });
+        }
+      },
+    );
+  });
+}
+
+/**
+ * TEST-ONLY: cheap diagnostics on the installed openclaw CLI + on-disk state.
+ *
+ * Returns in < 2s. Captures everything we can probe without making a real
+ * model call:
+ *   - openclaw / node versions
+ *   - --help output for top-level + agent + doctor + gateway + sessions +
+ *     reset + onboard subcommands (failures are informative — they tell us
+ *     which subcommands actually exist on this version)
+ *   - directory listings under ~/.openclaw to see the real on-disk schema
+ *
+ * Auth: X-Test-Reset-Token header. /diagnose-smoke is the companion endpoint
+ * that runs the actual model-call smoke tests (one per request).
+ */
+app.post('/diagnose-deep', async (req, res) => {
+  if (!_diagAuthOk(req, res)) return;
+
   const homeDir = process.env.HOME || '/root';
-
-  function runCmd(file, args = [], timeoutMs = 10000) {
-    try {
-      const out = execFileSync(file, args, {
-        timeout: timeoutMs,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      return { ok: true, stdout: out, stderr: '' };
-    } catch (e) {
-      return {
-        ok: false,
-        code: e.status,
-        signal: e.signal,
-        stdout: (e.stdout || '').toString(),
-        stderr: (e.stderr || '').toString(),
-        message: e.message,
-      };
-    }
-  }
 
   function listDir(p) {
     try {
@@ -573,70 +592,96 @@ app.post('/diagnose-deep', async (req, res) => {
     }
   }
 
-  const probes = {
-    versions: {
-      openclaw: runCmd('openclaw', ['--version']),
-      node:     runCmd('node', ['--version']),
-    },
-    // --help is the primary source of truth for which flags this version
-    // actually accepts. Each capture stdout AND stderr separately so we can
-    // see if the binary writes help to one or the other.
-    cli_help: {
-      top:      runCmd('openclaw', ['--help']),
-      agent:    runCmd('openclaw', ['agent', '--help']),
-      // Probe subcommands the research stream claimed exist. Failures here
-      // are informative — they tell us the subcommand is fictional in this
-      // version. No-op if missing.
-      doctor:   runCmd('openclaw', ['doctor', '--help']),
-      gateway:  runCmd('openclaw', ['gateway', '--help']),
-      sessions: runCmd('openclaw', ['sessions', '--help']),
-      reset:    runCmd('openclaw', ['reset', '--help']),
-      onboard:  runCmd('openclaw', ['onboard', '--help']),
-    },
-    on_disk: {
-      openclaw_root:     listDir(path.join(homeDir, '.openclaw')),
-      agents_main:       listDir(path.join(homeDir, '.openclaw', 'agents', 'main')),
-      agents_main_agent: listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'agent')),
-      sessions_dir:      listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'sessions')),
-      memory_dir:        listDir(path.join(homeDir, '.openclaw', 'memory')),
-      workspace_dir:     listDir(path.join(homeDir, '.openclaw', 'workspace')),
-    },
-    // Smoke tests — short message ("ping") so API cost is trivial. We
-    // capture stdout + stderr separately for each, so we can finally see
-    // what each flag combination actually produces on THIS version.
-    //
-    // Variant matrix:
-    //   baseline      — current production flags only (--agent main --json)
-    //   local         — adds --local (research hypothesis: skip gateway probe)
-    //   silent        — adds --log-level silent (research hypothesis: silence
-    //                   embedded fallback diagnostics on stderr)
-    //   local_silent  — both
-    //
-    // If the binary rejects any flag with "unknown option ...", that itself
-    // tells us the flag doesn't exist on 2026.3.8.
-    smoke_baseline: runCmd(
-      'openclaw',
-      ['agent', '--agent', 'main', '--json', '--message', 'ping'],
-      60000,
-    ),
-    smoke_local: runCmd(
-      'openclaw',
-      ['agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
-      60000,
-    ),
-    smoke_silent: runCmd(
-      'openclaw',
-      ['agent', '--agent', 'main', '--log-level', 'silent', '--json', '--message', 'ping'],
-      60000,
-    ),
-    smoke_local_silent: runCmd(
-      'openclaw',
-      ['agent', '--agent', 'main', '--local', '--log-level', 'silent', '--json', '--message', 'ping'],
-      60000,
-    ),
-  };
+  // Run all the cheap probes in parallel. Each finishes in well under 1s
+  // so total wall-clock for the response is sub-second.
+  const [
+    ocVersion, nodeVersion,
+    helpTop, helpAgent, helpDoctor, helpGateway, helpSessions, helpReset, helpOnboard,
+  ] = await Promise.all([
+    runCmdAsync('openclaw', ['--version'], 5000),
+    runCmdAsync('node', ['--version'], 5000),
+    runCmdAsync('openclaw', ['--help'], 5000),
+    runCmdAsync('openclaw', ['agent', '--help'], 5000),
+    runCmdAsync('openclaw', ['doctor', '--help'], 5000),
+    runCmdAsync('openclaw', ['gateway', '--help'], 5000),
+    runCmdAsync('openclaw', ['sessions', '--help'], 5000),
+    runCmdAsync('openclaw', ['reset', '--help'], 5000),
+    runCmdAsync('openclaw', ['onboard', '--help'], 5000),
+  ]);
 
-  res.json({ ok: true, probes });
+  res.json({
+    ok: true,
+    probes: {
+      versions: { openclaw: ocVersion, node: nodeVersion },
+      cli_help: {
+        top: helpTop,
+        agent: helpAgent,
+        doctor: helpDoctor,
+        gateway: helpGateway,
+        sessions: helpSessions,
+        reset: helpReset,
+        onboard: helpOnboard,
+      },
+      on_disk: {
+        openclaw_root:     listDir(path.join(homeDir, '.openclaw')),
+        agents_main:       listDir(path.join(homeDir, '.openclaw', 'agents', 'main')),
+        agents_main_agent: listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'agent')),
+        sessions_dir:      listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'sessions')),
+        memory_dir:        listDir(path.join(homeDir, '.openclaw', 'memory')),
+        workspace_dir:     listDir(path.join(homeDir, '.openclaw', 'workspace')),
+      },
+    },
+  });
+});
+
+/**
+ * TEST-ONLY: run ONE smoke variant (real model call with a short message).
+ * Each variant is a different combination of flags so we can see exactly
+ * what each flag does on THIS version of openclaw.
+ *
+ * Variants:
+ *   ?variant=baseline     — current prod flags only (--agent main --json)
+ *   ?variant=local        — adds --local
+ *   ?variant=silent       — adds --log-level silent
+ *   ?variant=local_silent — adds both
+ *
+ * Why split from /diagnose-deep: each variant takes 30-60s, and Render's
+ * edge will 502 if a single response takes > ~60s on starter. One-variant-
+ * per-request keeps each call comfortably under that ceiling.
+ *
+ * Auth: X-Test-Reset-Token. Cost per call: ~$0.01-0.02.
+ */
+app.post('/diagnose-smoke', async (req, res) => {
+  if (!_diagAuthOk(req, res)) return;
+
+  const variant = (req.query.variant || 'baseline').toString();
+  const flags = {
+    baseline:     ['agent', '--agent', 'main', '--json', '--message', 'ping'],
+    local:        ['agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
+    silent:       ['agent', '--agent', 'main', '--log-level', 'silent', '--json', '--message', 'ping'],
+    local_silent: ['agent', '--agent', 'main', '--local', '--log-level', 'silent', '--json', '--message', 'ping'],
+  }[variant];
+
+  if (!flags) {
+    return res.status(400).json({
+      ok: false,
+      error: `Unknown variant: ${variant}. Valid: baseline | local | silent | local_silent`,
+    });
+  }
+
+  const t0 = Date.now();
+  // Cap at 55s so we return BEFORE Render's edge 502s us. If openclaw
+  // doesn't finish in that window, we report it as a timeout-class result.
+  const result = await runCmdAsync('openclaw', flags, 55000);
+  const elapsedMs = Date.now() - t0;
+
+  res.json({
+    ok: true,
+    variant,
+    args: flags,
+    elapsed_ms: elapsedMs,
+    result,
+  });
 });
 
 /**
