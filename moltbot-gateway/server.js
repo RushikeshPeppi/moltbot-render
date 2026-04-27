@@ -517,6 +517,114 @@ app.get('/status/:jobId', (req, res) => {
 });
 
 /**
+ * TEST-ONLY: reset session state for a user.
+ *
+ * Wipes BOTH layers that accumulate context across calls:
+ *   1. FastAPI's Redis session (via DELETE /api/v1/session/{user_id})
+ *   2. OpenClaw's on-disk conversation/state directories under
+ *      ~/.openclaw/agents/main/{conversations,sessions,history,state,threads,messages}
+ *      and ~/.openclaw/memory.
+ *
+ * Does NOT touch agent config (agent.md, auth-profiles.json, openclaw.json,
+ * exec-approvals.json) or skills. Those are recreated by startOpenClaw() at
+ * boot only.
+ *
+ * Auth gate: requires X-Test-Reset-Token header matching env TEST_RESET_TOKEN.
+ * If TEST_RESET_TOKEN is not set on the gateway, the endpoint returns 403
+ * (disabled). This prevents a malicious caller from wiping a real user's
+ * session if they discover the URL.
+ *
+ * Used exclusively by tests/run_web_search_tests.py to enforce per-scenario
+ * test independence. No production traffic (Twilio → FastAPI → /execute)
+ * touches this endpoint.
+ */
+app.post('/reset/:userId', async (req, res) => {
+  const expectedToken = process.env.TEST_RESET_TOKEN;
+  if (!expectedToken) {
+    return res.status(403).json({
+      ok: false,
+      error: 'TEST_RESET_TOKEN not configured on gateway — /reset is disabled',
+    });
+  }
+
+  const providedToken = req.header('x-test-reset-token');
+  if (!providedToken || providedToken !== expectedToken) {
+    return res.status(403).json({
+      ok: false,
+      error: 'Missing or invalid X-Test-Reset-Token header',
+    });
+  }
+
+  const userId = req.params.userId;
+  // Defensive — block path traversal / wildcards in the URL param.
+  if (!userId || !/^[A-Za-z0-9_-]+$/.test(userId)) {
+    return res.status(400).json({ ok: false, error: 'Invalid userId' });
+  }
+
+  const cleared = {
+    fastapi_session: null,
+    openclaw_paths: [],
+    openclaw_skipped: [],
+  };
+
+  // 1. Delete the user's FastAPI Redis session. 404 (no session yet) is
+  // success-equivalent for our purposes.
+  try {
+    const fastapiUrl = process.env.FASTAPI_URL || 'https://moltbot-fastapi.onrender.com';
+    const resp = await axios.delete(`${fastapiUrl}/api/v1/session/${userId}`, {
+      timeout: 10000,
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 404,
+    });
+    cleared.fastapi_session = { status: resp.status, body: resp.data };
+  } catch (e) {
+    cleared.fastapi_session = { error: e.message };
+  }
+
+  // 2. Wipe OpenClaw's on-disk conversation/state.
+  // Explicit candidate list — we don't nuke the whole agents/main/ tree
+  // because that would also wipe agent.md / auth-profiles.json which the
+  // boot-time setup writes once and we want to keep.
+  const homeDir = process.env.HOME || '/root';
+  const openClawDir = path.join(homeDir, '.openclaw');
+  const candidateRelPaths = [
+    'agents/main/conversations',
+    'agents/main/sessions',
+    'agents/main/history',
+    'agents/main/state',
+    'agents/main/threads',
+    'agents/main/messages',
+    'memory',
+  ];
+  for (const rel of candidateRelPaths) {
+    const full = path.join(openClawDir, rel);
+    try {
+      if (fs.existsSync(full)) {
+        fs.rmSync(full, { recursive: true, force: true });
+        // memory/ is created at boot — recreate empty so OpenClaw doesn't
+        // trip on a missing directory it expects to exist.
+        if (rel === 'memory') {
+          fs.mkdirSync(full, { recursive: true });
+        }
+        cleared.openclaw_paths.push(rel);
+      } else {
+        cleared.openclaw_skipped.push(rel);
+      }
+    } catch (e) {
+      console.warn(`[/reset/${userId}] failed to wipe ${rel}: ${e.message}`);
+      cleared.openclaw_skipped.push(`${rel} (err: ${e.message})`);
+    }
+  }
+
+  console.log(
+    `[/reset/${userId}] fastapi_status=${cleared.fastapi_session?.status ?? 'err'} ` +
+    `cleared=[${cleared.openclaw_paths.join(',')}] ` +
+    `skipped=[${cleared.openclaw_skipped.join(',')}]`
+  );
+
+  res.json({ ok: true, user_id: userId, cleared });
+});
+
+/**
  * List available skills
  */
 app.get('/skills', (req, res) => {

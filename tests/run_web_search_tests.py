@@ -41,6 +41,17 @@ from web_search_scenarios import (
 RESULTS_FILE = Path(__file__).parent / "results" / "web_search_results.json"
 TIMEOUT = 240  # web-search turns can run 80-160s; allow a 4-min ceiling
 
+# Gateway URL for the per-scenario session-reset endpoint. Defaults to the
+# production gateway since that's where the test API also lives.
+GATEWAY_URL = os.environ.get(
+    "WEB_SEARCH_GATEWAY_URL",
+    "https://openclaw-gateway-dg3y.onrender.com",
+)
+# Token gate for /reset. Must match TEST_RESET_TOKEN on the gateway. If unset
+# locally, --fresh becomes a no-op (with a warning) so the runner can still
+# function in environments without the token.
+RESET_TOKEN = os.environ.get("WEB_SEARCH_RESET_TOKEN", "")
+
 
 # ----------------------------------------------------------------------
 # API call (mirrors run_tests.py.call_api but keeps the suites independent)
@@ -329,6 +340,40 @@ def verify_safe(reply: str) -> dict:
 
 
 # ----------------------------------------------------------------------
+# Per-scenario session reset (test independence)
+# ----------------------------------------------------------------------
+
+def reset_session(user_id: str) -> dict:
+    """Wipe FastAPI Redis session + OpenClaw on-disk agent state for the
+    test user. Used between scenarios so each scenario starts with a fresh
+    context (matches what a brand-new SMS user would see). Non-fatal — if
+    the reset call fails we log it but the suite continues.
+
+    Implementation: POST /reset/:userId on the gateway, with the
+    X-Test-Reset-Token header. The gateway endpoint is auth-gated and
+    only enabled when TEST_RESET_TOKEN is set in the gateway's env.
+    """
+    if not RESET_TOKEN:
+        return {"ok": False, "error": "WEB_SEARCH_RESET_TOKEN not set in env"}
+    try:
+        with httpx.Client(timeout=15) as c:
+            resp = c.post(
+                f"{GATEWAY_URL.rstrip('/')}/reset/{user_id}",
+                headers={"X-Test-Reset-Token": RESET_TOKEN},
+            )
+        try:
+            return resp.json()
+        except Exception:
+            return {
+                "ok": False,
+                "status": resp.status_code,
+                "body_snippet": (resp.text or "")[:200],
+            }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ----------------------------------------------------------------------
 # Result IO
 # ----------------------------------------------------------------------
 
@@ -431,6 +476,18 @@ def main():
     )
     parser.add_argument("--scenario", "-s", help="Run single scenario by full ID (e.g. WSC5)")
     parser.add_argument("--rerun-failed", "-r", action="store_true", help="Re-run only failed")
+    # --fresh / --no-fresh: wipe FastAPI session + OpenClaw agent state
+    # between scenarios so each test runs against a clean context.
+    # Default ON because production tests must be independent. Disable with
+    # --no-fresh to test multi-turn conversation behaviour intentionally.
+    parser.add_argument(
+        "--fresh", dest="fresh", action="store_true", default=True,
+        help="Reset session state between scenarios (default).",
+    )
+    parser.add_argument(
+        "--no-fresh", dest="fresh", action="store_false",
+        help="Disable per-scenario reset (use to test multi-turn behaviour).",
+    )
     args = parser.parse_args()
 
     to_run = SCENARIOS[:]
@@ -451,10 +508,20 @@ def main():
         return
 
     total = len(to_run)
+    if args.fresh and not RESET_TOKEN:
+        # Surface this as a hard warning — the user asked for fresh sessions
+        # but didn't configure the token, so reset will silently no-op.
+        print("⚠️  --fresh requested but WEB_SEARCH_RESET_TOKEN is not set.")
+        print("    Each scenario will inherit prior context. Set the env var")
+        print("    to match the gateway's TEST_RESET_TOKEN to enable resets.")
+
     print(f"🌐 Running {total} web-search scenario(s)")
-    print(f"   API:  {API_URL}")
-    print(f"   User: {USER_ID}  (city expected: {USER_CITY!r})")
-    print(f"   Out:  {RESULTS_FILE}")
+    print(f"   API:     {API_URL}")
+    print(f"   User:    {USER_ID}  (city expected: {USER_CITY!r})")
+    print(f"   Out:     {RESULTS_FILE}")
+    print(f"   Fresh:   {'on (reset between scenarios)' if args.fresh else 'off (multi-turn mode)'}")
+    if args.fresh:
+        print(f"   Gateway: {GATEWAY_URL}  (token={'set' if RESET_TOKEN else 'NOT SET'})")
     print("=" * 64)
 
     results = existing.copy()  # preserve passing rows
@@ -470,6 +537,23 @@ def main():
         else:
             failed += 1
 
+        # Reset session state AFTER each scenario so the next one starts
+        # with a clean context. We capture the reset outcome on the row so
+        # debugging context-bleed is possible without re-running.
+        if args.fresh:
+            reset = reset_session(USER_ID)
+            row["session_reset"] = reset
+            if reset.get("ok"):
+                cleared = reset.get("cleared", {})
+                paths = cleared.get("openclaw_paths", []) or []
+                fa = cleared.get("fastapi_session") or {}
+                fa_status = fa.get("status") if isinstance(fa, dict) else "?"
+                print(f"  🧹 reset: fastapi={fa_status} openclaw_paths={len(paths)}")
+            else:
+                # Non-fatal — log the reason and keep going. The next scenario
+                # will inherit context, which the test plan calls out.
+                print(f"  ⚠️  reset failed: {reset.get('error') or reset}")
+
         save_results(
             results,
             {
@@ -477,6 +561,7 @@ def main():
                 "user_id": USER_ID,
                 "user_city": USER_CITY,
                 "api_url": API_URL,
+                "fresh_mode": bool(args.fresh and RESET_TOKEN),
                 "total_run": idx,
                 "passed": passed,
                 "failed": failed,

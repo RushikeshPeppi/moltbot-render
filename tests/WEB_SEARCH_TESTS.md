@@ -52,22 +52,51 @@ The disclaimer detector is the load-bearing safety net for `V_SEARCH`. If the mo
 ```sh
 cd tests/
 
-# Full suite (63 scenarios, ~40-55 min wall-clock on a warm cache)
-python run_web_search_tests.py
+# Full suite (63 scenarios, ~40-55 min wall-clock on a warm cache).
+# --fresh is ON by default — see section 5.1 for the WEB_SEARCH_RESET_TOKEN setup.
+WEB_SEARCH_RESET_TOKEN=<token> python run_web_search_tests.py
 
 # A single category (9 dimensions: A B C D E F G H I)
-python run_web_search_tests.py --category C    # Hyperlocal "Near Me" (12)
-python run_web_search_tests.py --category H    # Should-NOT-Search (3)
-python run_web_search_tests.py --category I    # Prompt Injection (13)
+WEB_SEARCH_RESET_TOKEN=<token> python run_web_search_tests.py --category C    # Hyperlocal "Near Me" (12)
+WEB_SEARCH_RESET_TOKEN=<token> python run_web_search_tests.py --category H    # Should-NOT-Search (3)
+WEB_SEARCH_RESET_TOKEN=<token> python run_web_search_tests.py --category I    # Prompt Injection (13)
 
 # A single scenario
-python run_web_search_tests.py --scenario WSB1
+WEB_SEARCH_RESET_TOKEN=<token> python run_web_search_tests.py --scenario WSB1
 
 # Re-run only the rows that failed last time
-python run_web_search_tests.py --rerun-failed
+WEB_SEARCH_RESET_TOKEN=<token> python run_web_search_tests.py --rerun-failed
+
+# Different test user (the city must already be set on that user in the DB)
+WEB_SEARCH_RESET_TOKEN=<token> \
+  WEB_SEARCH_USER_ID=usr_xxx WEB_SEARCH_USER_CITY="Mumbai, India" \
+  python run_web_search_tests.py
+
+# Disable per-scenario reset (run multi-turn intentionally — rare)
+python run_web_search_tests.py --no-fresh
 ```
 
 The runner saves after each scenario, so a Ctrl-C / network blip / Render cold start mid-suite leaves the results file in a consistent state. Re-running picks up where it left off (passing rows preserved, failures retried with `--rerun-failed`).
+
+### 5.1 `--fresh` mode (per-scenario session reset)
+
+**On by default.** Without it, scenarios inherit each other's context — both at the FastAPI session layer (Redis stores one session per `user_id` and slides the TTL forward on every call) and at the OpenClaw layer (`--agent main` persists conversation state on disk). A naive 63-scenario run leaves scenario 63 with hundreds of thousands of accumulated input tokens and the model literally saying *"I already covered this earlier"*. Real SMS users want this carry-over (multi-turn conversations); tests don't.
+
+**How it works.** After every `/execute-action` call, the runner POSTs to `/reset/:userId` on the gateway with an `X-Test-Reset-Token` header. The endpoint:
+
+1. Calls `DELETE /api/v1/session/{user_id}` on the FastAPI to drop the Redis session.
+2. Removes OpenClaw's on-disk conversation state under `~/.openclaw/agents/main/{conversations,sessions,history,state,threads,messages}` and `~/.openclaw/memory`. Agent config (`agent.md`, `auth-profiles.json`, `openclaw.json`, `exec-approvals.json`) and skills are preserved — they're recreated only at gateway boot.
+3. Returns a JSON envelope with what was cleared. The runner attaches that envelope to the scenario's row in `web_search_results.json` as `session_reset`, so context-bleed bugs are diagnosable from the saved results without re-running.
+
+**Auth gate.** `/reset` is gated behind a token to keep it from being abused if the gateway URL leaks. Setup:
+
+1. Generate a token: `openssl rand -hex 32`.
+2. Set it on the gateway service env: `TEST_RESET_TOKEN=<token>` (Render dashboard or `mcp__render__update_environment_variables`).
+3. Set the same value in the runner's environment: `export WEB_SEARCH_RESET_TOKEN=<token>`.
+
+If `TEST_RESET_TOKEN` is **not** set on the gateway, `/reset` returns `403 disabled` — the endpoint is dormant in any environment that hasn't opted in. If `WEB_SEARCH_RESET_TOKEN` is not set in the runner's env, the runner prints a warning and the suite runs without resets (each scenario inherits prior context).
+
+**This is test-only.** Production traffic (Twilio → FastAPI `/execute-action` → gateway `/execute`) never touches `/reset`. Real Peppi users continue to get the existing get-or-create session behaviour — they need it for multi-turn SMS conversations to remember context.
 
 ## 6. Cost expectation
 
