@@ -50,6 +50,9 @@ async def list_playground_users():
                 "email": u.get("email"),
                 "google_connected": u.get("google_connected", False),
                 "timezone": u.get("timezone", "UTC"),
+                # `city` is nullable; the playground prompts for it on next login
+                # when it comes back null/empty. See SignInPage + CityPromptModal.
+                "city": u.get("city") or None,
             }
             for u in users
         ]
@@ -77,6 +80,12 @@ class CreatePlaygroundUserRequest(BaseModel):
     name: str = Field(..., description="Display name for the new user")
     redirect_uri: Optional[str] = Field(None, description="Where to redirect after OAuth")
     timezone: Optional[str] = Field("UTC", description="User's timezone (IANA format)")
+    city: Optional[str] = Field(
+        None,
+        description="User's city (e.g. 'Pune, India'). Used by the web-search "
+                    "skill's 'near me' handler. Optional at signup, but the "
+                    "playground prompts for it on first chat load if missing.",
+    )
 
 
 @router.post("/create-user")
@@ -92,12 +101,17 @@ async def create_playground_user(request: CreatePlaygroundUserRequest):
         # Generate alphanumeric user_id
         new_user_id = await db.generate_user_id()
 
+        # Strip whitespace and treat empty/blank as "not provided" so we don't
+        # store " " or "\n" as the user's city.
+        city_clean = (request.city or "").strip() or None
+
         # Insert user into tbl_clawdbot_users
         user = await db.upsert_user(
             user_id=new_user_id,
             name=request.name,
             google_connected=False,
-            timezone=request.timezone or "UTC"
+            timezone=request.timezone or "UTC",
+            city=city_clean,
         )
 
         if not user:
@@ -192,6 +206,65 @@ async def update_user_timezone(user_id: str, request: UpdateTimezoneRequest):
                 code=ResponseCode.INTERNAL_ERROR,
                 message="Failed to update timezone",
                 error="TIMEZONE_UPDATE_ERROR",
+                exception=str(e),
+            ),
+        )
+
+
+class UpdateCityRequest(BaseModel):
+    city: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="User's city (e.g. 'Pune, India'). Used by the web-search "
+                    "skill's 'near me' handling.",
+    )
+
+
+@router.patch("/users/{user_id}/city")
+async def update_user_city(user_id: str, request: UpdateCityRequest):
+    """Update a user's city from the playground city-prompt modal.
+
+    Trims whitespace and rejects blank values (Pydantic min_length=1 catches
+    most cases; the strip guards against pure-whitespace input).
+    """
+    try:
+        city_clean = request.city.strip()
+        if not city_clean:
+            return JSONResponse(
+                status_code=400,
+                content=create_response(
+                    code=ResponseCode.BAD_REQUEST,
+                    message="City must not be blank",
+                    error="CITY_BLANK",
+                ),
+            )
+
+        success = await db.update_user_city(user_id, city_clean)
+
+        if not success:
+            return JSONResponse(
+                status_code=500,
+                content=create_response(
+                    code=ResponseCode.INTERNAL_ERROR,
+                    message="Failed to update city",
+                    error="CITY_UPDATE_FAILED",
+                ),
+            )
+
+        return create_response(
+            code=ResponseCode.SUCCESS,
+            message="City updated",
+            data={"user_id": user_id, "city": city_clean},
+        )
+    except Exception as e:
+        logger.error(f"Error updating city for user {user_id}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content=create_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to update city",
+                error="CITY_UPDATE_ERROR",
                 exception=str(e),
             ),
         )

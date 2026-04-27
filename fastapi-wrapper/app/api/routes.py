@@ -220,6 +220,23 @@ async def execute_action(request: ExecuteActionRequest):
 
         # 3b. Get user context (bot name, preferences, etc.)
         user_context = await session_manager.get_user_context(session_id, user_id)
+
+        # Enrich user_context with the user's city from tbl_clawdbot_users so
+        # the gateway can export it as $USER_CITY for the web-search skill's
+        # "near me" handling. Session-level user_context (which lives in
+        # Redis) does not store city, so we read it from the source-of-truth
+        # users table on every /execute-action call. This is one extra cheap
+        # SELECT per request; if it ever becomes hot, cache for the request
+        # lifetime or push city into the Redis user_context on update.
+        try:
+            user_record = await db.get_user(user_id)
+            if user_record and user_record.get("city"):
+                user_context["city"] = user_record["city"]
+        except Exception as e:
+            # Non-fatal — if we can't read the city, the web-search skill
+            # falls back to asking the user for one.
+            logger.warning(f"Could not enrich user_context with city for {user_id}: {e}")
+
         logger.debug(f"Retrieved user context for {user_id}: {user_context}")
         
         # 4. Log action start (include image count if present)

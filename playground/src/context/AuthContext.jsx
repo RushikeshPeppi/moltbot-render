@@ -34,6 +34,10 @@ export function AuthProvider({ children }) {
             name: userData.name,
             oauth_connected: userData.oauth_connected || false,
             timezone: userData.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone,
+            // City is optional — null/undefined means "not set", which the chat
+            // page detects to trigger the city-prompt modal. Normalise to ''
+            // so downstream checks (`!user.city`) work consistently.
+            city: userData.city || '',
             logged_in_at: new Date().toISOString(),
         });
     };
@@ -50,8 +54,12 @@ export function AuthProvider({ children }) {
         setUser((prev) => prev ? { ...prev, timezone: tz } : null);
     }, []);
 
+    const updateCity = useCallback((city) => {
+        setUser((prev) => prev ? { ...prev, city: city || '' } : null);
+    }, []);
+
     return (
-        <AuthContext.Provider value={{ user, login, logout, updateOAuthStatus, updateTimezone }}>
+        <AuthContext.Provider value={{ user, login, logout, updateOAuthStatus, updateTimezone, updateCity }}>
             {children}
         </AuthContext.Provider>
     );

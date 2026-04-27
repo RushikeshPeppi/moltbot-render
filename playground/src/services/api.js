@@ -39,11 +39,17 @@ export async function getPlaygroundUsers() {
 
 /**
  * Create a new playground user and get OAuth URL.
+ *
+ * `city` is optional but strongly encouraged — it powers the web-search skill's
+ * "near me" handling. If the user skips it at signup, the playground will
+ * prompt for it on first chat load via CityPromptModal.
  */
-export async function createPlaygroundUser(name, redirectUri, timezone = 'UTC') {
+export async function createPlaygroundUser(name, redirectUri, timezone = 'UTC', city = null) {
+    const body = { name, redirect_uri: redirectUri, timezone };
+    if (city) body.city = city;
     return request('/playground/create-user', {
         method: 'POST',
-        body: JSON.stringify({ name, redirect_uri: redirectUri, timezone }),
+        body: JSON.stringify(body),
     });
 }
 
@@ -54,6 +60,20 @@ export async function updateUserTimezone(userId, timezone) {
     return request(`/playground/users/${userId}/timezone`, {
         method: 'PATCH',
         body: JSON.stringify({ timezone }),
+    });
+}
+
+/**
+ * Update a user's city.
+ *
+ * Used by the city-prompt modal that appears on chat load when the user's
+ * city is empty in the database (i.e. existing users created before the
+ * city column was added, or users who skipped the field at signup).
+ */
+export async function updateUserCity(userId, city) {
+    return request(`/playground/users/${userId}/city`, {
+        method: 'PATCH',
+        body: JSON.stringify({ city }),
     });
 }
 

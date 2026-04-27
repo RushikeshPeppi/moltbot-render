@@ -509,24 +509,50 @@ class Database:
     
     # ==================== User Management ====================
     
+    # Columns selected by user-listing endpoints. Kept as a class attribute so
+    # the city/no-city fallback paths (used while migration 007 is pending)
+    # stay in sync with each other.
+    _USER_SELECT_WITH_CITY = "user_id, name, email, google_connected, timezone, city, created_at"
+    _USER_SELECT_FALLBACK = "user_id, name, email, google_connected, timezone, created_at"
+
+    @staticmethod
+    def _is_missing_city_column_error(exc: Exception) -> bool:
+        """Detect Postgres/PostgREST 'column does not exist' errors for `city`.
+
+        Used to gracefully degrade when migration 007_add_city_column.sql has
+        not yet been applied. Once the migration is live this branch is dead
+        code but kept as a safety net.
+        """
+        msg = str(exc).lower()
+        return "city" in msg and (
+            "does not exist" in msg
+            or "could not find the" in msg
+            or "42703" in msg  # Postgres undefined_column SQLSTATE
+        )
+
     async def upsert_user(
         self,
         user_id: str,
         name: str,
         email: str = None,
         google_connected: bool = False,
-        timezone: str = None
+        timezone: str = None,
+        city: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Create or update a user in tbl_clawdbot_users.
         Called during OAuth completion and playground user creation.
+
+        `city` is optional and is omitted from the upsert when None so that
+        it does not clobber an existing value on follow-up upserts that
+        only know name/timezone (e.g. the OAuth completion path).
         """
         try:
             if not self._client:
                 await self.initialize()
                 if not self._client:
                     return None
-            
+
             data = {
                 "user_id": user_id,
                 "name": name,
@@ -537,12 +563,31 @@ class Database:
                 data["email"] = email
             if timezone:
                 data["timezone"] = timezone
-            
-            response = self._client.table("tbl_clawdbot_users").upsert(
-                data,
-                on_conflict="user_id"
-            ).execute()
-            
+            if city is not None:
+                # Treat empty string as "clear the city" rather than "leave alone".
+                data["city"] = city or None
+
+            try:
+                response = self._client.table("tbl_clawdbot_users").upsert(
+                    data,
+                    on_conflict="user_id"
+                ).execute()
+            except Exception as e:
+                # If the city column doesn't exist yet (migration 007 not run),
+                # retry without city so user creation still works.
+                if "city" in data and self._is_missing_city_column_error(e):
+                    logger.warning(
+                        "tbl_clawdbot_users.city column missing; retrying upsert "
+                        "without city. Run migration 007_add_city_column.sql."
+                    )
+                    data.pop("city", None)
+                    response = self._client.table("tbl_clawdbot_users").upsert(
+                        data,
+                        on_conflict="user_id"
+                    ).execute()
+                else:
+                    raise
+
             if response.data and len(response.data) > 0:
                 logger.info(f"Upserted user {user_id}: {name}")
                 return response.data[0]
@@ -550,7 +595,7 @@ class Database:
         except Exception as e:
             logger.error(f"Error upserting user {user_id}: {e}")
             return None
-    
+
     async def get_all_users(self) -> List[Dict[str, Any]]:
         """Get all users from tbl_clawdbot_users, ordered by name."""
         try:
@@ -558,16 +603,28 @@ class Database:
                 await self.initialize()
                 if not self._client:
                     return []
-            
-            response = self._client.table("tbl_clawdbot_users").select(
-                "user_id, name, email, google_connected, timezone, created_at"
-            ).order("name").execute()
-            
+
+            try:
+                response = self._client.table("tbl_clawdbot_users").select(
+                    self._USER_SELECT_WITH_CITY
+                ).order("name").execute()
+            except Exception as e:
+                if self._is_missing_city_column_error(e):
+                    logger.warning(
+                        "tbl_clawdbot_users.city column missing; falling back to "
+                        "select without city. Run migration 007_add_city_column.sql."
+                    )
+                    response = self._client.table("tbl_clawdbot_users").select(
+                        self._USER_SELECT_FALLBACK
+                    ).order("name").execute()
+                else:
+                    raise
+
             return response.data or []
         except Exception as e:
             logger.error(f"Error fetching users: {e}")
             return []
-    
+
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         """Get a single user by user_id."""
         try:
@@ -575,22 +632,30 @@ class Database:
                 await self.initialize()
                 if not self._client:
                     return None
-            
-            response = self._client.table("tbl_clawdbot_users").select(
-                "user_id, name, email, google_connected, timezone, created_at"
-            ).eq("user_id", user_id).execute()
-            
+
+            try:
+                response = self._client.table("tbl_clawdbot_users").select(
+                    self._USER_SELECT_WITH_CITY
+                ).eq("user_id", user_id).execute()
+            except Exception as e:
+                if self._is_missing_city_column_error(e):
+                    response = self._client.table("tbl_clawdbot_users").select(
+                        self._USER_SELECT_FALLBACK
+                    ).eq("user_id", user_id).execute()
+                else:
+                    raise
+
             if response.data and len(response.data) > 0:
                 return response.data[0]
             return None
         except Exception as e:
             logger.error(f"Error fetching user {user_id}: {e}")
             return None
-    
+
     async def generate_user_id(self) -> str:
         """Generate a unique alphanumeric user_id (e.g. 'usr_a1b2c3d4')."""
         return f"usr_{secrets.token_hex(4)}"
-    
+
     async def update_user_timezone(self, user_id: str, timezone: str) -> bool:
         """Update a user's timezone setting."""
         try:
@@ -608,6 +673,36 @@ class Database:
             return True
         except Exception as e:
             logger.error(f"Error updating timezone for user {user_id}: {e}")
+            return False
+
+    async def update_user_city(self, user_id: str, city: Optional[str]) -> bool:
+        """Update a user's city. Pass None or empty string to clear it."""
+        try:
+            if not self._client:
+                await self.initialize()
+                if not self._client:
+                    return False
+
+            payload = {
+                # Empty string -> NULL so we don't end up with falsy garbage values.
+                "city": city or None,
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+            self._client.table("tbl_clawdbot_users").update(payload).eq(
+                "user_id", user_id
+            ).execute()
+
+            logger.info(f"Updated city for user {user_id}: {city!r}")
+            return True
+        except Exception as e:
+            if self._is_missing_city_column_error(e):
+                logger.error(
+                    "tbl_clawdbot_users.city column missing — run migration "
+                    "007_add_city_column.sql in the Supabase SQL Editor before "
+                    "calling this endpoint."
+                )
+            else:
+                logger.error(f"Error updating city for user {user_id}: {e}")
             return False
 
     async def update_google_connected(self, user_id: str, connected: bool) -> bool:

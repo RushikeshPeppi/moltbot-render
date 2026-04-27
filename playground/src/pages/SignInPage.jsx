@@ -43,7 +43,8 @@ export default function SignInPage() {
         const aliases = { 'Asia/Calcutta': 'Asia/Kolkata', 'Asia/Katmandu': 'Asia/Kathmandu' };
         return aliases[browserTz] || browserTz;
     });
-    const [createStep, setCreateStep] = useState(1); // 1 = name, 2 = timezone
+    const [newCity, setNewCity] = useState('');
+    const [createStep, setCreateStep] = useState(1); // 1 = name, 2 = timezone, 3 = city
     const [loadingCreate, setLoadingCreate] = useState(false);
     const [error, setError] = useState('');
 
@@ -81,6 +82,9 @@ export default function SignInPage() {
                 name: chosen.name,
                 oauth_connected: oauthConnected,
                 timezone: chosen.timezone || 'UTC',
+                // city may be null for users created before the city column.
+                // MainPage detects empty city and shows the prompt modal.
+                city: chosen.city || '',
             });
             navigate('/chat');
         } catch (err) {
@@ -92,13 +96,14 @@ export default function SignInPage() {
 
     /* ---- Create new account ---- */
     const handleCreateAccount = async () => {
-        if (!newName.trim() || !timezone) return;
+        const cityTrimmed = newCity.trim();
+        if (!newName.trim() || !timezone || !cityTrimmed) return;
         setLoadingCreate(true);
         setError('');
 
         try {
             const callbackUrl = `${window.location.origin}/oauth-callback`;
-            const res = await createPlaygroundUser(newName.trim(), callbackUrl, timezone);
+            const res = await createPlaygroundUser(newName.trim(), callbackUrl, timezone, cityTrimmed);
 
             if (res?.code === 201 && res.data) {
                 login({
@@ -106,6 +111,9 @@ export default function SignInPage() {
                     name: res.data.name,
                     oauth_connected: false,
                     timezone: timezone,
+                    // Use the value we just submitted; backend echoes timezone
+                    // but not city in the create-user response, so trust local state.
+                    city: cityTrimmed,
                 });
 
                 if (res.data.auth_url) {
@@ -123,9 +131,14 @@ export default function SignInPage() {
         }
     };
 
-    const handleNextStep = () => {
+    /* Step transitions: 1 (name) → 2 (timezone) → 3 (city) → submit */
+    const handleNextFromName = () => {
         if (!newName.trim()) return;
         setCreateStep(2);
+    };
+    const handleNextFromTimezone = () => {
+        if (!timezone) return;
+        setCreateStep(3);
     };
 
     return (
@@ -194,13 +207,17 @@ export default function SignInPage() {
                         Create a new user with Google OAuth to test the full experience.
                     </p>
 
-                    {/* Step indicator */}
+                    {/* Step indicator (3 dots: name, timezone, city) */}
                     <div className="create-steps">
-                        <div className={`create-step ${createStep >= 1 ? (createStep > 1 ? 'completed' : 'active') : ''}`} />
-                        <div className={`create-step ${createStep >= 2 ? 'active' : ''}`} />
+                        {[1, 2, 3].map((step) => {
+                            const cls =
+                                createStep > step ? 'completed' :
+                                createStep === step ? 'active' : '';
+                            return <div key={step} className={`create-step ${cls}`} />;
+                        })}
                     </div>
 
-                    {createStep === 1 ? (
+                    {createStep === 1 && (
                         <>
                             <div className="step-label">Step 1 — Your name</div>
                             <input
@@ -209,18 +226,20 @@ export default function SignInPage() {
                                 placeholder="Enter your name"
                                 value={newName}
                                 onChange={(e) => setNewName(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleNextStep()}
+                                onKeyDown={(e) => e.key === 'Enter' && handleNextFromName()}
                                 style={{ marginBottom: 20 }}
                             />
                             <button
                                 className="btn btn-secondary"
                                 disabled={!newName.trim()}
-                                onClick={handleNextStep}
+                                onClick={handleNextFromName}
                             >
                                 Next
                             </button>
                         </>
-                    ) : (
+                    )}
+
+                    {createStep === 2 && (
                         <>
                             <button className="step-back" onClick={() => setCreateStep(1)}>
                                 &#8592; Back
@@ -257,10 +276,41 @@ export default function SignInPage() {
                             </div>
 
                             <button
-                                className="btn btn-primary"
-                                disabled={loadingCreate}
-                                onClick={handleCreateAccount}
+                                className="btn btn-secondary"
+                                disabled={!timezone}
+                                onClick={handleNextFromTimezone}
                                 style={{ marginTop: 20 }}
+                            >
+                                Next
+                            </button>
+                        </>
+                    )}
+
+                    {createStep === 3 && (
+                        <>
+                            <button className="step-back" onClick={() => setCreateStep(2)}>
+                                &#8592; Back
+                            </button>
+                            <div className="step-label">Step 3 — Your city</div>
+                            <p style={{ fontSize: 12, color: 'var(--text-muted, #888)', marginTop: -4, marginBottom: 12 }}>
+                                Used so Peppi can answer "near me" questions about places, weather, etc.
+                            </p>
+                            <input
+                                className="input-field"
+                                type="text"
+                                placeholder="e.g. Pune, India or Brooklyn, NY"
+                                value={newCity}
+                                onChange={(e) => setNewCity(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && newCity.trim() && handleCreateAccount()}
+                                maxLength={100}
+                                style={{ marginBottom: 20 }}
+                            />
+
+                            <button
+                                className="btn btn-primary"
+                                disabled={loadingCreate || !newCity.trim()}
+                                onClick={handleCreateAccount}
+                                style={{ marginTop: 4 }}
                             >
                                 {loadingCreate ? (
                                     <>
