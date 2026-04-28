@@ -8,6 +8,148 @@ const PORT = process.env.PORT || 18789;
 
 app.use(express.json());
 
+/**
+ * Extract OpenClaw's JSON envelope from a buffer that may contain preamble.
+ *
+ * OpenClaw 2026.4.24 writes its `{ payloads, meta, ... }` envelope to stderr
+ * along with (depending on flags / plugin state):
+ *   - [plugins] xxx staging bundled runtime deps...
+ *   - Gateway agent failed; falling back to embedded: ...
+ *   - [tools] web_fetch failed: ...
+ *   - <<<EXTERNAL_UNTRUSTED_CONTENT>>> security wrappers
+ *
+ * The envelope is always the LAST balanced JSON object in the buffer, and
+ * always contains a `payloads` key. Earlier inline JSON-like fragments
+ * (e.g. tool-call arg dumps, fetched-page snippets) might be present but
+ * never have `payloads`.
+ *
+ * Strategy: walk from the end, find the last `}`, walk left until we find
+ * the matching `{`, try JSON.parse on that slice, accept if `payloads` is
+ * a key. Otherwise step left and try again.
+ *
+ * Returns the parsed object, or null if no valid envelope found.
+ */
+function extractOpenClawEnvelope(buffer) {
+  if (!buffer || typeof buffer !== 'string') return null;
+  const text = buffer.trim();
+  if (!text) return null;
+
+  // Fast path 1: the entire buffer is a clean JSON object.
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && 'payloads' in parsed) return parsed;
+    // Buffer parses but isn't an OpenClaw envelope — fall through to scan
+    // (could be a tool-result JSON that happens to be standalone parseable).
+  } catch (_) {
+    // not pure JSON; scan
+  }
+
+  // Fast path 2: find the LAST `{"payloads"` substring and try parsing from
+  // there. This handles the common "preamble + envelope" shape directly
+  // without doing an O(n²) brace walk.
+  const marker = '{"payloads"';
+  let lastMarkerAt = text.lastIndexOf(marker);
+  if (lastMarkerAt !== -1) {
+    // Find the matching closing brace by counting depth, respecting strings.
+    const closeAt = findMatchingClose(text, lastMarkerAt);
+    if (closeAt !== -1) {
+      try {
+        const slice = text.slice(lastMarkerAt, closeAt + 1);
+        const parsed = JSON.parse(slice);
+        if (parsed && typeof parsed === 'object' && 'payloads' in parsed) return parsed;
+      } catch (_) {
+        // fall through to slow scan
+      }
+    }
+  }
+
+  // Slow path: walk back from the last `}` and try every preceding `{` as a
+  // candidate start. Bounded by the lesser of buffer length and 200 attempts
+  // — we don't want to spin forever on truly mangled input.
+  const candidates = [];
+  for (let i = text.length - 1; i >= 0 && candidates.length < 200; i--) {
+    if (text[i] === '{') candidates.push(i);
+  }
+  for (const start of candidates) {
+    const close = findMatchingClose(text, start);
+    if (close === -1) continue;
+    try {
+      const parsed = JSON.parse(text.slice(start, close + 1));
+      if (parsed && typeof parsed === 'object' && 'payloads' in parsed) return parsed;
+    } catch (_) {
+      // keep scanning
+    }
+  }
+  return null;
+}
+
+/**
+ * Best-effort extraction of an Anthropic-style `usage` object from a buffer
+ * even when the full OpenClaw envelope can't be parsed. Used in the
+ * catch path: if we couldn't get `payloads`, we may still recover real
+ * token counts so we don't mis-report cost as zero.
+ *
+ * The substring `"usage":{` appears in OpenClaw stderr in two places:
+ *   - inside `meta.agentMeta.usage` (per-call usage)
+ *   - inside `meta.agentMeta.lastCallUsage` (same shape)
+ * Either is acceptable. We grab the first balanced `{...}` after `"usage":`.
+ *
+ * Returns the parsed usage object or null.
+ */
+function extractOpenClawUsage(buffer) {
+  if (!buffer || typeof buffer !== 'string') return null;
+  const text = buffer;
+  // Look for any "usage":{...} block. Order in the stream doesn't matter
+  // much — both per-call and grand-total typically agree at this scope.
+  const re = /"usage"\s*:\s*\{/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const openAt = match.index + match[0].length - 1; // position of the `{`
+    const close = findMatchingClose(text, openAt);
+    if (close === -1) continue;
+    try {
+      const parsed = JSON.parse(text.slice(openAt, close + 1));
+      if (parsed && typeof parsed === 'object') {
+        // Sanity-check: looks like a usage block (any of the expected fields)
+        const looksLikeUsage =
+          'input' in parsed || 'output' in parsed ||
+          'total' in parsed || 'cacheRead' in parsed ||
+          'input_tokens' in parsed || 'output_tokens' in parsed ||
+          'totalTokenCount' in parsed;
+        if (looksLikeUsage) return parsed;
+      }
+    } catch (_) {
+      // try the next match
+    }
+  }
+  return null;
+}
+
+/**
+ * Given a string and an index of an opening `{`, return the index of the
+ * matching `}`, respecting nested braces, JSON strings, and escapes.
+ * Returns -1 if no balanced close is found.
+ */
+function findMatchingClose(text, openIdx) {
+  if (text[openIdx] !== '{') return -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = openIdx; i < text.length; i++) {
+    const c = text[i];
+    if (escaped) { escaped = false; continue; }
+    if (c === '\\') { escaped = true; continue; }
+    if (c === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 // Store for active OpenClaw processes
 let isReady = false;
 
@@ -266,7 +408,18 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Each request is independent — OpenClaw gets context from the message.
     // OpenClaw v2026.3.8+ requires --agent to route the request (new CLI requirement).
     // NOTE: --thinking flag disabled for Claude Sonnet (causes thinking leakage in output)
-    const args = ['agent', '--agent', 'main', '--message', fullMessage];
+    //
+    // --log-level silent is GLOBAL (must come BEFORE the `agent` subcommand).
+    // Verified via /diagnose-deep against the actual deployed binary
+    // (openclaw 2026.4.24): without it, stderr is contaminated with
+    // [plugins] runtime-dep install logs, the "Gateway agent failed;
+    // falling back to embedded" probe failure, and tool-trace lines.
+    // Since the JSON envelope ALSO lands on stderr (verified:
+    // "stdout empty — trying stderr as response (10617 chars)" fires on
+    // every call), any preamble text breaks JSON.parse and the parser
+    // falls through to plaintext, dumping the entire 14-44KB stderr blob
+    // to the user. Silencing global logs cleans stderr to JSON-only.
+    const args = ['--log-level', 'silent', 'agent', '--agent', 'main', '--message', fullMessage];
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
     const extraEnv = {};
@@ -308,7 +461,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Request JSON output
     args.push('--json');
 
-    console.log(`[${sessionId}] Executing: openclaw agent --message "<context + task>" --json`);
+    console.log(`[${sessionId}] Executing: openclaw --log-level silent agent --message "<context + task>" --json`);
 
     const openclaw = spawn('openclaw', args, {
       env: {
@@ -352,8 +505,12 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
         return;
       }
 
-      // OpenClaw 2026.4.5+ may write JSON to stderr instead of stdout.
-      // If stdout is empty but stderr has content, use stderr as the response source.
+      // OpenClaw 2026.4.24 (verified via /diagnose-deep): the CLI writes its
+      // JSON envelope to STDERR on every agent call — stdout is always empty.
+      // We use stderr as the parse source. With --log-level silent prepended
+      // to argv, stderr should be JSON-only; without that flag, stderr also
+      // contains plugin install logs + gateway-probe-fail preamble + tool
+      // traces, which is what broke the parser on 18/63 of our test scenarios.
       if (!stdout.trim() && stderr.trim()) {
         console.log(`[${sessionId}] stdout empty — trying stderr as response (${stderr.length} chars)`);
         stdout = stderr;
@@ -363,27 +520,16 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
       }
 
       try {
-        // Attempt to extract JSON from mixed output (CLI often prints logs + JSON)
-        let result = null;
-
-        // 1. Try parsing the whole thing first
-        try {
-          result = JSON.parse(stdout);
-        } catch (e) {
-          // 2. Try finding the JSON block
-          // Look for line starting with {
-          const jsonStart = stdout.indexOf('{');
-          const jsonEnd = stdout.lastIndexOf('}');
-
-          if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
-            const jsonStr = stdout.substring(jsonStart, jsonEnd + 1);
-            try {
-              result = JSON.parse(jsonStr);
-            } catch (e2) {
-              console.warn('Failed to extract JSON from stdout substring');
-            }
-          }
-        }
+        // Robust JSON envelope extraction — handles three cases:
+        //   1. The buffer is exactly one JSON object (clean stderr).
+        //   2. The buffer has preamble (plugin install logs, gateway-probe-fail
+        //      message) followed by one JSON object.
+        //   3. A pathological case where multiple JSON-looking blobs appear.
+        //
+        // Strategy: scan from the end for the last balanced `{...}` that
+        // parses cleanly AND contains a `payloads` field (OpenClaw's
+        // signature key). Anything before it is preamble noise — discard.
+        const result = extractOpenClawEnvelope(stdout);
 
         if (result) {
           // DEBUG: Log the actual structure Gemini/OpenClaw returns
@@ -467,29 +613,69 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
             cache_write: cacheWrite
           });
         } else {
-          // Fallback if no JSON found
-          throw new Error('No valid JSON found');
+          // No envelope found — extractor returned null. This means stderr
+          // had neither pure JSON nor a `{"payloads":...}` block we could
+          // recover. Most likely causes:
+          //   - Plugin install failed mid-run (broken stderr stream)
+          //   - openclaw was killed (timeout, signal) before producing output
+          //   - A genuine OpenClaw bug or new output format
+          //
+          // CRITICAL: do NOT return `stdout` raw — that would dump the
+          // gateway-fail message and tool traces to the user, which is the
+          // bug this fix is meant to prevent. Return a friendly fallback
+          // and log the raw stderr server-side for diagnosis.
+          console.error(
+            `[${sessionId}] No OpenClaw envelope found in ${stdout.length} chars of output. ` +
+            `First 500 chars: ${stdout.slice(0, 500).replace(/\n/g, ' ')}`,
+          );
+          throw new Error('No valid JSON envelope in OpenClaw output');
         }
       } catch (e) {
-        // If not JSON, return as plain response but CLEAN UP the output
-        // Remove the ASCII config table if present
-        let cleanResponse = stdout.trim();
+        // Any failure to extract a valid envelope returns a friendly user
+        // message rather than the raw stderr. The server-side log above
+        // captures the actual content for debugging.
+        const friendly =
+          "I had trouble understanding the response from my brain. Please try again — if it keeps happening, let support know.";
 
-        // Estimate tokens even for non-JSON responses
-        const inputChars = (message || '').length + (context || '').length;
-        const outputChars = cleanResponse.length;
-        const estimatedTokens = Math.round((inputChars + outputChars) / 3.5);
-        console.log(`[${sessionId}] Plain text fallback, estimated ~${estimatedTokens} tokens`);
+        // Best-effort: even though we couldn't parse `payloads`, the buffer
+        // might still contain a recoverable `usage` block. The model DID run
+        // on Anthropic's side and we WERE billed — record real tokens if we
+        // can find them, so cost reporting stays accurate.
+        const recoveredUsage = extractOpenClawUsage(stdout) || {};
+        const rawInput  = recoveredUsage.input  ?? recoveredUsage.input_tokens   ?? recoveredUsage.promptTokenCount     ?? 0;
+        const rawOutput = recoveredUsage.output ?? recoveredUsage.output_tokens  ?? recoveredUsage.candidatesTokenCount ?? 0;
+        const cacheRead  = recoveredUsage.cacheRead  ?? recoveredUsage.cache_read_input_tokens   ?? 0;
+        const cacheWrite = recoveredUsage.cacheWrite ?? recoveredUsage.cache_creation_input_tokens ?? 0;
+        const totalReported = recoveredUsage.total ?? recoveredUsage.totalTokenCount ?? recoveredUsage.total_tokens ?? 0;
+
+        // Whichever path matters: real usage if recovered; otherwise a
+        // conservative chars-based estimate covering input + the friendly
+        // we just sent (so we never report 0 when we did issue a reply).
+        const inputTokens  = (rawInput || cacheRead || cacheWrite)
+          ? rawInput + cacheRead + cacheWrite
+          : Math.round(((message || '').length + (context || '').length) / 3.5);
+        const outputTokens = rawOutput || Math.round(friendly.length / 3.5);
+        const tokensUsed   = totalReported > 0 ? totalReported : (inputTokens + outputTokens);
+
+        console.log(
+          `[${sessionId}] Envelope-extraction failed; recovered_usage=${JSON.stringify(recoveredUsage) !== '{}'} ` +
+          `tokens: total=${tokensUsed} input=${inputTokens} output=${outputTokens} ` +
+          `cacheRead=${cacheRead} cacheWrite=${cacheWrite}`,
+        );
 
         resolve({
-          response: cleanResponse,
+          response: friendly,
           action_type: 'chat',
-          details: null,
-          tokens_used: estimatedTokens,
-          input_tokens: Math.round(inputChars / 3.5),
-          output_tokens: Math.round(outputChars / 3.5),
-          cache_read: 0,
-          cache_write: 0
+          details: {
+            envelope_extraction_failed: true,
+            error: e.message,
+            recovered_usage: Object.keys(recoveredUsage).length > 0,
+          },
+          tokens_used: tokensUsed,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_read: cacheRead,
+          cache_write: cacheWrite,
         });
       }
     });
@@ -513,207 +699,6 @@ app.get('/status/:jobId', (req, res) => {
     job_id: jobId,
     status: 'not_found',
     message: 'Async job tracking not yet implemented'
-  });
-});
-
-// Auth helper for the diagnostic endpoints below — TEST-ONLY, gated by the
-// same TEST_RESET_TOKEN env as /reset. Returns null if auth ok, otherwise
-// sends 403 and returns a sentinel so the caller can early-out.
-function _diagAuthOk(req, res) {
-  const expectedToken = process.env.TEST_RESET_TOKEN;
-  if (!expectedToken) {
-    res.status(403).json({ ok: false, error: 'TEST_RESET_TOKEN not configured' });
-    return false;
-  }
-  if (req.header('x-test-reset-token') !== expectedToken) {
-    res.status(403).json({ ok: false, error: 'Missing or invalid X-Test-Reset-Token' });
-    return false;
-  }
-  return true;
-}
-
-// Async wrapper around execFile so the Express event loop is NOT blocked
-// while a smoke test waits 30-60s for openclaw to return. execFile (not exec)
-// avoids shell injection. Returns the same envelope shape regardless of exit.
-function runCmdAsync(file, args = [], timeoutMs = 10000) {
-  return new Promise((resolve) => {
-    const { execFile } = require('child_process');
-    execFile(
-      file, args,
-      { timeout: timeoutMs, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
-      (err, stdout, stderr) => {
-        if (err) {
-          resolve({
-            ok: false,
-            code: err.code,
-            signal: err.signal,
-            killed: err.killed,
-            stdout: (stdout || '').toString(),
-            stderr: (stderr || '').toString(),
-            message: err.message,
-          });
-        } else {
-          resolve({ ok: true, stdout: stdout || '', stderr: stderr || '' });
-        }
-      },
-    );
-  });
-}
-
-/**
- * TEST-ONLY: cheap diagnostics on the installed openclaw CLI + on-disk state.
- *
- * Returns in < 2s. Captures everything we can probe without making a real
- * model call:
- *   - openclaw / node versions
- *   - --help output for top-level + agent + doctor + gateway + sessions +
- *     reset + onboard subcommands (failures are informative — they tell us
- *     which subcommands actually exist on this version)
- *   - directory listings under ~/.openclaw to see the real on-disk schema
- *
- * Auth: X-Test-Reset-Token header. /diagnose-smoke is the companion endpoint
- * that runs the actual model-call smoke tests (one per request).
- */
-app.post('/diagnose-deep', async (req, res) => {
-  if (!_diagAuthOk(req, res)) return;
-
-  const homeDir = process.env.HOME || '/root';
-
-  function listDir(p) {
-    try {
-      if (!fs.existsSync(p)) return { exists: false };
-      const entries = fs.readdirSync(p, { withFileTypes: true }).map((e) => ({
-        name: e.name,
-        type: e.isDirectory() ? 'dir' : (e.isFile() ? 'file' : 'other'),
-      }));
-      return { exists: true, entries };
-    } catch (e) {
-      return { exists: 'error', error: e.message };
-    }
-  }
-
-  // Run all the cheap probes in parallel. Each finishes in well under 1s
-  // so total wall-clock for the response is sub-second. Subcommand --help
-  // calls (agent, doctor, gateway, etc.) hang waiting for the gateway in
-  // 2026.4.24 — even with --help they probe ws://127.0.0.1:18789 first —
-  // so they get killed at 5s and produce empty output. That itself is data.
-  const [
-    ocVersion, nodeVersion, npmRootGlobal,
-    helpTop, helpAgent,
-    // Newly-added: dump the openclaw.json the gateway boot wrote. If the
-    // production fix needs config changes, we want to see what's actually
-    // there now.
-  ] = await Promise.all([
-    runCmdAsync('openclaw', ['--version'], 5000),
-    runCmdAsync('node', ['--version'], 5000),
-    runCmdAsync('npm', ['root', '-g'], 5000),
-    runCmdAsync('openclaw', ['--help'], 5000),
-    runCmdAsync('openclaw', ['agent', '--help'], 8000),
-  ]);
-
-  // Find openclaw's global install dir from `npm root -g`. The plugin
-  // runtime-dep installer probably lives under there.
-  const npmRoot = (npmRootGlobal.stdout || '').trim();
-  const openclawPkgRoot = npmRoot ? path.join(npmRoot, 'openclaw') : null;
-
-  res.json({
-    ok: true,
-    probes: {
-      versions: { openclaw: ocVersion, node: nodeVersion },
-      npm_root_global: npmRootGlobal,
-      cli_help: { top: helpTop, agent: helpAgent },
-      // Runtime config files — what the gateway boot wrote.
-      configs: {
-        openclaw_json: (() => {
-          try {
-            return { path: path.join(homeDir, '.openclaw', 'openclaw.json'),
-                     contents: JSON.parse(fs.readFileSync(path.join(homeDir, '.openclaw', 'openclaw.json'), 'utf8')) };
-          } catch (e) { return { error: e.message }; }
-        })(),
-        agent_md_size: (() => {
-          try {
-            const p = path.join(homeDir, '.openclaw', 'agents', 'main', 'agent', 'agent.md');
-            const s = fs.statSync(p);
-            return { path: p, size: s.size, mtime: s.mtime };
-          } catch (e) { return { error: e.message }; }
-        })(),
-      },
-      on_disk: {
-        openclaw_root:     listDir(path.join(homeDir, '.openclaw')),
-        agents_main:       listDir(path.join(homeDir, '.openclaw', 'agents', 'main')),
-        agents_main_agent: listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'agent')),
-        sessions_dir:      listDir(path.join(homeDir, '.openclaw', 'agents', 'main', 'sessions')),
-        memory_dir:        listDir(path.join(homeDir, '.openclaw', 'memory')),
-        workspace_dir:     listDir(path.join(homeDir, '.openclaw', 'workspace')),
-        logs_dir:          listDir(path.join(homeDir, '.openclaw', 'logs')),
-        // Where openclaw is actually installed + plugin layout.
-        npm_root:          npmRoot ? listDir(npmRoot) : { error: 'no npm root' },
-        openclaw_pkg:      openclawPkgRoot ? listDir(openclawPkgRoot) : { error: 'no pkg root' },
-        openclaw_plugins:  openclawPkgRoot ? listDir(path.join(openclawPkgRoot, 'plugins')) : { error: 'no pkg root' },
-        openclaw_node_modules: openclawPkgRoot ? listDir(path.join(openclawPkgRoot, 'node_modules')) : { error: 'no pkg root' },
-      },
-    },
-  });
-});
-
-/**
- * TEST-ONLY: run ONE smoke variant (real model call with a short message).
- * Each variant is a different combination of flags so we can see exactly
- * what each flag does on THIS version of openclaw.
- *
- * Variants:
- *   ?variant=baseline     — current prod flags only (--agent main --json)
- *   ?variant=local        — adds --local
- *   ?variant=silent       — adds --log-level silent
- *   ?variant=local_silent — adds both
- *
- * Why split from /diagnose-deep: each variant takes 30-60s, and Render's
- * edge will 502 if a single response takes > ~60s on starter. One-variant-
- * per-request keeps each call comfortably under that ceiling.
- *
- * Auth: X-Test-Reset-Token. Cost per call: ~$0.01-0.02.
- */
-app.post('/diagnose-smoke', async (req, res) => {
-  if (!_diagAuthOk(req, res)) return;
-
-  const variant = (req.query.variant || 'baseline').toString();
-  // Note: --log-level is a TOP-LEVEL flag in openclaw 2026.4.24 (rejected as
-  // "unknown option" if placed after the agent subcommand). All "silent_*"
-  // variants below place it before agent.
-  const flags = {
-    baseline:            ['agent', '--agent', 'main', '--json', '--message', 'ping'],
-    local:               ['agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
-    silent:              ['--log-level', 'silent', 'agent', '--agent', 'main', '--json', '--message', 'ping'],
-    local_silent:        ['--log-level', 'silent', 'agent', '--agent', 'main', '--local', '--json', '--message', 'ping'],
-    // Warm-only paths: skip plugins by setting --no-color (helps test if
-    // plugin install is the bottleneck) and try with --container=none
-    // (longer-shot — checking if any flag short-circuits plugin loading).
-    silent_no_color:     ['--log-level', 'silent', '--no-color', 'agent', '--agent', 'main', '--json', '--message', 'ping'],
-    // Just print version — pure CLI smoke, no agent call. Tells us how
-    // long the binary takes to *start* (i.e. plugin-install overhead).
-    version_only:        ['--version'],
-  }[variant];
-
-  if (!flags) {
-    return res.status(400).json({
-      ok: false,
-      error: `Unknown variant: ${variant}. Valid: baseline | local | silent | local_silent | silent_no_color | version_only`,
-    });
-  }
-
-  // Allow ?timeout=N seconds (default 55, max 110 to stay under Render edge).
-  const timeoutSec = Math.min(110, Math.max(5, parseInt(req.query.timeout, 10) || 55));
-
-  const t0 = Date.now();
-  const result = await runCmdAsync('openclaw', flags, timeoutSec * 1000);
-  const elapsedMs = Date.now() - t0;
-
-  res.json({
-    ok: true,
-    variant,
-    args: flags,
-    elapsed_ms: elapsedMs,
-    result,
   });
 });
 
