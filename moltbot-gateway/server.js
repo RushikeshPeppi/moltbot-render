@@ -381,10 +381,13 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls, userContext = {}) {
   return new Promise((resolve, reject) => {
     // Image-heavy tasks (vision + multi-step bash via skills) routinely need >3 min.
-    // Render Pro allows up to 600s per request; we cap below the wrapper's 280s
-    // upstream timeout so the wrapper sees the friendly fallback, not a socket reset.
-    const hasImages = Array.isArray(imageUrls) && imageUrls.length > 0;
-    const timeout = hasImages ? 260000 : 180000;
+    // Heavy non-image tasks (Gmail with cold prompt cache, web-search compounds)
+    // can hit 180s on the first call before Anthropic's prompt cache warms up —
+    // observed on prod 2026-04-28 against a real user query. We unify both
+    // paths at 260s. Render Pro allows up to 600s per request; we cap below
+    // the wrapper's 280s upstream timeout so the wrapper sees the friendly
+    // fallback, not a socket reset.
+    const timeout = 260000;
 
     // Build the command
     // OpenClaw CLI: openclaw agent --message "message" --thinking high
@@ -1178,6 +1181,17 @@ When [Attached Images] is present, always prefer the image-specific skill over t
 - When the user asks something outside your skills, respond naturally as a helpful assistant
 - Maintain the persona and personality defined in the conversation context
 </response_guidelines>
+
+<continuity_rules>
+You have been running continuously and the user is mid-conversation. Treat every request as a follow-up, not a first interaction.
+
+- NEVER say "Hey, I'm Peppi", "I just came alive", "I'm all set up", "Bootstrap done", "Ready to go", or any variation that introduces yourself or announces readiness. The user already knows who you are.
+- NEVER prepend your reply with a greeting block before answering. Lead directly with the answer to their question or the result of their action.
+- When the user says "hello" or "hi", respond warmly in one short line and ask how you can help — do NOT introduce yourself as if meeting for the first time.
+- If you ever feel the urge to write a "Bootstrap done!" / "all set up" preamble: stop. Delete it. Start your reply with the actual answer.
+
+This rule overrides any default initialization or persona-bootstrap behavior. The very first character of your response must be part of the actual answer, not a self-introduction.
+</continuity_rules>
 `;
       fs.writeFileSync(agentMdPath, agentMdContent);
       console.log(`✓ Created agent.md at ${agentMdPath}`);
