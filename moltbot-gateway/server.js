@@ -175,37 +175,58 @@ function findMatchingClose(text, openIdx) {
 function stripBootstrapPreamble(text) {
   if (!text || typeof text !== 'string') return text;
 
-  // Patterns to strip if they appear at the *start* of the buffer.
-  // Applied iteratively: after each strip, leading whitespace is
-  // collapsed and we retry, so combinations like
-  //   "Let me check your mail.\nHey! I'm Peppi … ready to go.\n\nReal answer"
-  // peel one layer per pass.
-  const patterns = [
-    // Greeting block: "Hey/Hi/Hello, I'm Peppi …" continuing through
-    // any of the known intro suffix phrases ("ready to go", "all set up",
-    // "bootstrap done", "here to help") and then up to and including the
-    // first paragraph break (\n\n) plus an optional `---` divider.
-    // This handles trailing fragments like "Bootstrap done!" that come
-    // *after* the first suffix phrase in the same intro block.
-    /^\s*(?:Hey|Hi|Hello)[!,.\s][\s\S]*?(?:ready to go|all set up|bootstrap done|here to help)[\s\S]*?(?:\n\s*\n(?:\s*---+\s*\n+)?|$)/i,
-    // Pure-narration line announcing intent ("Let me update the workspace
-    // files and check your mail at the same time."). Only strip when
-    // there's more content after it — never the only content.
-    /^\s*Let me\s+(?:update the workspace|check|fetch|grab|look up|search|pull|run|do)[^\n]+[.!]\s*\n+(?=\S)/i,
-  ];
+  // Suffix phrases that mark a Peppi self-introduction sentence. The
+  // model varies wording on cold-cache calls — observed in prod
+  // (2026-04-28): "ready to go", "all set up", "bootstrap done",
+  // "just came online", "your AI assistant", "here to help",
+  // "just came alive", "now online".
+  const suffixAlternation =
+    'ready to go|all set up|bootstrap done|just came online|just came alive|now online|now ready|ready to roll|here to help|your AI assistant|set and ready|up and running';
+
+  // Find a Peppi self-introduction sentence anywhere in the buffer. The
+  // sentence is bounded by the first `.` or `!` after the suffix phrase
+  // — NOT by the next newline, because the model often packs the
+  // introduction and the actual answer onto the same line, e.g.
+  //   "Hey! I'm Peppi 🐾 — just came online. Here are the F1 results"
+  // We must stop at the period and keep "Here are the F1 results".
+  const introSentenceRegex = new RegExp(
+    `^[ \\t]*[^\\n]*?\\bPeppi\\b[^\\n]*?(?:${suffixAlternation})[^.!\\n]*?[.!]`,
+    'im',
+  );
+
+  // Orphaned bootstrap announcement fragments that may follow the main
+  // intro line ("Bootstrap done!", "All set up!", "Ready to go!").
+  const orphanedAnnouncementRegex = new RegExp(
+    `^\\s*(?:Bootstrap done|All set up|Ready to go|Just came online|Now online|Online and ready|Now ready|Up and running)[!.?]*\\s*\\n+`,
+    'i',
+  );
 
   let cleaned = text;
-  let prev;
-  do {
-    prev = cleaned;
-    for (const re of patterns) {
-      cleaned = cleaned.replace(re, '');
-    }
-    cleaned = cleaned.replace(/^\s+/, '');
-  } while (cleaned !== prev && cleaned.length > 0);
 
-  // Defensive: if we stripped everything, fall back to the original so we
-  // never return an empty string in place of a real reply.
+  // Pass 1: find a Peppi introduction line and strip everything from the
+  // start of the buffer up to and including the end of that sentence.
+  // Iterate up to 3 times to handle the (rare) case of multiple intros.
+  for (let i = 0; i < 3; i++) {
+    const m = cleaned.match(introSentenceRegex);
+    if (!m) break;
+    const endIdx = m.index + m[0].length;
+    cleaned = cleaned.slice(endIdx);
+  }
+
+  // Pass 2: clean up anything left at the start — orphaned announcement
+  // fragments, leading horizontal-rule dividers, leading whitespace.
+  // Iterate so combinations peel one layer per pass.
+  for (let i = 0; i < 4; i++) {
+    const before = cleaned;
+    cleaned = cleaned.replace(orphanedAnnouncementRegex, '');
+    cleaned = cleaned.replace(/^\s*---+\s*\n+/, '');
+    cleaned = cleaned.replace(/^\s+/, '');
+    if (cleaned === before) break;
+  }
+
+  // Defensive: if we stripped everything, fall back to the original so
+  // the user never gets an empty reply in place of a real one (e.g. if
+  // the only content was an intro with no answer behind it).
   return cleaned.length > 0 ? cleaned : text;
 }
 
@@ -440,13 +461,13 @@ function buildContext(credentials, history, userId, timezone, userContext = {}) 
 function executeOpenClaw(sessionId, message, context, credentials, userId, timezone, imageUrls, userContext = {}) {
   return new Promise((resolve, reject) => {
     // Image-heavy tasks (vision + multi-step bash via skills) routinely need >3 min.
-    // Heavy non-image tasks (Gmail with cold prompt cache, web-search compounds)
-    // can hit 180s on the first call before Anthropic's prompt cache warms up —
-    // observed on prod 2026-04-28 against a real user query. We unify both
-    // paths at 260s. Render Pro allows up to 600s per request; we cap below
-    // the wrapper's 280s upstream timeout so the wrapper sees the friendly
-    // fallback, not a socket reset.
-    const timeout = 260000;
+    // Cold-start non-image tasks can also blow past 4 min: F1 / web-search
+    // compound queries on a freshly deployed container observed at 262s on
+    // prod 2026-04-28 (just over our previous 260s cap). Bumped to 320s.
+    // Render Pro allows up to 600s per request; the wrapper's MOLTBOT_TIMEOUT
+    // is bumped to 360s in lockstep, preserving the gateway-times-out-first
+    // semantic that lets us return a friendly fallback rather than a 504.
+    const timeout = 320000;
 
     // Build the command
     // OpenClaw CLI: openclaw agent --message "message" --thinking high
