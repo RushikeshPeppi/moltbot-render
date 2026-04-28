@@ -66,6 +66,14 @@ class ExecuteActionRequest(BaseModel):
     credentials: Optional[Dict[str, Any]] = Field(None, description="User service credentials")
     image_urls: Optional[List[str]] = Field(None, description="Twilio media URLs for attached images (MMS)")
     num_media: Optional[int] = Field(0, description="Number of media attachments from Twilio")
+    city: Optional[str] = Field(
+        None,
+        description=(
+            "User's city for location-aware replies (e.g. 'Pune, India'). "
+            "Peppi backend should pass this from its own user table. "
+            "If omitted, falls back to tbl_clawdbot_users.city (playground path)."
+        ),
+    )
 
     @field_validator("message", mode="before")
     @classmethod
@@ -84,7 +92,8 @@ class ExecuteActionRequest(BaseModel):
                 "phone_number": "+1234567890",
                 "credentials": None,
                 "image_urls": ["https://api.twilio.com/2010-04-01/Accounts/.../Media/..."],
-                "num_media": 1
+                "num_media": 1,
+                "city": "Pune, India"
             }
         }
 
