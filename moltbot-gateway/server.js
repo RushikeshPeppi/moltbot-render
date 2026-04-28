@@ -150,6 +150,65 @@ function findMatchingClose(text, openIdx) {
   return -1;
 }
 
+/**
+ * Strip self-introductory / bootstrap preambles that the model occasionally
+ * prepends before the actual answer.
+ *
+ * Background: when SOUL.md was removed (commit d3bc82d), the explicit
+ * "NEVER introduce yourself / never say 'I just came alive'" rules went
+ * with it. We re-added equivalent rules to the agent.md template, but
+ * Sonnet 4.6 still sometimes leaks intros — most reliably on cold-cache
+ * first calls where the model has the strongest "this is the start of a
+ * conversation" prior.
+ *
+ * Patterns observed in prod (2026-04-28):
+ *   "Hey! I'm **Peppi** 🐾 — all set up and ready to go. Bootstrap done!\n\n---\n\n"
+ *   "Hey! I'm **Peppi** 🌍 — your AI assistant, now all set up and ready to go.\n\n"
+ * Plus a related "Let me update the workspace files and check your mail" narration
+ * payload that announces the agent's intent before delivering the result.
+ *
+ * Strategy: regex-strip these specific shapes from the START of the response
+ * only. Conservative — never touches mid-message text, never touches the
+ * tail. If a strip would remove the entire response, return the original
+ * (defensive: avoid replacing real content with empty string).
+ */
+function stripBootstrapPreamble(text) {
+  if (!text || typeof text !== 'string') return text;
+
+  // Patterns to strip if they appear at the *start* of the buffer.
+  // Applied iteratively: after each strip, leading whitespace is
+  // collapsed and we retry, so combinations like
+  //   "Let me check your mail.\nHey! I'm Peppi … ready to go.\n\nReal answer"
+  // peel one layer per pass.
+  const patterns = [
+    // Greeting block: "Hey/Hi/Hello, I'm Peppi …" continuing through
+    // any of the known intro suffix phrases ("ready to go", "all set up",
+    // "bootstrap done", "here to help") and then up to and including the
+    // first paragraph break (\n\n) plus an optional `---` divider.
+    // This handles trailing fragments like "Bootstrap done!" that come
+    // *after* the first suffix phrase in the same intro block.
+    /^\s*(?:Hey|Hi|Hello)[!,.\s][\s\S]*?(?:ready to go|all set up|bootstrap done|here to help)[\s\S]*?(?:\n\s*\n(?:\s*---+\s*\n+)?|$)/i,
+    // Pure-narration line announcing intent ("Let me update the workspace
+    // files and check your mail at the same time."). Only strip when
+    // there's more content after it — never the only content.
+    /^\s*Let me\s+(?:update the workspace|check|fetch|grab|look up|search|pull|run|do)[^\n]+[.!]\s*\n+(?=\S)/i,
+  ];
+
+  let cleaned = text;
+  let prev;
+  do {
+    prev = cleaned;
+    for (const re of patterns) {
+      cleaned = cleaned.replace(re, '');
+    }
+    cleaned = cleaned.replace(/^\s+/, '');
+  } while (cleaned !== prev && cleaned.length > 0);
+
+  // Defensive: if we stripped everything, fall back to the original so we
+  // never return an empty string in place of a real reply.
+  return cleaned.length > 0 ? cleaned : text;
+}
+
 // Store for active OpenClaw processes
 let isReady = false;
 
@@ -549,6 +608,19 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
               .map(p => p.text || p.content || '')
               .filter(t => t.length > 0)
               .join('\n') || null;
+          }
+
+          // Belt-and-suspenders: even with the agent.md continuity_rules in
+          // place, Sonnet still occasionally leaks "Hey! I'm Peppi … all set
+          // up and ready to go" preambles on cold-cache first calls. Strip
+          // any such leading greeting / pure-narration block before we hand
+          // the text to the wrapper. See stripBootstrapPreamble() above.
+          if (responseText) {
+            const before = responseText;
+            responseText = stripBootstrapPreamble(responseText);
+            if (responseText !== before) {
+              console.log(`[${sessionId}] Stripped bootstrap preamble (${before.length}→${responseText.length} chars)`);
+            }
           }
 
           // Fallback chain: payloads → standard fields → raw stringify
