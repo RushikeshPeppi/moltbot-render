@@ -1335,12 +1335,15 @@ SPEED RULES (response time budget: aim for <60s):
 - Do NOT cat or read SKILL.md at runtime — everything you need is in this protocol.
 - Compose your answer directly from the jq output. Do not run a second bash command to reformat.
 
-QUICK SEARCH TEMPLATE (copy-paste into bash, fill QUERY only):
-  QUERY="<your search query>"
+SEARCH TEMPLATE (fill QUERY; optionally set CATEGORY="news" TIME_RANGE="day"):
+  QUERY="<your search query, city appended for near-me>"
   URL_ENC_Q=$(printf '%s' "$QUERY" | jq -Rr '@uri')
-  curl -sS -m 5 -A 'Mozilla/5.0 (compatible/PeppiAgent/1.0)' -H 'Accept: application/json' "\${SEARXNG_URL%/}/search?q=\${URL_ENC_Q}&format=json&safesearch=1&engines=brave" | jq -r '.results | .[:3] | to_entries | map("\(.key+1). **\(.value.title // "")**\n   \((.value.content // "") | gsub("\\s+";" ") | .[:200])\n   <\(.value.url)>") | join("\n\n")'
-
-For news queries add &categories=news&time_range=day to the URL.
+  SEARCH_URL="\${SEARXNG_URL%/}/search?q=\${URL_ENC_Q}&format=json&safesearch=1&engines=brave"
+  [ -n "\${CATEGORY:-}"   ] && SEARCH_URL="\${SEARCH_URL}&categories=\${CATEGORY}"
+  [ -n "\${TIME_RANGE:-}" ] && SEARCH_URL="\${SEARCH_URL}&time_range=\${TIME_RANGE}"
+  HTTP_CODE=\$(curl -sS -m 5 -A 'Mozilla/5.0 (compatible; PeppiAgent/1.0)' -H 'Accept: application/json' -o /tmp/srx.json -w '%{http_code}' "\$SEARCH_URL")
+  case "\$HTTP_CODE" in 200) ;; 403|429) echo "Rate-limited, retry in a moment." && exit 0 ;; 000) echo "Search timed out." && exit 0 ;; *) echo "Search failed (HTTP \$HTTP_CODE)." && exit 0 ;; esac
+  jq -r '.results | group_by(.parsed_url[1]//.url) | map(.[0]) | sort_by(-(.score//0)) | .[:3] | to_entries | map("\(.key+1). **\(.value.title//"(no title)")**\n   \(.value.parsed_url[1]//.value.url)\n   \((.value.content//"") | gsub("\\s+";" ") | .[:250])\n   <\(.value.url)>") | join("\n\n")' /tmp/srx.json
 </web_search_protocol>
 
 <reminder_protocol>
