@@ -415,7 +415,7 @@ app.post('/execute', async (req, res) => {
     // Extract user context for personalization
     const userContext = user_context || {};
 
-    // Build dynamic context (static rules are now in SOUL.md, injected by OpenClaw)
+    // Build dynamic context (static rules are in agent.md, written at startup)
     const context = buildContext(
       enhancedCredentials,
       history,
@@ -1065,14 +1065,6 @@ async function startOpenClaw() {
       });
     } else {
       console.log(`⚠ Custom skills directory not found at ${buildSkillsDir}`);
-    }
-
-    // Copy SOUL.md to workspace (auto-injected into system prompt by OpenClaw)
-    const soulSrc = path.join(__dirname, 'SOUL.md');
-    const soulDest = path.join(workspaceDir, 'SOUL.md');
-    if (fs.existsSync(soulSrc)) {
-      fs.copyFileSync(soulSrc, soulDest);
-      console.log('✓ Copied SOUL.md to workspace');
     }
 
     // Remove conflicting gog skill from ClawHub location

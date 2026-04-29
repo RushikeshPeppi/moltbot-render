@@ -252,7 +252,7 @@ async def execute_action(request: ExecuteActionRequest):
             user_id=user_id,
             session_id=session_id,
             action_type="execute_action",
-            request_summary=img_prefix + request.message[:2000],
+            request_summary=img_prefix + (request.message or "")[:2000],
             status="pending"
         )
         
