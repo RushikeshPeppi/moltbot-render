@@ -68,17 +68,18 @@ QUERY="<the search query, with location appended for 'near me' if applicable>"
 # Optional — only set when you need them:
 # CATEGORY="news"        # one of: general (default), news, images, map, science
 # TIME_RANGE="day"       # one of: day, week, month, year
-# MAX_RESULTS=5          # default 5; range 1-10
+# MAX_RESULTS=3          # default 3; range 1-5. Keep low for SMS (faster response).
 
 # Build URL — jq @uri handles encoding (avoids the bash + vs %20 trap).
 URL_ENC_Q=$(printf '%s' "$QUERY" | jq -Rr '@uri')
-SEARCH_URL="${SEARXNG_URL%/}/search?q=${URL_ENC_Q}&format=json&safesearch=1"
+SEARCH_URL="${SEARXNG_URL%/}/search?q=${URL_ENC_Q}&format=json&safesearch=1&engines=brave"
 [ -n "${CATEGORY:-}"   ] && SEARCH_URL="${SEARCH_URL}&categories=${CATEGORY}"
 [ -n "${TIME_RANGE:-}" ] && SEARCH_URL="${SEARCH_URL}&time_range=${TIME_RANGE}"
 
-# Execute. -m 8 = 8s total timeout. Browser-like UA + Accept headers help on
-# any future config that re-enables bot detection.
-HTTP_CODE=$(curl -sS -m 8 \
+# Execute. -m 5 = 5s total timeout (brave responds in ~1.2s; 5s is safe headroom).
+# &engines=brave: tested fastest engine on this instance (19 results in 1.2s).
+# duckduckgo and karmasearch both return 0 results; startpage is slower (1.6s, 10 results).
+HTTP_CODE=$(curl -sS -m 5 \
   -A 'Mozilla/5.0 (compatible; PeppiAgent/1.0; +https://peppi.app)' \
   -H 'Accept: application/json' \
   -H 'Accept-Language: en-US,en;q=0.9' \
@@ -101,9 +102,9 @@ case "$HTTP_CODE" in
     exit 0 ;;
 esac
 
-# Format top ${MAX_RESULTS:-5} results, deduped by domain, snippets truncated.
+# Format top ${MAX_RESULTS:-3} results, deduped by domain, snippets truncated.
 # parsed_url[1] is the netloc; we group_by it and keep the highest-scored entry.
-jq -r --argjson n "${MAX_RESULTS:-5}" '
+jq -r --argjson n "${MAX_RESULTS:-3}" '
   if (.results | length) == 0 then
     "No results. " + (
       if (.suggestions | length) > 0
