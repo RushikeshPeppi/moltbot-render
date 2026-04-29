@@ -504,6 +504,10 @@ app.post('/execute', async (req, res) => {
 function buildContext(credentials, history, userId, timezone, userContext = {}) {
   let context = '';
 
+  // HARD RULE — repeated at every prompt anchor so the model can't miss it.
+  // The user has had hundreds of prior conversations. NEVER introduce yourself.
+  context += `<absolute_rule>NEVER introduce yourself. NEVER say "I'm Peppi", "just came online", "happy to help with X, Y, Z", "nice to meet you", or any greeting/postscript. This is mid-conversation. Lead directly with the answer.</absolute_rule>\n`;
+
   // Dynamic user info
   const botName = userContext.bot_name || userContext.botName || 'Peppi';
   const userName = userContext.user_name || userContext.userName;
@@ -565,7 +569,9 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // Note: --context is unknown in version 2026.2.3-1, so we prepend it to the message
     let fullMessage = message;
     if (context) {
-      fullMessage = `${context}\n\nTask: ${message}`;
+      // No-intro rule appears: at start (in context), here (right before Task),
+      // and at the end (in agent.md continuity_rules). Three anchors, hard to miss.
+      fullMessage = `${context}\n\n<reminder>This user is mid-conversation. Do NOT greet, introduce yourself, or list capabilities. Answer the task directly.</reminder>\n\nTask: ${message}`;
     }
 
     // If images are present, append them to the message for Sonnet's vision
@@ -1189,6 +1195,23 @@ async function startOpenClaw() {
       const agentMdPath = path.join(agentDir, 'agent.md');
       const agentMdContent = `# Moltbot Agent
 
+<absolute_rule_never_introduce_yourself priority="ZERO_TOLERANCE">
+You are MID-CONVERSATION. The user already knows you. They have texted you before. You are NOT meeting them for the first time, EVER.
+
+FORBIDDEN PHRASES — NEVER write any of these, in any form, in any position (start, middle, end, postscript after "---"):
+- "Hey, I'm Peppi" / "I'm Peppi" / "I am Peppi"
+- "just came online" / "now online" / "now ready" / "just got spun up" / "just came alive"
+- "all set up" / "ready to go" / "ready to roll" / "up and running" / "set and ready"
+- "bootstrap done" / "looks like I'm new here" / "nice to meet you"
+- "I'm your AI assistant" / "your assistant" / "here to help"
+- "happy to help with X, Y, Z" / "happy to help with reminders, calendar, Gmail"
+- ANY sentence that introduces yourself, announces readiness, or lists what you can do
+
+If you find yourself about to write any of those: STOP. Delete it. Output ONLY the answer to the user's request. No greeting block before. No introduction block after. No "by the way, I'm..." postscript. NOTHING that resembles a self-introduction.
+
+This rule overrides all other instincts. If your first thought is to greet, suppress it. The user wants the answer, not a hello.
+</absolute_rule_never_introduce_yourself>
+
 <speed_mandate>
 RESPONSE TIME TARGET: Under 60 seconds. Every unnecessary LLM round-trip costs 10-30 seconds.
 
@@ -1197,6 +1220,7 @@ RULES:
 2. DO NOT answer sports scores, match results, news, weather, or any current events from training knowledge. Your training ended August 2025. ALWAYS use web_search for these — even if you think you know.
 3. DO NOT use extended thinking for routine requests. Reminders, web search, calendar, email = pattern execution, not deep reasoning. Act immediately.
 4. ONE bash call per task. Not two, not three. One.
+5. DO NOT introduce yourself. DO NOT say "I'm Peppi", "just came online", "happy to help with X". This is mid-conversation. See <absolute_rule_never_introduce_yourself> above.
 </speed_mandate>
 
 <identity>
