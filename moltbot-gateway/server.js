@@ -1101,12 +1101,13 @@ async function startOpenClaw() {
             imageModel: {
               primary: "anthropic/claude-sonnet-4-6"
             },
-            // Claude Sonnet thinking level: medium = enough reasoning for multi-step tool execution
-            // low was causing model to skip complex bash operations (calendar curl commands)
-            // high caused thinking-only payloads with no text response
-            // medium gives ReAct-style reasoning without token bloat
+            // Claude Sonnet thinking level.
             // Levels: minimal | low | medium | high | xhigh | adaptive
-            thinkingDefault: "medium",
+            // medium = ~8-16K budget tokens, ~30-60s per LLM call → 3+ min total (too slow)
+            // low = ~3K budget tokens, ~15-30s per LLM call → 45-90s total (testing this)
+            // agent.md now has explicit "you MUST run bash" rules that replace the planning
+            // work extended thinking was doing, so low should be sufficient.
+            thinkingDefault: "low",
             // cacheRetention removed — OpenClaw 2026.4.26 does not support this key
             // (throws "Unrecognized key" config error on every request). Anthropic's
             // default is 5-min TTL which is optimal for low-frequency SMS use anyway.
