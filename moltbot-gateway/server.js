@@ -1107,11 +1107,9 @@ async function startOpenClaw() {
             // medium gives ReAct-style reasoning without token bloat
             // Levels: minimal | low | medium | high | xhigh | adaptive
             thinkingDefault: "medium",
-            // Anthropic silently dropped default cache TTL from 1h → 5min in March 2026.
-            // "short" = 5-min TTL at $3.75/MTok write (vs "long" at $6/MTok).
-            // SMS users rarely send follow-ups 5-60 min apart, so "long" wastes $0.08/call.
-            // At ~100 msg/day: "short" saves ~$240/month vs "long".
-            cacheRetention: "short"
+            // cacheRetention removed — OpenClaw 2026.4.26 does not support this key
+            // (throws "Unrecognized key" config error on every request). Anthropic's
+            // default is 5-min TTL which is optimal for low-frequency SMS use anyway.
           }
         },
         // CRITICAL: Tool execution permissions — without this, bash skills are silently blocked
