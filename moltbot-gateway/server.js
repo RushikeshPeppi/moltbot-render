@@ -1112,12 +1112,10 @@ async function startOpenClaw() {
             // Levels: minimal | low | medium | high | xhigh | adaptive
             thinkingDefault: "medium",
             // Anthropic silently dropped default cache TTL from 1h → 5min in March 2026.
-            // "long" maps to cache_control:{type:"ephemeral",ttl:"1h"} on api.anthropic.com.
-            // Write cost: 2× base ($6/MTok) vs 1.25× for 5-min ($3.75/MTok).
-            // Reads stay at $0.30/MTok either way — break-even at ~2 reads/hour.
-            // For a messaging app with sporadic use, 1h >> 5min: a user who messages
-            // twice 10 minutes apart goes from 2× cache_write to 1× write + 1× read.
-            cacheRetention: "long"
+            // "short" = 5-min TTL at $3.75/MTok write (vs "long" at $6/MTok).
+            // SMS users rarely send follow-ups 5-60 min apart, so "long" wastes $0.08/call.
+            // At ~100 msg/day: "short" saves ~$240/month vs "long".
+            cacheRetention: "short"
           }
         },
         // CRITICAL: Tool execution permissions — without this, bash skills are silently blocked
