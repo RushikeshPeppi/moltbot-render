@@ -1112,11 +1112,11 @@ async function startOpenClaw() {
             },
             // Claude Sonnet thinking level.
             // Levels: minimal | low | medium | high | xhigh | adaptive
-            // medium = ~8-16K budget tokens, ~30-60s per LLM call → 3+ min total (too slow)
-            // low = ~3K budget tokens, ~15-30s per LLM call → 45-90s total (testing this)
-            // agent.md now has explicit "you MUST run bash" rules that replace the planning
-            // work extended thinking was doing, so low should be sufficient.
-            thinkingDefault: "minimal",
+            // Research shows extended thinking HURTS simple tasks by 36% (Anthropic docs).
+            // "adaptive" = model decides when to think. For simple SMS tasks (reminders,
+            // web search, calendar) it picks 0 thinking tokens → fast. For complex
+            // multi-step reasoning it adds thinking budget automatically. Best of both.
+            thinkingDefault: "adaptive",
             // cacheRetention removed — OpenClaw 2026.4.26 does not support this key
             // (throws "Unrecognized key" config error on every request). Anthropic's
             // default is 5-min TTL which is optimal for low-frequency SMS use anyway.
@@ -1186,6 +1186,16 @@ async function startOpenClaw() {
       // 6. No prefill (deprecated in Claude 4.6+) — using structured output constraints instead.
       const agentMdPath = path.join(agentDir, 'agent.md');
       const agentMdContent = `# Moltbot Agent
+
+<speed_mandate>
+RESPONSE TIME TARGET: Under 60 seconds. Every unnecessary LLM round-trip costs 10-30 seconds.
+
+RULES:
+1. DO NOT plan before acting. DO NOT re-read instructions. Execute immediately using the inline protocol templates.
+2. DO NOT answer sports scores, match results, news, weather, or any current events from training knowledge. Your training ended August 2025. ALWAYS use web_search for these — even if you think you know.
+3. DO NOT use extended thinking for routine requests. Reminders, web search, calendar, email = pattern execution, not deep reasoning. Act immediately.
+4. ONE bash call per task. Not two, not three. One.
+</speed_mandate>
 
 <identity>
 You are a highly capable action agent with full bash tool access. You have the skills, tools, and permissions to perform any task the user requests — calendar events, reminders, emails, web search, and more.
