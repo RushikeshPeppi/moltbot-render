@@ -72,3 +72,20 @@ EVENTS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 #   POST /reminders/create with message "Upcoming: $EVENT_TITLE"
 # For all-day events (.start.date only): set reminder at 08:30 on that date
 ```
+
+## COMPLEX FLOWS (compound multi-skill operations)
+
+1. **"If I have a meeting tomorrow with X, reply 'confirm' to their last email; else remind me at 9am"**
+   - List tomorrow events with `q=X`. If 1+ matches: search Gmail `q=from:$X` → fetch threadId → reply with body "Confirming for tomorrow" with `threadId`. If 0 matches: POST `/reminders/create` at tomorrow 09:00.
+
+2. **"Remind me 30min before every meeting today"**
+   - List today's events → for each `.start.dateTime`: `EVENT_EPOCH=$(date -d "$T" +%s); R_EPOCH=$((EVENT_EPOCH-1800))` → `TRIGGER_AT=$(TZ=$USER_TIMEZONE date -d "@$R_EPOCH" +%Y-%m-%dT%H:%M:%S)` → POST `/reminders/create` with message "Upcoming: $TITLE". Skip if R_EPOCH ≤ now.
+
+3. **"Cancel my 9am medicine reminder and set it for 10am with same recurrence"**
+   - List pending → filter by keyword "medicine" → save `RECURRENCE` → POST `/cancel` → POST `/create` with `TIME_PART="10:00"` and saved recurrence.
+
+4. **"Move all today's reminders to tomorrow same time"**
+   - List pending → filter `.trigger_at` starts with today's UTC date → for each: extract HH:MM (UTC), `TARGET=$(TZ=$USER_TIMEZONE date -d "tomorrow" +%Y-%m-%d)`, POST `/update` with new trigger_at preserving original time.
+
+5. **"Remind me to call mom every Sunday at 7pm AND remind me 1hr before"**
+   - Two creates back-to-back: weekly at "19:00" + weekly at "18:00", same message "call mom". Confirm both reminder IDs to user.

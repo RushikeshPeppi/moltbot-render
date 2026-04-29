@@ -1103,19 +1103,21 @@ async function startOpenClaw() {
         agents: {
           defaults: {
             model: {
-              primary: "anthropic/claude-sonnet-4-6",
-              fallbacks: ["google/gemini-2.5-pro"]
+              // Haiku 4.5: Anthropic's agent-optimized fast model. 4-5x faster than
+              // Sonnet 4.6, 1/3 cost, no extended-thinking tax (which was the actual
+              // 4-minute culprit). 87% tool first-try success vs Sonnet's 94% — the
+              // 7% gap is acceptable for SMS where speed matters more than perfection.
+              // Anthropic explicitly markets Haiku 4.5 as agentic-capable; production
+              // deployments include Sensos and Shuttle running agent armies on it.
+              primary: "anthropic/claude-haiku-4-5-20251001",
+              fallbacks: ["anthropic/claude-sonnet-4-6", "google/gemini-2.5-pro"]
             },
-            // Vision-capable model for image processing (Sonnet 4.6 supports vision natively)
+            // Vision: Haiku 4.5 supports vision natively, same as Sonnet 4.6
             imageModel: {
-              primary: "anthropic/claude-sonnet-4-6"
+              primary: "anthropic/claude-haiku-4-5-20251001"
             },
-            // Claude Sonnet thinking level.
-            // Levels: minimal | low | medium | high | xhigh | adaptive
-            // Research shows extended thinking HURTS simple tasks by 36% (Anthropic docs).
-            // "adaptive" = model decides when to think. For simple SMS tasks (reminders,
-            // web search, calendar) it picks 0 thinking tokens → fast. For complex
-            // multi-step reasoning it adds thinking budget automatically. Best of both.
+            // Thinking level — Haiku 4.5 doesn't have extended thinking, so this
+            // is mostly moot, but kept on adaptive in case a fallback to Sonnet kicks in.
             thinkingDefault: "adaptive",
             // cacheRetention removed — OpenClaw 2026.4.26 does not support this key
             // (throws "Unrecognized key" config error on every request). Anthropic's

@@ -52,3 +52,20 @@ Use the CREATE template from `<calendar_protocol>` in agent context.
 1. Describe image in 1-2 sentences using vision
 2. Use that description as `USER_MESSAGE` in the SEND IMAGE VIA EMAIL template above
 3. Confirm: "✅ Image described and sent to ${RECIPIENT_EMAIL}"
+
+## COMPLEX FLOWS (compound multi-skill operations)
+
+1. **"This receipt + email it to accounting AND remind me to file it for taxes"**
+   - Validate URL → vision: extract VENDOR/AMOUNT/DATE → MIME email to accountant with image inline + body "Receipt: $VENDOR — $AMOUNT on $DATE" → POST `/reminders/create` next April 1 09:00 message "File receipt: $VENDOR $AMOUNT".
+
+2. **"This whiteboard + email my team with a description of what's on it"**
+   - Validate URL → vision: describe content in detail (action items, decisions, diagrams) → MIME email with `USER_MESSAGE`=description + image inline. Recipients: ask user if not given.
+
+3. **"This event poster + add to calendar AND email Sarah the Meet link"**
+   - Validate URL → vision: extract TITLE/DATE/TIME/LOCATION → calendar create with `conferenceDataVersion=1` + location → extract MEET from response → send Gmail to sarah subject "$TITLE on $DATE" body including MEET link.
+
+4. **"This screenshot of an email + reply to that email saying X"**
+   - Validate URL → vision: extract sender name + subject from screenshot → Gmail search `q=from:$SENDER_EMAIL_OR_NAME` to find original message → reply on threadId with body=user's X. Caveat user if vision-read sender is uncertain.
+
+5. **"This menu + remind me to order at 7pm AND email my partner what I'm getting"**
+   - Validate URL → vision: extract DISH user mentions → POST `/reminders/create` today 19:00 message "Order: $DISH" → MIME email to partner with image + body "Thinking of $DISH for dinner".

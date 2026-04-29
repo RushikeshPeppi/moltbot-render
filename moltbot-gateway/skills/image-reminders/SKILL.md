@@ -62,3 +62,20 @@ echo "$RESP" | jq -r 'if .data.id then "✅ Reminder set" else "❌ \(.message)"
 ```
 
 For LIST/CANCEL/UPDATE: use reminders/SKILL.md.
+
+## COMPLEX FLOWS (compound multi-skill operations)
+
+1. **"This bill + remind me 2 days before AND email it to my wife"**
+   - Validate URL → extract PAYEE/AMOUNT/DUE_DATE → POST `/reminders/create` (DUE-2 days at 09:00) → use image-workspace MIME flow to email wife with image inline + body "Bill: $PAYEE — $AMOUNT due $DUE_DATE". Confirm both actions.
+
+2. **"This shopping list + remind me when I'm at the store at 6pm"**
+   - Validate URL → vision: extract items → REMINDER_MESSAGE="Buy: $items" (≤160 chars, summarize if longer) → TRIGGER_AT today 18:00 (or whatever time user says) → POST `/reminders/create`.
+
+3. **"This timetable + create reminders AND calendar events for each class"**
+   - Validate URL → vision: extract each row's title/day/time → for each: POST `/reminders/create` (recurrence=weekly) AND calendar create with `recurrence:["RRULE:FREQ=WEEKLY"]`. Confirm count of both: "✅ Set 5 reminders + 5 weekly events."
+
+4. **"This prescription + remind me daily at 9pm to take it AND email my doctor a photo"**
+   - Validate URL → extract MED_NAME → POST `/reminders/create` recurrence=daily at 21:00 message "Take $MED_NAME" → use image-workspace MIME flow to email doctor with image + body "Just confirming this is the prescription".
+
+5. **"This event poster + add to calendar AND remind me 1 day before"**
+   - Validate URL → vision: extract TITLE/DATE/TIME/LOCATION → calendar create (use `<calendar_protocol>` with location) → POST `/reminders/create` at (DATE - 1 day) 09:00 message "Tomorrow: $TITLE at $LOCATION".

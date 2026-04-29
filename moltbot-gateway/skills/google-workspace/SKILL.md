@@ -189,3 +189,20 @@ curl -s -X DELETE -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
 - 400: Malformed payload — fix JSON and retry
 - 404: Event/message not found
 - 429: Rate limited — wait and retry
+
+## COMPLEX FLOWS (compound multi-skill operations)
+
+1. **"Reply to John's last email saying I'll be at the meeting"**
+   - Gmail search `q=from:john maxResults=1` → get message format=metadata → extract `threadId`, `From` (parse email from `Name <email>`), `Subject` → send reply with `In-Reply-To`, `References`, `threadId`. Body = user's words.
+
+2. **"Cancel my 3pm meeting and email each attendee that I'm rescheduling"**
+   - Search events around 3pm (±15min window) → fetch full event → save `.attendees[].email` array → DELETE event → loop attendees: send email subject "Meeting cancelled — rescheduling", body "I'll send a new time soon". Confirm both deletion + N emails sent.
+
+3. **"Schedule meeting with Sarah tomorrow 2pm and email her the Meet link"**
+   - CREATE event with `attendees:[{email:"sarah@..."}]` + `conferenceDataVersion=1` → extract `MEET` from response → send Gmail to sarah subject "Meeting tomorrow 2pm" body containing `MEET` link. If no email known, ASK first.
+
+4. **"Reschedule my 4pm meeting to 5pm and notify attendees of the change"**
+   - Search by time → fetch full event → save attendees + duration → build NEW_START="${DATE}T17:00:00", NEW_END=NEW_START+duration → PUT event preserving conferenceData → send email to each attendee "Rescheduled to 5pm — Meet link unchanged".
+
+5. **"Show me unread emails this week from people I have meetings with"**
+   - List this-week events → collect unique attendee emails → for each: Gmail `q="is:unread from:$EMAIL after:$WEEK_EPOCH"` → aggregate results → present grouped by sender.
