@@ -1110,7 +1110,14 @@ async function startOpenClaw() {
             // high caused thinking-only payloads with no text response
             // medium gives ReAct-style reasoning without token bloat
             // Levels: minimal | low | medium | high | xhigh | adaptive
-            thinkingDefault: "medium"
+            thinkingDefault: "medium",
+            // Anthropic silently dropped default cache TTL from 1h → 5min in March 2026.
+            // "long" maps to cache_control:{type:"ephemeral",ttl:"1h"} on api.anthropic.com.
+            // Write cost: 2× base ($6/MTok) vs 1.25× for 5-min ($3.75/MTok).
+            // Reads stay at $0.30/MTok either way — break-even at ~2 reads/hour.
+            // For a messaging app with sporadic use, 1h >> 5min: a user who messages
+            // twice 10 minutes apart goes from 2× cache_write to 1× write + 1× read.
+            cacheRetention: "long"
           }
         },
         // CRITICAL: Tool execution permissions — without this, bash skills are silently blocked
@@ -1479,10 +1486,34 @@ This rule overrides any default initialization or persona-bootstrap behavior. No
   });
 }
 
+// Cache keep-warm: fire a minimal OpenClaw call every 55 minutes to prevent
+// the 1-hour Anthropic cache from expiring between real user requests.
+// Cost: max_tokens=1 means ~1 output token ($0.000015) per ping.
+// Benefit: avoids a 148K-token cache_write ($0.89) on the next real call.
+// Only runs after OpenClaw is ready; stops itself if the process exits.
+function startCacheKeepWarm() {
+  const INTERVAL_MS = 55 * 60 * 1000; // 55 min — safely inside the 1h TTL
+  const interval = setInterval(async () => {
+    if (!isReady) return;
+    console.log('[cache-keepwarm] Firing ping to keep Anthropic 1h cache warm...');
+    try {
+      await executeOpenClaw(
+        'keepwarm', 'ok', '', {}, null, 'UTC', null, {}
+      );
+      console.log('[cache-keepwarm] Ping complete');
+    } catch (e) {
+      // Non-fatal — a missed ping just means the next real call re-warms.
+      console.warn(`[cache-keepwarm] Ping failed (non-fatal): ${e.message}`);
+    }
+  }, INTERVAL_MS);
+  interval.unref(); // don't block process exit
+}
+
 // Initialize
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`OpenClaw Gateway listening on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Execute endpoint: http://localhost:${PORT}/execute`);
   startOpenClaw();
+  startCacheKeepWarm(); // keep-warm checks isReady internally before pinging
 });
