@@ -1389,8 +1389,8 @@ ONE-TIME REMINDER TEMPLATE (fill MESSAGE, DATE_EXPR, TIME_PART, then execute):
   TIME_PART="<HH:MM in 24h, e.g. 14:00 — OR leave empty if DATE_EXPR is relative>"
 
   # Compute trigger_at — pick ONE of these two lines:
-  TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "${DATE_EXPR}" +%Y-%m-%dT%H:%M:%S)          # relative
-  TRIGGER_AT="$(TZ="$USER_TIMEZONE" date -d "${DATE_EXPR}" +%Y-%m-%d)T${TIME_PART}:00"  # specific time
+  TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "\${DATE_EXPR}" +%Y-%m-%dT%H:%M:%S)          # relative
+  TRIGGER_AT="$(TZ="$USER_TIMEZONE" date -d "\${DATE_EXPR}" +%Y-%m-%d)T\${TIME_PART}:00"  # specific time
 
   RESPONSE=$(curl -sS -X POST "$FASTAPI_URL/api/v1/reminders/create" \\
     -H "Content-Type: application/json" \\
@@ -1410,15 +1410,15 @@ TIMEZONE RULES (CRITICAL):
 - NEVER convert to UTC yourself for create/update. Pass local time + timeZone field — Google Calendar handles UTC.
 - Use TZ="$USER_TIMEZONE" date only for resolving relative dates (today/tomorrow/next Tuesday).
 - Time ambiguity (bare "7", "8"): 1-6 → PM; 7-11 → AM; 12 → noon.
-- List queries DO need UTC: use epoch approach — TZ=... date +%s → date -u -d "@${EPOCH}" +%Y-%m-%dT%H:%M:%SZ
+- List queries DO need UTC: use epoch approach — TZ=... date +%s → date -u -d "@\${EPOCH}" +%Y-%m-%dT%H:%M:%SZ
 
 LIST EVENTS (fill DATE range — today/tomorrow/this week):
   START_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
   END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 23:59:59" +%s)
   # For tomorrow: date -d "tomorrow 00:00:00" / "tomorrow 23:59:59"
   # For this week: date -d "+7 days 23:59:59" for END_EPOCH
-  TIME_MIN=$(date -u -d "@${START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
-  TIME_MAX=$(date -u -d "@${END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+  TIME_MIN=$(date -u -d "@\${START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+  TIME_MAX=$(date -u -d "@\${END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
   curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \\
     "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=\${TIME_MIN}&timeMax=\${TIME_MAX}&singleEvents=true&orderBy=startTime" \\
     | jq -r '.items[] | "📅 \\(.summary) at \\(.start.dateTime // .start.date)"'
