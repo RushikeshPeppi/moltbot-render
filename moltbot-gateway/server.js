@@ -224,6 +224,18 @@ function stripBootstrapPreamble(text) {
     if (cleaned === before) break;
   }
 
+  // Pass 3: strip TAIL intros — the model sometimes appends a self-introduction
+  // at the END of the response (observed 2026-04-29 prod):
+  //   "...actual answer\n\n---\n*Also — I'm Peppi, just got spun up fresh. Still figuring myself out. What's your name?* 🐾"
+  // Match: optional divider → optional "Also —" → "I'm Peppi" → everything after.
+  const tailIntroRegex = /\n+\s*(?:---+\s*\n+)?\s*\*?\s*(?:Also\s*[—–-]?\s*)?(?:Hey[!,]?\s+)?I[''']m\s+(?:\*\*)?Peppi(?:\*\*)?\b[^]*$/im;
+  const beforeTail = cleaned;
+  cleaned = cleaned.replace(tailIntroRegex, '');
+  cleaned = cleaned.trim();
+  if (cleaned !== beforeTail) {
+    // Log that we stripped a tail intro (the caller logs the delta separately)
+  }
+
   // Defensive: if we stripped everything, fall back to the original so
   // the user never gets an empty reply in place of a real one (e.g. if
   // the only content was an intro with no answer behind it).
@@ -232,6 +244,24 @@ function stripBootstrapPreamble(text) {
 
 // Store for active OpenClaw processes
 let isReady = false;
+
+/**
+ * Per-user request mutex.
+ *
+ * OpenClaw CLI uses file-based session locks (.jsonl.lock). When two
+ * `openclaw agent` processes run concurrently for the same user, the second
+ * one hits `SessionWriteLockTimeoutError` after 10s and crashes the internal
+ * WebSocket gateway (1006 abnormal closure), returning a 500.
+ *
+ * This Map serializes requests per user_id: if a request is already in-flight
+ * for a user, subsequent requests wait for it to finish and receive the same
+ * result (deduplication). Different users are unaffected — they execute in
+ * parallel as before.
+ *
+ * Key: user_id (string)
+ * Value: { promise: Promise<result>, message: string }
+ */
+const activeUserRequests = new Map();
 
 // Health check
 app.get('/health', (req, res) => {
@@ -327,6 +357,41 @@ app.post('/execute', async (req, res) => {
     }
   }
 
+  // ── Per-user request mutex ──
+  // If there's already an in-flight request for this user, DON'T spawn a second
+  // OpenClaw CLI process — it will deadlock on the .jsonl.lock file and crash.
+  // Instead: if the pending request has the SAME message (duplicate/retry from
+  // upstream), piggyback on the existing promise. If it's a DIFFERENT message,
+  // queue behind the existing one and execute after it finishes.
+  const userKey = String(user_id || session_id);
+  const existing = activeUserRequests.get(userKey);
+  if (existing) {
+    if (existing.message === effectiveMessage) {
+      // Same message — deduplicate: reuse the in-flight result
+      console.log(`[${session_id}] Duplicate request for user ${userKey} ("${effectiveMessage.substring(0, 40)}...") — piggybacking on active request`);
+      try {
+        const piggybacked = await existing.promise;
+        return res.json(piggybacked);
+      } catch (err) {
+        // The original request failed — fall through and execute fresh
+        console.log(`[${session_id}] Piggybacked request failed (${err.message}), executing fresh`);
+      }
+    } else {
+      // Different message — wait for the current one to finish, then proceed
+      console.log(`[${session_id}] Queued behind active request for user ${userKey}`);
+      try { await existing.promise; } catch (_) { /* ignore; we'll run our own */ }
+    }
+  }
+
+  // Wrap the entire execution in a promise so concurrent arrivals can
+  // observe (deduplicate) or wait on it.
+  let resolveActive, rejectActive;
+  const activePromise = new Promise((resolve, reject) => {
+    resolveActive = resolve;
+    rejectActive = reject;
+  });
+  activeUserRequests.set(userKey, { promise: activePromise, message: effectiveMessage });
+
   try {
     console.log(`[${session_id}] Processing for user ${user_id}: ${effectiveMessage.substring(0, 50)}...`);
 
@@ -360,7 +425,7 @@ app.post('/execute', async (req, res) => {
 
     console.log(`[${session_id}] Completed: ${result.action_type || 'chat'}`);
 
-    res.json({
+    const successPayload = {
       success: true,
       response: result.response,
       action_type: result.action_type,
@@ -370,7 +435,10 @@ app.post('/execute', async (req, res) => {
       output_tokens: result.output_tokens || 0,
       cache_read: result.cache_read || 0,
       cache_write: result.cache_write || 0
-    });
+    };
+
+    resolveActive(successPayload);
+    res.json(successPayload);
 
   } catch (error) {
     console.error(`[${session_id}] Error:`, error.message);
@@ -383,7 +451,7 @@ app.post('/execute', async (req, res) => {
       const friendly = hasImages
         ? "Processing your image is taking longer than usual. Please retry, or send a smaller/clearer image and tell me exactly what to do with it (schedule, remind, email)."
         : "I'm taking longer than usual to finish that. Please try again — if it was an action like creating an event, double-check before retrying so we don't duplicate it.";
-      return res.json({
+      const timeoutPayload = {
         success: true,
         response: friendly,
         action_type: 'chat',
@@ -393,14 +461,24 @@ app.post('/execute', async (req, res) => {
         output_tokens: 0,
         cache_read: 0,
         cache_write: 0
-      });
+      };
+      resolveActive(timeoutPayload);
+      return res.json(timeoutPayload);
     }
 
+    rejectActive(error);
     res.status(500).json({
       success: false,
       error: error.message,
       response: "I'm sorry, I encountered an error processing your request. Please try again."
     });
+  } finally {
+    // Clean up: remove the mutex entry so the next request for this user can proceed.
+    // Only remove if WE are the one who set it (guard against race with a queued successor).
+    const current = activeUserRequests.get(userKey);
+    if (current && current.promise === activePromise) {
+      activeUserRequests.delete(userKey);
+    }
   }
 });
 
@@ -1278,12 +1356,14 @@ When [Attached Images] is present, always prefer the image-specific skill over t
 <continuity_rules>
 You have been running continuously and the user is mid-conversation. Treat every request as a follow-up, not a first interaction.
 
-- NEVER say "Hey, I'm Peppi", "I just came alive", "I'm all set up", "Bootstrap done", "Ready to go", or any variation that introduces yourself or announces readiness. The user already knows who you are.
+- NEVER say "Hey, I'm Peppi", "I just came alive", "I'm all set up", "Bootstrap done", "Ready to go", "just got spun up", "figuring myself out", "now online", "just came online", or any variation that introduces yourself or announces readiness. The user already knows who you are.
 - NEVER prepend your reply with a greeting block before answering. Lead directly with the answer to their question or the result of their action.
+- NEVER append a self-introduction, sign-off, or "getting to know you" block at the END of your response either. No "Also — I'm Peppi...", no "By the way, I'm...", no post-answer introductions.
+- NEVER ask the user's name. You already know their name from the USER context line at the top of the message. Address them by name if needed, but never ask for it.
 - When the user says "hello" or "hi", respond warmly in one short line and ask how you can help — do NOT introduce yourself as if meeting for the first time.
-- If you ever feel the urge to write a "Bootstrap done!" / "all set up" preamble: stop. Delete it. Start your reply with the actual answer.
+- If you ever feel the urge to write a "Bootstrap done!" / "all set up" / "just got spun up" preamble or postamble: stop. Delete it. Your reply must contain ONLY the answer to their question.
 
-This rule overrides any default initialization or persona-bootstrap behavior. The very first character of your response must be part of the actual answer, not a self-introduction.
+This rule overrides any default initialization or persona-bootstrap behavior. No character of your response — neither at the start NOR at the end — should be a self-introduction.
 </continuity_rules>
 `;
       fs.writeFileSync(agentMdPath, agentMdContent);
