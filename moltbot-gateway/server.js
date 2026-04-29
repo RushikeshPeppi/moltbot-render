@@ -203,14 +203,22 @@ function stripBootstrapPreamble(text) {
 
   let cleaned = text;
 
-  // Pass 1: find a Peppi introduction line and strip everything from the
-  // start of the buffer up to and including the end of that sentence.
-  // Iterate up to 3 times to handle the (rare) case of multiple intros.
+  // Pass 1: find a Peppi introduction line.
+  // If the match is near the start (≤50 chars in) → preamble: strip from
+  // start through end of intro sentence. If it's mid-response → postamble:
+  // strip from the intro to end (keep what came before it).
   for (let i = 0; i < 3; i++) {
     const m = cleaned.match(introSentenceRegex);
     if (!m) break;
     const endIdx = m.index + m[0].length;
-    cleaned = cleaned.slice(endIdx);
+    if (m.index <= 50) {
+      // Preamble at the top — strip intro, keep tail
+      cleaned = cleaned.slice(endIdx).replace(/^\s+/, '');
+    } else {
+      // Postamble mid/end of response — keep head, strip intro+tail
+      cleaned = cleaned.slice(0, m.index).trimEnd();
+      break;
+    }
   }
 
   // Pass 2: clean up anything left at the start — orphaned announcement
@@ -226,9 +234,10 @@ function stripBootstrapPreamble(text) {
 
   // Pass 3: strip TAIL intros — the model sometimes appends a self-introduction
   // at the END of the response (observed 2026-04-29 prod):
-  //   "...actual answer\n\n---\n*Also — I'm Peppi, just got spun up fresh. Still figuring myself out. What's your name?* 🐾"
-  // Match: optional divider → optional "Also —" → "I'm Peppi" → everything after.
-  const tailIntroRegex = /\n+\s*(?:---+\s*\n+)?\s*\*?\s*(?:Also\s*[—–-]?\s*)?(?:Hey[!,]?\s+)?I[''']m\s+(?:\*\*)?Peppi(?:\*\*)?\b[^]*$/im;
+  //   "...actual answer\n\n---\n*Also — looks like I'm new here! I'm **Peppi**, just came online."
+  //   "...actual answer\n\n---\n*Also — I'm Peppi, just got spun up fresh."
+  // Catches: divider or "Also —" lead-ins, "I'm new here", "just came online", etc.
+  const tailIntroRegex = /\n+\s*(?:---+\s*\n+)?\s*\*?\s*(?:Also\s*[—–-]\s*)?(?:looks like I[''']?m new here[^.!]*[.!]\s*)?(?:Hey[!,]?\s+)?(?:I[''']m\s+(?:\*\*)?Peppi(?:\*\*)?\b|just came online|just got spun up|now online|I[''']m new here)[^]*$/im;
   const beforeTail = cleaned;
   cleaned = cleaned.replace(tailIntroRegex, '');
   cleaned = cleaned.trim();
@@ -1107,7 +1116,7 @@ async function startOpenClaw() {
             // low = ~3K budget tokens, ~15-30s per LLM call → 45-90s total (testing this)
             // agent.md now has explicit "you MUST run bash" rules that replace the planning
             // work extended thinking was doing, so low should be sufficient.
-            thinkingDefault: "low",
+            thinkingDefault: "minimal",
             // cacheRetention removed — OpenClaw 2026.4.26 does not support this key
             // (throws "Unrecognized key" config error on every request). Anthropic's
             // default is 5-min TTL which is optimal for low-frequency SMS use anyway.
@@ -1214,7 +1223,7 @@ These rules determine the quality of your work:
 
 5. For multi-step operations (e.g., search then update), execute each step and use the output of each step as input to the next. Do not skip steps or assume intermediate results.
 
-6. SPEED: Minimize LLM round-trips. For web search, you already know the bash command template (it's in <web_search_protocol>). Do NOT read SKILL.md at runtime for web search — execute the command directly. One bash call per skill invocation, not three.
+6. SPEED: Minimize LLM round-trips. For ALL common operations — web search, reminders, calendar, gmail, image reminders, image workspace — the bash templates are already inline in the protocol blocks above. Do NOT read SKILL.md at runtime for these. Execute directly from the protocol. One bash call per skill, not three.
 </tool_execution_rules>
 
 <retry_protocol>
@@ -1289,14 +1298,15 @@ IMPORTANT:
 </image_handling>
 
 <web_search_protocol>
-You have a web_search skill backed by a self-hosted SearXNG instance (env var $SEARXNG_URL). Your training knowledge is reliable through approximately April 2026. The user's local date and time come from the conversation context.
+You have a web_search skill backed by a self-hosted SearXNG instance (env var $SEARXNG_URL). Your training knowledge cuts off at August 2025 — you have NO knowledge of events after that date. The user's local date and time come from the conversation context (today is after August 2025).
 
 USE web_search when:
-- The query is about events, news, sports, weather, or prices
-- The query references "today", "now", "latest", "recent", or a date after April 2026
+- The query is about sports scores, match results, standings, or live events (ALWAYS search — scores change daily)
+- The query is about news, current events, weather, or prices
+- The query references "today", "now", "latest", "recent", "till now", "current", or any date/event after August 2025
 - The user asks for a phone number, address, or business hours of a real place
-- The user asks about a product, person, or company that may have changed since your training
-- You're not confident in the specific factual answer and recency could matter
+- The user asks about a product, person, or company where recency matters
+- You're not confident the answer is still valid — when in doubt, search
 
 DO NOT use web_search when:
 - The data lives in the user's Peppi context (use Calendar, Reminders, or Gmail skills instead)
@@ -1353,31 +1363,183 @@ RECURRING — same template but set recurrence value: daily|weekdays|weekly|mont
 For LIST/CANCEL/UPDATE, read reminders/SKILL.md (those flows are complex).
 </reminder_protocol>
 
+<calendar_protocol>
+Use for: "schedule", "meeting", "calendar", "event", "book". Do NOT read google-workspace/SKILL.md for list/create/update/delete.
+TOKEN: $GOOGLE_ACCESS_TOKEN. TZ: $USER_TIMEZONE.
+
+TIMEZONE RULES (CRITICAL):
+- NEVER convert to UTC yourself for create/update. Pass local time + timeZone field — Google Calendar handles UTC.
+- Use TZ="$USER_TIMEZONE" date only for resolving relative dates (today/tomorrow/next Tuesday).
+- Time ambiguity (bare "7", "8"): 1-6 → PM; 7-11 → AM; 12 → noon.
+- List queries DO need UTC: use epoch approach — TZ=... date +%s → date -u -d "@${EPOCH}" +%Y-%m-%dT%H:%M:%SZ
+
+LIST EVENTS (fill DATE range — today/tomorrow/this week):
+  START_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)
+  END_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 23:59:59" +%s)
+  # For tomorrow: date -d "tomorrow 00:00:00" / "tomorrow 23:59:59"
+  # For this week: date -d "+7 days 23:59:59" for END_EPOCH
+  TIME_MIN=$(date -u -d "@${START_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+  TIME_MAX=$(date -u -d "@${END_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)
+  curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \\
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=\${TIME_MIN}&timeMax=\${TIME_MAX}&singleEvents=true&orderBy=startTime" \\
+    | jq -r '.items[] | "📅 \\(.summary) at \\(.start.dateTime // .start.date)"'
+  # Next N events: add &maxResults=N and use NOW_UTC as timeMin
+
+CREATE EVENT TEMPLATE (fill TITLE, DATE_PART e.g. "tomorrow", TIME_PART in 24h e.g. "14:00", DURATION_MIN default 60):
+  EVENT_DATE=$(TZ="$USER_TIMEZONE" date -d "\${DATE_PART}" +%Y-%m-%d)
+  EVENT_START="\${EVENT_DATE}T\${TIME_PART}:00"
+  END_HOUR=$(( \${TIME_PART%%:*} + DURATION_MIN / 60 )); END_MIN=$(( \${TIME_PART##*:} + DURATION_MIN % 60 ))
+  if [ \$END_MIN -ge 60 ]; then END_HOUR=\$((END_HOUR + 1)); END_MIN=\$((END_MIN - 60)); fi
+  if [ \$END_HOUR -ge 24 ]; then END_HOUR=\$((END_HOUR - 24)); END_DATE=\$(TZ="\$USER_TIMEZONE" date -d "\${EVENT_DATE} + 1 day" +%Y-%m-%d); else END_DATE="\${EVENT_DATE}"; fi
+  EVENT_END="\${END_DATE}T\$(printf '%02d:%02d' \$END_HOUR \$END_MIN):00"
+  REQ_ID=\$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "meet-\$(date +%s)-\$RANDOM")
+  JSON=\$(jq -n --arg t "\$TITLE" --arg s "\$EVENT_START" --arg e "\$EVENT_END" --arg tz "\$USER_TIMEZONE" --arg r "\$REQ_ID" \\
+    '{summary:\$t,start:{dateTime:\$s,timeZone:\$tz},end:{dateTime:\$e,timeZone:\$tz},conferenceData:{createRequest:{requestId:\$r,conferenceSolutionKey:{type:"hangoutsMeet"}}}}')
+  # Add attendee if email provided: JSON=\$(echo "\$JSON" | jq --arg em "\$ATTENDEE_EMAIL" '. + {attendees:[{email:\$em}]}')
+  RESP=\$(curl -s -X POST -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \\
+    -d "\$JSON" "https://www.googleapis.com/calendar/v3/calendars/primary/events?conferenceDataVersion=1")
+  MEET=\$(echo "\$RESP" | jq -r '.conferenceData.entryPoints[]? | select(.entryPointType=="video") | .uri' 2>/dev/null)
+  echo "✅ Event '\${TITLE}' created for \${EVENT_START}"
+  [ -n "\$MEET" ] && [ "\$MEET" != "null" ] && echo "📹 Meet: \${MEET}"
+
+UPDATE EVENT — search first, then fetch full event, then PUT (preserves all fields + Meet link):
+  # Step 1: Search by keyword or time window
+  RESP=\$(curl -s -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" \\
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events?q=\${QUERY}&singleEvents=true&orderBy=startTime&timeMin=\$(date -u -d "@\$(TZ="\$USER_TIMEZONE" date +%s)" +%Y-%m-%dT%H:%M:%SZ)")
+  EVENT_ID=\$(echo "\$RESP" | jq -r '.items[0].id')
+  # Step 2: Fetch current event
+  CURRENT=\$(curl -s -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" \\
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events/\${EVENT_ID}")
+  # Step 3: Build new times (same as CREATE above), then mutate via jq:
+  UPDATE=\$(echo "\$CURRENT" | jq --arg s "\$NEW_START" --arg e "\$NEW_END" --arg tz "\$USER_TIMEZONE" \\
+    '.start.dateTime=\$s | .start.timeZone=\$tz | .end.dateTime=\$e | .end.timeZone=\$tz')
+  curl -s -X PUT -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \\
+    -d "\$UPDATE" "https://www.googleapis.com/calendar/v3/calendars/primary/events/\${EVENT_ID}?conferenceDataVersion=1"
+  echo "✅ Event updated to \${NEW_START}"
+
+DELETE EVENT — search → confirm → DELETE:
+  # Search (same as UPDATE Step 1), extract EVENT_ID, then:
+  curl -s -X DELETE -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" \\
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events/\${EVENT_ID}"
+  echo "✅ Event '\${EVENT_TITLE}' deleted"
+</calendar_protocol>
+
+<gmail_protocol>
+Use for: "email", "gmail", "send", "inbox", "read email", "reply". Do NOT read google-workspace/SKILL.md for common operations.
+TOKEN: $GOOGLE_ACCESS_TOKEN. Base: https://gmail.googleapis.com/gmail/v1
+
+LIST/SEARCH (fill FILTER — e.g. "is:unread", "from:name", "is:important", date epoch for "today"/"this week"):
+  # Date filter: TODAY_EPOCH=\$(TZ="\$USER_TIMEZONE" date -d "today 00:00:00" +%s); FILTER="after:\${TODAY_EPOCH}"
+  curl -s -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" \\
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=\${FILTER}&maxResults=10" | jq -r '.messages[].id'
+  # Get message details: GET /users/me/messages/\${ID}?format=metadata (or format=full for body)
+
+SEND EMAIL (fill TO, SUBJECT, BODY — ask user if recipient email unknown):
+  EMAIL_CONTENT="From: me\\nTo: \${TO}\\nSubject: \${SUBJECT}\\n\\n\${BODY}"
+  ENCODED=\$(printf '%s' "\$EMAIL_CONTENT" | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+  curl -s -X POST -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \\
+    -d "{\\"raw\\": \\"\$ENCODED\\"}" "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+  echo "✅ Email sent to \${TO}"
+
+REPLY TO EMAIL — find original, extract threading info, send with threadId:
+  # Get original: GET /users/me/messages/\${MSG_ID}?format=metadata
+  THREAD_ID=\$(echo "\$DETAILS" | jq -r '.threadId')
+  ORIG_FROM=\$(echo "\$DETAILS" | jq -r '.payload.headers[] | select(.name=="From") | .value')
+  ORIG_SUBJ=\$(echo "\$DETAILS" | jq -r '.payload.headers[] | select(.name=="Subject") | .value')
+  TO_EMAIL=\$(echo "\$ORIG_FROM" | grep -oP '<\\K[^>]+' || echo "\$ORIG_FROM")
+  REPLY_CONTENT="From: me\\nTo: \${TO_EMAIL}\\nSubject: Re: \${ORIG_SUBJ}\\nIn-Reply-To: \${MSG_ID}\\nReferences: \${MSG_ID}\\n\\n\${REPLY_BODY}"
+  ENCODED=\$(printf '%s' "\$REPLY_CONTENT" | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+  curl -s -X POST -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \\
+    -d "{\\"raw\\": \\"\$ENCODED\\", \\"threadId\\": \\"\$THREAD_ID\\"}" \\
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+  echo "✅ Reply sent to \${TO_EMAIL}"
+
+MARK READ/UNREAD/STARRED: POST to /users/me/messages/\${ID}/modify
+  # Read: {"removeLabelIds": ["UNREAD"]} | Unread: {"addLabelIds": ["UNREAD"]} | Star: {"addLabelIds": ["STARRED"]}
+</gmail_protocol>
+
+<image_reminder_protocol>
+Use when: [Attached Images] present + reminder intent. Takes priority over reminder_protocol when images present.
+ALWAYS validate URL first. ALWAYS describe what you see before acting. NEVER hallucinate image content.
+
+VALIDATE URL (run before every image operation — Twilio URLs expire in ~2 hours):
+  HTTP=\$(curl -sI -o /dev/null -w "%{http_code}" -L "\$IMAGE_URL")
+  [ "\$HTTP" != "200" ] && echo "⚠️ Image expired (HTTP \$HTTP). Could you resend it?" && exit 0
+
+CREATE REMINDER FROM IMAGE — One-Turn PVE: DESCRIBE → EXECUTE → CONFIRM:
+  1. DESCRIBE: "I can see [content summary]." (1 sentence)
+  2. If user did NOT specify WHEN: ASK "When would you like to be reminded?" — never default to random time.
+  3. Extract content (keep under 160 chars for SMS delivery). EXECUTE:
+    REMINDER_MESSAGE="<extracted content ≤160 chars>"
+    # Specific time: TRIGGER_AT="\$(TZ="\$USER_TIMEZONE" date -d "\${DATE_PART}" +%Y-%m-%d)T\${TIME_PART}:00"
+    # Relative:     TRIGGER_AT=\$(TZ="\$USER_TIMEZONE" date -d "+N hours" +%Y-%m-%dT%H:%M:%S)
+    RESP=\$(curl -sS -X POST "\$FASTAPI_URL/api/v1/reminders/create" -H "Content-Type: application/json" \\
+      -d "\$(jq -n --arg u "\$MOLTBOT_USER_ID" --arg m "\$REMINDER_MESSAGE" --arg t "\$TRIGGER_AT" --arg tz "\$USER_TIMEZONE" --arg r "none" '{user_id:\$u,message:\$m,trigger_at:\$t,user_timezone:\$tz,recurrence:\$r}')")
+    ID=\$(echo "\$RESP" | jq -r '.data.id // empty')
+    [ -n "\$ID" ] && echo "✅ Reminder set: '\${REMINDER_MESSAGE}' for \${TRIGGER_AT}" || echo "\$RESP"
+  4. CONFIRM: "✅ Reminder set. If the details aren't right, just tell me."
+
+BILL/PAYMENT REMINDER from invoice/receipt image:
+  - Extract: PAYEE, AMOUNT, DUE_DATE (if visible)
+  - NEVER include account/card numbers in reminder message
+  - Message: "Pay \${PAYEE} — \${AMOUNT}" or "Pay \${PAYEE} — \${AMOUNT} (due \${DUE_DATE})"
+  - If due_date visible: TRIGGER_AT 2 days before at 09:00 local time
+  - If due_date missing: ask user "When is this due?"
+
+SCHEDULE IMAGE (multiple reminders from timetable/class schedule):
+  - Create one curl call PER entry — never use bash arrays or loops
+  - Use recurrence "weekly" for recurring classes, "none" for one-time events
+  - Confirm each entry: "✅ Reminder set: [title] — [day] at [time] (weekly)"
+
+For LIST/CANCEL/UPDATE reminders: read reminders/SKILL.md.
+</image_reminder_protocol>
+
+<image_workspace_protocol>
+Use when: [Attached Images] present + workspace action (email/calendar). Takes priority over calendar/gmail protocols.
+ALWAYS validate URL first. ALWAYS describe image before acting. EXECUTE — never just narrate.
+
+VALIDATE URL:
+  HTTP=\$(curl -sI -o /dev/null -w "%{http_code}" -L "\$IMAGE_URL")
+  [ "\$HTTP" != "200" ] && echo "⚠️ Image expired (HTTP \$HTTP). Could you resend it?" && exit 0
+
+SEND IMAGE VIA EMAIL (fill RECIPIENT_EMAIL, SUBJECT, optional USER_MESSAGE):
+  CONTENT_TYPE=\$(curl -sI -L "\$IMAGE_URL" | grep -i 'content-type' | tail -1 | awk '{print \$2}' | tr -d '\\r')
+  [ -z "\$CONTENT_TYPE" ] && CONTENT_TYPE="image/jpeg"
+  IMAGE_BASE64=\$(curl -sL "\$IMAGE_URL" | base64 | tr -d '\\n')
+  [ -z "\$IMAGE_BASE64" ] && echo "⚠️ Failed to download image. Could you resend it?" && exit 0
+  BOUNDARY="boundary_\$(date +%s)_peppi"
+  MIME_MSG="From: me\\nTo: \${RECIPIENT_EMAIL}\\nSubject: \${SUBJECT:-Photo shared via Peppi}\\nMIME-Version: 1.0\\nContent-Type: multipart/mixed; boundary=\\"\\${BOUNDARY}\\"\\n\\n--\${BOUNDARY}\\nContent-Type: text/html; charset=utf-8\\n\\n<html><body><p>\${USER_MESSAGE:-Here's an image:}</p><img src=\\"cid:attached_image\\" style=\\"max-width:600px;\\"></body></html>\\n--\${BOUNDARY}\\nContent-Type: \${CONTENT_TYPE}\\nContent-Transfer-Encoding: base64\\nContent-Disposition: inline; filename=\\"image.jpg\\"\\nContent-ID: <attached_image>\\n\\n\${IMAGE_BASE64}\\n--\${BOUNDARY}--"
+  ENCODED=\$(echo "\$MIME_MSG" | base64 | tr '+/' '-_' | tr -d '=\\n')
+  RESP=\$(curl -s -X POST "https://gmail.googleapis.com/gmail/v1/users/me/messages/send" \\
+    -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \\
+    -d "{\\"raw\\": \\"\${ENCODED}\\"}")
+  ERR=\$(echo "\$RESP" | jq -r '.error.message // empty')
+  [ -n "\$ERR" ] && echo "❌ Failed: \$ERR" || echo "✅ Image sent to \${RECIPIENT_EMAIL}"
+
+CREATE CALENDAR EVENT FROM IMAGE: Use calendar_protocol CREATE TEMPLATE.
+  - Extract TITLE, DATE_PART, TIME_PART, DURATION_MIN, LOCATION from image using vision.
+  - ASK user if date or time is unclear — never guess.
+  - Include location in JSON payload: add location:\$loc to jq call.
+</image_workspace_protocol>
+
 <skill_inventory>
 Your installed skills and their triggers:
 
-REMINDERS → use <reminder_protocol> above directly. Do NOT read SKILL.md for create.
+REMINDERS → use <reminder_protocol> directly. Do NOT read SKILL.md for create.
   List/cancel/update only: read reminders/SKILL.md.
 
-GOOGLE CALENDAR (skill: google-workspace/SKILL.md)
-  Triggers: "schedule", "set a meeting", "create event", "calendar", "book a meeting", "meeting at", "meeting with"
-  Action: POST to Google Calendar API via curl with $GOOGLE_ACCESS_TOKEN
+GOOGLE CALENDAR → use <calendar_protocol> directly. Do NOT read SKILL.md for list/create/update/delete.
 
-GMAIL (skill: google-workspace/SKILL.md)
-  Triggers: "send email", "email to", "check email", "read email", "reply to"
-  Action: Gmail API via curl with $GOOGLE_ACCESS_TOKEN
+GMAIL → use <gmail_protocol> directly. Do NOT read SKILL.md for list/send/reply/mark.
 
-WEB SEARCH → use <web_search_protocol> above directly. Do NOT read SKILL.md.
+WEB SEARCH → use <web_search_protocol> directly. Do NOT read SKILL.md.
 
-IMAGE + WORKSPACE (skill: image-workspace/SKILL.md)
-  Triggers: [Attached Images] + workspace action ("email this", "add to calendar", "forward this")
-  Note: Takes priority over google-workspace when images present.
+IMAGE + REMINDERS → use <image_reminder_protocol> directly. Do NOT read SKILL.md.
+  Triggers: [Attached Images] + reminder request. Takes priority over reminder_protocol.
+  List/cancel/update: read reminders/SKILL.md.
 
-IMAGE + REMINDERS (skill: image-reminders/SKILL.md)
-  Triggers: [Attached Images] + reminder request ("remind me about this", "set reminder for this")
-  Note: Takes priority over reminder_protocol when images present.
-
-For Calendar/Gmail/image skills: read the corresponding SKILL.md and execute.
+IMAGE + WORKSPACE → use <image_workspace_protocol> directly. Do NOT read SKILL.md.
+  Triggers: [Attached Images] + email/calendar action. Takes priority over calendar/gmail protocols.
 </skill_inventory>
 
 <response_guidelines>
