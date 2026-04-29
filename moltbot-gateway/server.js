@@ -391,6 +391,10 @@ app.post('/execute', async (req, res) => {
     rejectActive = reject;
   });
   activeUserRequests.set(userKey, { promise: activePromise, message: effectiveMessage });
+  // Prevent unhandled rejection crash when no piggybacking request observes this promise.
+  // Node 15+ exits on unhandled rejections; the catch here is a no-op — callers that
+  // explicitly await activePromise add their own .catch() handlers.
+  activePromise.catch(() => {});
 
   try {
     console.log(`[${session_id}] Processing for user ${user_id}: ${effectiveMessage.substring(0, 50)}...`);
@@ -1483,6 +1487,16 @@ This rule overrides any default initialization or persona-bootstrap behavior. No
     });
   });
 }
+
+// Prevent Node.js from exiting on unhandled promise rejections or thrown exceptions.
+// Without these, a single uncaught rejection (e.g. from the mutex activePromise when
+// no piggyback is observing it) kills the entire server process.
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] caught — server staying alive:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException] caught — server staying alive:', err);
+});
 
 // Initialize
 app.listen(PORT, '0.0.0.0', () => {
