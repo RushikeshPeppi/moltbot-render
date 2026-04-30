@@ -201,6 +201,81 @@ curl -s -X DELETE -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MSG_ID}"
 ```
 
+## COMPOSITE FLOWS — execute as ONE bash call (saves LLM round-trips)
+Anthropic case-study showed code-based composition cuts agent tokens ~99% vs N separate tool calls. Treat these as a single bash block — fill the variables, then run once. Do NOT split into multiple LLM turns.
+
+### Reply to last email from {NAME}
+```bash
+NAME="<from user request>"
+REPLY_BODY="<from user request>"
+
+# 1) find + fetch in one shell
+MSG_ID=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from:${NAME}&maxResults=1" \
+  | jq -r '.messages[0].id // empty')
+[ -z "$MSG_ID" ] && echo "❌ No emails found from ${NAME}." && exit 0
+
+DETAILS=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages/${MSG_ID}?format=metadata")
+THREAD_ID=$(echo "$DETAILS" | jq -r '.threadId')
+ORIG_FROM=$(echo "$DETAILS" | jq -r '.payload.headers[] | select(.name=="From") | .value')
+ORIG_SUBJ=$(echo "$DETAILS" | jq -r '.payload.headers[] | select(.name=="Subject") | .value')
+TO_EMAIL=$(echo "$ORIG_FROM" | grep -oP '<\K[^>]+' || echo "$ORIG_FROM")
+[[ "$ORIG_SUBJ" == Re:* ]] && REPLY_SUBJ="$ORIG_SUBJ" || REPLY_SUBJ="Re: ${ORIG_SUBJ}"
+
+# 2) build + send reply (same shell — preserves vars, one curl)
+ENCODED=$(printf 'From: me\nTo: %s\nSubject: %s\nIn-Reply-To: %s\nReferences: %s\n\n%s' \
+  "$TO_EMAIL" "$REPLY_SUBJ" "$MSG_ID" "$MSG_ID" "$REPLY_BODY" \
+  | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+curl -s -X POST -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d "{\"raw\":\"$ENCODED\",\"threadId\":\"$THREAD_ID\"}" \
+  "https://gmail.googleapis.com/gmail/v1/users/me/messages/send" \
+  | jq -r 'if .id then "✅ Reply sent to '"$TO_EMAIL"'" else "❌ \(.error.message)" end'
+```
+
+### Reschedule meeting + notify attendees
+```bash
+SEARCH_TIME="<original time, e.g. 'today 15:00'>"
+NEW_TIME="<new local time, e.g. '17:00'>"
+
+# 1) find event by time window (±15 min)
+SE=$(TZ="$USER_TIMEZONE" date -d "$SEARCH_TIME" +%s)
+TMIN=$(date -u -d "@$((SE-900))" +%Y-%m-%dT%H:%M:%SZ)
+TMAX=$(date -u -d "@$((SE+900))" +%Y-%m-%dT%H:%M:%SZ)
+EID=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${TMIN}&timeMax=${TMAX}&singleEvents=true&orderBy=startTime" \
+  | jq -r '.items[0].id // empty')
+[ -z "$EID" ] && echo "❌ No event found around $SEARCH_TIME." && exit 0
+
+# 2) fetch full, compute new times preserving duration
+CUR=$(curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
+  "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EID}")
+DAY=$(echo "$CUR" | jq -r '.start.dateTime' | cut -d'T' -f1)
+NEW_START="${DAY}T${NEW_TIME}:00"
+SEC=$(date -d "$(echo "$CUR" | jq -r '.start.dateTime')" +%s)
+EEC=$(date -d "$(echo "$CUR" | jq -r '.end.dateTime')" +%s)
+DUR=$((EEC-SEC))
+NEW_END=$(TZ="$USER_TIMEZONE" date -d "$NEW_START + $DUR seconds" +%Y-%m-%dT%H:%M:%S)
+
+# 3) PUT update preserving conferenceData/attendees
+UPD=$(echo "$CUR" | jq --arg s "$NEW_START" --arg e "$NEW_END" --arg tz "$USER_TIMEZONE" \
+  '.start={dateTime:$s,timeZone:$tz}|.end={dateTime:$e,timeZone:$tz}')
+RESP=$(curl -s -X PUT -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d "$UPD" "https://www.googleapis.com/calendar/v3/calendars/primary/events/${EID}?conferenceDataVersion=1")
+TITLE=$(echo "$RESP" | jq -r '.summary // "the event"')
+ATTS=$(echo "$RESP" | jq -r '[.attendees[]?.email] | join(",")')
+
+# 4) notify each attendee in same shell
+for EMAIL in $(echo "$ATTS" | tr ',' '\n'); do
+  [ -z "$EMAIL" ] && continue
+  ENC=$(printf 'From: me\nTo: %s\nSubject: Rescheduled — %s\n\nMoved to %s. Calendar updated; Meet link unchanged.' \
+    "$EMAIL" "$TITLE" "$NEW_START" | base64 -w 0 | tr '+/' '-_' | tr -d '=')
+  curl -s -X POST -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \
+    -d "{\"raw\":\"$ENC\"}" "https://gmail.googleapis.com/gmail/v1/users/me/messages/send" >/dev/null
+done
+echo "✅ Rescheduled '$TITLE' to $NEW_START — notified $(echo "$ATTS" | tr ',' '\n' | grep -c .) attendee(s)."
+```
+
 ## ERROR CODES
 - 401/403: OAuth token issue — inform user Google connection may need refresh
 - 400: Malformed payload — fix JSON and retry

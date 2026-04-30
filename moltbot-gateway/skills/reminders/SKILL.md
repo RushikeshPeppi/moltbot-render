@@ -8,8 +8,28 @@ metadata: {"openclaw": {"emoji": "⏰"}}
 # Reminders API
 Base: `$FASTAPI_URL/api/v1/reminders/` | User: `$MOLTBOT_USER_ID` | TZ: `$USER_TIMEZONE`
 
-**CREATE/RECURRING**: Use `<reminder_protocol>` from agent context — it has the full template.
-Critical: message MUST be user's explicit words. Local time only (no -u, no Z). recurrence: none|daily|weekdays|weekly|monthly.
+Critical: message MUST be user's **exact words**. If the user didn't say what to be reminded about, ASK — never invent. Local time only (no `-u`, no `Z`). recurrence: `none|daily|weekdays|weekly|monthly`.
+
+## CREATE — one bash call, fill MESSAGE/DATE_EXPR/TIME_PART then run
+```bash
+MESSAGE="<exact words from user>"
+DATE_EXPR="<tomorrow|today|next Monday|2026-05-01|+5 minutes|+2 hours>"
+TIME_PART="<HH:MM in 24h, e.g. 14:00 — leave empty if DATE_EXPR is already relative like '+2 hours'>"
+RECURRENCE="none"   # or daily|weekdays|weekly|monthly
+
+# Pick ONE of these two trigger_at lines:
+TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "${DATE_EXPR}" +%Y-%m-%dT%H:%M:%S)              # relative
+TRIGGER_AT="$(TZ="$USER_TIMEZONE" date -d "${DATE_EXPR}" +%Y-%m-%d)T${TIME_PART}:00"     # specific time
+
+RESP=$(curl -sS -X POST "$FASTAPI_URL/api/v1/reminders/create" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg u "$MOLTBOT_USER_ID" --arg m "$MESSAGE" --arg t "$TRIGGER_AT" \
+        --arg tz "$USER_TIMEZONE" --arg r "$RECURRENCE" \
+        '{user_id:$u,message:$m,trigger_at:$t,user_timezone:$tz,recurrence:$r}')")
+ID=$(echo "$RESP" | jq -r '.data.id // empty')
+[ -n "$ID" ] && echo "⏰ Reminder #$ID set: $MESSAGE at $TRIGGER_AT" || echo "$RESP"
+```
+For RECURRING reminders just set `RECURRENCE` to `daily`/`weekdays`/`weekly`/`monthly` — same template, no separate API.
 
 ## TIME NORMALIZATION (always convert to `HH:MM` 24-hour BEFORE building trigger_at)
 - "2pm" / "2 PM" / "2:00pm" / "2:00 p.m." → `14:00`
