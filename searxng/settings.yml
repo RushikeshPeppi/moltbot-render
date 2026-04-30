@@ -78,10 +78,27 @@ enabled_plugins:
   - 'Self Information'
   - 'Hostnames plugin'
 
+# Engine cooldown tuning. Default SearxEngineTooManyRequests is 3600s (1h) which
+# parks brave for an hour after a single 429. Brave's actual rate-limit window is
+# minutes, not hours — 600s lets it recover and contribute bonus 20-result hits
+# without hammering when actively rate-limited. Other defaults left as-is
+# (CAPTCHA = 24h, Cloudflare CAPTCHA = 15d) since those are less recoverable.
+search:
+  suspended_times:
+    SearxEngineTooManyRequests: 600
+
 engines:
-  # Disable engines that block on Render's shared cloud egress (/24 ranges).
-  # Symptom: 200 OK responses with empty results[] after the first ~5–10
-  # requests. See research doc II.1.5 + II.4.6.
+  # Reliability matrix from 50-query burst test on Render egress (2026-04-30):
+  #   bing      50/50 ok — primary anchor
+  #   startpage 50/50 ok — secondary
+  #   brave     0/50 ok when in cooldown, 20+ results when fresh — opportunistic bonus
+  #   duckduckgo / qwant / karmasearch / mojeek — CAPTCHA / access-denied / timeout
+  #   google*   — block cloud egress entirely
+  # Engines left in the active set but blocked still pay full request_timeout
+  # (4s) on the first query after every cooldown expiry, so we explicitly
+  # disable the dead ones rather than letting the SearXNG defaults retry them.
+
+  # Google family — blocks Render IP ranges entirely.
   - name: google
     disabled: true
   - name: google news
@@ -92,16 +109,40 @@ engines:
     disabled: true
   - name: google videos
     disabled: true
+
+  # Permanently blocked from Render egress (CAPTCHA / access-denied / timeout).
+  # Disabling them avoids the 4s timeout budget after every cooldown expiry.
+  - name: duckduckgo
+    disabled: true
+  - name: duckduckgo news
+    disabled: true
+  - name: duckduckgo images
+    disabled: true
+  - name: duckduckgo videos
+    disabled: true
+  - name: qwant
+    disabled: true
+  - name: qwant news
+    disabled: true
+  - name: qwant images
+    disabled: true
+  - name: qwant videos
+    disabled: true
+  - name: mojeek
+    disabled: true
+  - name: mojeek news
+    disabled: true
+  - name: mojeek images
+    disabled: true
+
   # Tor-only; not relevant for a clearnet agent.
   - name: ahmia
     disabled: true
   - name: torch
     disabled: true
+
   # Tighten timeouts on slower engines so they don't dominate request_timeout.
   - name: wikidata
     timeout: 4.0
   - name: wikipedia
     timeout: 4.0
-  # The remaining defaults stay enabled (duckduckgo, brave, bing, qwant,
-  # mojeek, mwmbl, bing news, qwant news, openstreetmap, etc.) — see
-  # research doc II.1.5 for the reliability matrix.

@@ -37,11 +37,18 @@ QUERY="<search query, city appended if near-me>"
 # MAX_RESULTS=3       # default 3, max 5
 
 URL_ENC_Q=$(printf '%s' "$QUERY" | jq -Rr '@uri')
-SEARCH_URL="${SEARXNG_URL%/}/search?q=${URL_ENC_Q}&format=json&safesearch=1&engines=brave"
+# Engine selection grounded in 50-query burst test from this Render IP (2026-04-30):
+#   bing       50/50 ok, no CAPTCHA code in engine source, zero recent SearXNG issues  → primary
+#   startpage  50/50 ok, has CAPTCHA risk per issue #4549 (rare for our volume)        → secondary
+#   brave      0/50 (suspended 1h on first 429), but returns 20+ rich results when fresh → bonus
+# DuckDuckGo / Qwant / Karmasearch / Mojeek all permanently CAPTCHA / access-denied
+# from Render's shared egress — leaving them out of `engines=` (and disabled in
+# settings.yml) avoids burning 4s timeout budget per query post-cooldown.
+SEARCH_URL="${SEARXNG_URL%/}/search?q=${URL_ENC_Q}&format=json&safesearch=1&engines=bing,startpage,brave"
 [ -n "${CATEGORY:-}"   ] && SEARCH_URL="${SEARCH_URL}&categories=${CATEGORY}"
 [ -n "${TIME_RANGE:-}" ] && SEARCH_URL="${SEARCH_URL}&time_range=${TIME_RANGE}"
 
-HTTP_CODE=$(curl -sS -m 5 \
+HTTP_CODE=$(curl -sS -m 8 \
   -A 'Mozilla/5.0 (compatible; PeppiAgent/1.0; +https://peppi.app)' \
   -H 'Accept: application/json' \
   -H 'Accept-Language: en-US,en;q=0.9' \
