@@ -253,6 +253,7 @@ function stripBootstrapPreamble(text) {
 
 // Store for active OpenClaw processes
 let isReady = false;
+let agentMdReady = false;
 
 /**
  * Per-user request mutex.
@@ -272,12 +273,16 @@ let isReady = false;
  */
 const activeUserRequests = new Map();
 
-// Health check
+// Health check. agent.md is the system prompt — if it didn't write at boot,
+// the model runs without our persona and leaks default Claude intros. Report
+// 503 so Render rolls the deploy back instead of serving a broken instance.
 app.get('/health', (req, res) => {
-  res.json({
-    status: 'online',
+  const healthy = isReady && agentMdReady;
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'online' : 'degraded',
     service: 'openclaw-gateway',
-    openclaw_ready: isReady
+    openclaw_ready: isReady,
+    agent_md_ready: agentMdReady
   });
 });
 
@@ -1547,7 +1552,7 @@ SEND IMAGE VIA EMAIL (fill RECIPIENT_EMAIL, SUBJECT, optional USER_MESSAGE):
   IMAGE_BASE64=\$(curl -sL "\$IMAGE_URL" | base64 | tr -d '\\n')
   [ -z "\$IMAGE_BASE64" ] && echo "⚠️ Failed to download image. Could you resend it?" && exit 0
   BOUNDARY="boundary_\$(date +%s)_peppi"
-  MIME_MSG="From: me\\nTo: \${RECIPIENT_EMAIL}\\nSubject: \${SUBJECT:-Photo shared via Peppi}\\nMIME-Version: 1.0\\nContent-Type: multipart/mixed; boundary=\\"\\${BOUNDARY}\\"\\n\\n--\${BOUNDARY}\\nContent-Type: text/html; charset=utf-8\\n\\n<html><body><p>\${USER_MESSAGE:-Here's an image:}</p><img src=\\"cid:attached_image\\" style=\\"max-width:600px;\\"></body></html>\\n--\${BOUNDARY}\\nContent-Type: \${CONTENT_TYPE}\\nContent-Transfer-Encoding: base64\\nContent-Disposition: inline; filename=\\"image.jpg\\"\\nContent-ID: <attached_image>\\n\\n\${IMAGE_BASE64}\\n--\${BOUNDARY}--"
+  MIME_MSG="From: me\\nTo: \${RECIPIENT_EMAIL}\\nSubject: \${SUBJECT:-Photo shared via Peppi}\\nMIME-Version: 1.0\\nContent-Type: multipart/mixed; boundary=\\"\\\${BOUNDARY}\\"\\n\\n--\${BOUNDARY}\\nContent-Type: text/html; charset=utf-8\\n\\n<html><body><p>\${USER_MESSAGE:-Here's an image:}</p><img src=\\"cid:attached_image\\" style=\\"max-width:600px;\\"></body></html>\\n--\${BOUNDARY}\\nContent-Type: \${CONTENT_TYPE}\\nContent-Transfer-Encoding: base64\\nContent-Disposition: inline; filename=\\"image.jpg\\"\\nContent-ID: <attached_image>\\n\\n\${IMAGE_BASE64}\\n--\${BOUNDARY}--"
   ENCODED=\$(echo "\$MIME_MSG" | base64 | tr '+/' '-_' | tr -d '=\\n')
   RESP=\$(curl -s -X POST "https://gmail.googleapis.com/gmail/v1/users/me/messages/send" \\
     -H "Authorization: Bearer \$GOOGLE_ACCESS_TOKEN" -H "Content-Type: application/json" \\
@@ -1604,7 +1609,17 @@ This rule overrides any default initialization or persona-bootstrap behavior. No
 </continuity_rules>
 `;
       fs.writeFileSync(agentMdPath, agentMdContent);
-      console.log(`✓ Created agent.md at ${agentMdPath}`);
+      // Self-test: agent.md is the system prompt. If write failed or content is
+      // truncated, the agent runs with no Peppi persona and leaks default Claude
+      // memory-bootstrap intros. Crash early so the deploy fails health-check
+      // instead of silently serving a broken instance (regression seen 2026-04-29
+      // when a JS template-literal ReferenceError aborted this write mid-block).
+      const writtenSize = fs.statSync(agentMdPath).size;
+      if (writtenSize < 5000) {
+        throw new Error(`agent.md write produced ${writtenSize} bytes, expected ≥5000. System prompt is missing — refusing to start.`);
+      }
+      agentMdReady = true;
+      console.log(`✓ Created agent.md at ${agentMdPath} (${writtenSize} bytes)`);
 
       // 2. Create auth-profiles.json - CORRECT FORMAT per docs
       const authProfilePath = path.join(agentDir, 'auth-profiles.json');
