@@ -48,6 +48,20 @@ Use the CREATE template from `<calendar_protocol>` in agent context.
 - Add location: `JSON=$(echo "$JSON" | jq --arg l "$LOCATION" '. + {location:$l}')`
 - Same `?conferenceDataVersion=1` flag for Meet link
 
+### When details are missing — ASK, don't guess
+- Image with no date → "I can see this is about '<title>'. When is it?"
+- Image with date but no time → "This is on <date>. What time does it start?"
+- Image is blurry/unreadable → "I couldn't read the details clearly. Can you tell me the event name, date, and time?"
+- Recipient given as name only ("send this to John") → "What's John's email address?"
+- Year ambiguous on poster (just "March 15") → infer THIS year if date is in the future, NEXT year if it's already passed
+
+### Useful extraction templates by image type
+- **Event poster** → TITLE, DATE, TIME, LOCATION (often has a venue address — include in `location`)
+- **Restaurant menu / receipt** → VENDOR, ITEMS, AMOUNT, DATE
+- **Whiteboard / meeting notes** → describe in body, no calendar event unless user asks
+- **Screenshot of an email** → SENDER + SUBJECT + body gist; for reply flows use Gmail `q=from:...subject:...` to find the real thread (do NOT fabricate a Message-Id)
+- **Travel itinerary** → multiple events possible (flight, check-in, return) — confirm one-by-one before creating
+
 ## DESCRIBE IMAGE + EMAIL (compound action)
 1. Describe image in 1-2 sentences using vision
 2. Use that description as `USER_MESSAGE` in the SEND IMAGE VIA EMAIL template above

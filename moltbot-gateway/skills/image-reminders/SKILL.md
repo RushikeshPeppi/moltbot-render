@@ -19,6 +19,16 @@ HTTP=$(curl -sI -o /dev/null -w "%{http_code}" -L "$IMAGE_URL")
 [ "$HTTP" != "200" ] && echo "⚠️ Image expired (HTTP $HTTP). Could you resend it?" && exit 0
 ```
 
+## EXTRACTION TEMPLATES BY IMAGE TYPE
+Use these as a starting point for `REMINDER_MESSAGE`. Trim to ≤160 chars.
+- **Shopping list** → `"Buy: milk, eggs, bread, butter, cheese"` (top 5–8 items, then "...")
+- **Bill / invoice** → `"Pay <payee> — <amount> (due <date>)"` (never include card/account numbers)
+- **Event poster** → `"<event title> at <venue> — <date> <time>"`
+- **Whiteboard / notes** → `"<topic>: <key bullet 1>, <bullet 2>, …"` (top 3 bullets)
+- **Prescription** → `"Take <medicine_name> <dosage>"` (no pharmacy / Rx number)
+- **Receipt** → `"Submit expense: <merchant> — <amount> on <date>"`
+- **Screenshot of message** → core actionable line, attribution if relevant ("Reply to <person>: <gist>")
+
 ## CREATE REMINDER FROM IMAGE
 1. **DESCRIBE**: "I can see [content]." (1 sentence using vision)
 2. **ASK** if user didn't specify WHEN: "When would you like to be reminded about this?" (never default to random time)
@@ -59,6 +69,14 @@ RESP=$(curl -s -X POST "$FASTAPI_URL/api/v1/reminders/create" -H "Content-Type: 
     --arg tz "$USER_TIMEZONE" --arg r "weekly" \
     '{user_id:$u,message:$m,trigger_at:$t,user_timezone:$tz,recurrence:$r}')")
 echo "$RESP" | jq -r 'if .data.id then "✅ Reminder set" else "❌ \(.message)" end'
+```
+
+## DUPLICATE CHECK (optional, for ambiguous repeats like "remind me to pay this again")
+```bash
+EXISTING=$(curl -s "$FASTAPI_URL/api/v1/reminders/list/$MOLTBOT_USER_ID?status=pending")
+DUP=$(echo "$EXISTING" | jq -r --arg m "$REMINDER_MESSAGE" \
+  '.data.reminders[]? | select(.message | ascii_downcase | contains($m | ascii_downcase)) | .id' | head -1)
+[ -n "$DUP" ] && [ "$DUP" != "null" ] && echo "📝 Note: similar reminder #$DUP already exists. Creating new one anyway."
 ```
 
 For LIST/CANCEL/UPDATE: use reminders/SKILL.md.

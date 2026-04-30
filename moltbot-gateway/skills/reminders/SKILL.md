@@ -11,6 +11,19 @@ Base: `$FASTAPI_URL/api/v1/reminders/` | User: `$MOLTBOT_USER_ID` | TZ: `$USER_T
 **CREATE/RECURRING**: Use `<reminder_protocol>` from agent context — it has the full template.
 Critical: message MUST be user's explicit words. Local time only (no -u, no Z). recurrence: none|daily|weekdays|weekly|monthly.
 
+## TIME NORMALIZATION (always convert to `HH:MM` 24-hour BEFORE building trigger_at)
+- "2pm" / "2 PM" / "2:00pm" / "2:00 p.m." → `14:00`
+- "9am" / "9 a.m." / "9:00 AM" → `09:00`
+- "18:00" / "6 PM" → `18:00`
+- "0700" / "0700hrs" → `07:00` (4-digit military: split first 2 = hours, last 2 = mins)
+- "7.30" / "7:30" → `07:30` (replace dot with colon, zero-pad hour)
+- "noon" / "midday" / "12" alone → `12:00`; "midnight" → `00:00`
+- "morning" → `09:00`; "afternoon" → `14:00`; "evening" → `18:00`; "night" → `21:00`
+- "quarter past 7" → `07:15`; "half past 3" → `15:30`; "quarter to 5" → `16:45`
+- "in 30 minutes" / "in 2 hours" → `TRIGGER_AT=$(TZ="$USER_TIMEZONE" date -d "+30 minutes" +%Y-%m-%dT%H:%M:%S)` (skip TIME_PART path)
+- **Bare hour with no AM/PM** ("at 7", "8 o'clock"): 1–6 → PM; 7–11 → AM; 12 → noon. Override if context says "tonight"/"evening" (→ PM) or "morning"/"wake" (→ AM).
+- If genuinely unclear: ASK ("Did you mean 7 AM or 7 PM?") — do NOT silently pick.
+
 ## LIST
 ```bash
 RESP=$(curl -s "${FASTAPI_URL}/api/v1/reminders/list/${MOLTBOT_USER_ID}?status=pending")

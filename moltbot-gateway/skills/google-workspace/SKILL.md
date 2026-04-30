@@ -120,12 +120,29 @@ HTTP_CODE=$(echo "$DELETE_RESP" | tail -1)
 ## GMAIL
 
 ### LIST / SEARCH
+Map user phrasing → Gmail query (`q=` URL-encoded):
+- "recent" / "inbox" → empty filter, `maxResults=10`
+- "unread" → `is:unread`
+- "important" → `is:important`
+- "starred" → `is:starred`
+- "with attachments" → `has:attachment`
+- "from John" / "from john@x" → `from:John` (Gmail also matches display names)
+- "to Sarah" → `to:sarah@...`
+- "about <topic>" → `subject:<topic>` OR plain `<topic>` (Gmail full-text)
+- "today" → `after:$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s)`
+- "this week" → `after:$(TZ="$USER_TIMEZONE" date -d "monday 00:00:00" +%s)` (or `7d` for last-7-days)
+- "last N emails" → empty filter, `maxResults=N`
+- Combine with space: `from:john is:unread after:1717200000`
+
 ```bash
-# FILTER examples: "is:unread", "from:name", "is:important", "has:attachment"
-# Date range: TODAY_EPOCH=$(TZ="$USER_TIMEZONE" date -d "today 00:00:00" +%s); FILTER="after:${TODAY_EPOCH}"
 curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" \
   "https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${FILTER}&maxResults=10" | jq -r '.messages[].id'
-# Get full message: GET /users/me/messages/${ID}?format=full (or format=metadata for headers only)
+# Get full message:    GET /users/me/messages/${ID}?format=full
+# Headers + snippet:   GET /users/me/messages/${ID}?format=metadata
+# Body of plain-text part (handles single-part and multipart, decodes base64url):
+#   curl -s -H "Authorization: Bearer $GOOGLE_ACCESS_TOKEN" "$URL?format=full" \
+#     | jq -r '(.payload.parts[]? | select(.mimeType=="text/plain") | .body.data) // .payload.body.data // empty' \
+#     | tr '_-' '/+' | base64 -d 2>/dev/null
 ```
 
 ### SEND EMAIL
