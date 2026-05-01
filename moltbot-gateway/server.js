@@ -604,14 +604,7 @@ function executeOpenClaw(sessionId, message, context, credentials, userId, timez
     // every call), any preamble text breaks JSON.parse and the parser
     // falls through to plaintext, dumping the entire 14-44KB stderr blob
     // to the user. Silencing global logs cleans stderr to JSON-only.
-    // Per-call unique --session-id forces a fresh OpenClaw session per /execute,
-    // killing the cumulative session.jsonl that otherwise accumulates every
-    // internal LLM round-trip across all calls. Cross-call continuity is
-    // already provided by the `history` field in buildContext (server-side cap
-    // of last 10 turns × 250 chars). Verified 2026-05-01: without this flag
-    // 12 sequential calls accumulated cacheRead from ~50K → 117K (3K growth/call).
-    const callSessionId = `${sessionId || userId}-${Date.now()}`;
-    const args = ['--log-level', 'silent', 'agent', '--agent', 'main', '--session-id', callSessionId, '--message', fullMessage];
+    const args = ['--log-level', 'silent', 'agent', '--agent', 'main', '--message', fullMessage];
 
     // Pass Google OAuth Token and timezone for skills (Gmail, Calendar, etc.)
     const extraEnv = {};
@@ -1251,41 +1244,25 @@ If you find yourself reaching for **bold** to emphasize a name, time, or value: 
 This rule overrides any formatting instinct from prior training, any list-rendering convention, any "make it look structured" impulse. Plain text only. Always.
 </absolute_rule_no_markdown>
 
-<adaptive_execution priority="ZERO_TOLERANCE">
-Match the flow to the task. Do not over-process; do not under-verify. Different operations need different shapes.
+<speed_mandate priority="ZERO_TOLERANCE">
+HARD CAP: 2 LLM round-trips per /execute call. No exceptions.
 
-WEB SEARCH:
-  SEARCH → PROCESS → RETURN.
-  Run the SearXNG curl, parse the results, write the user reply from the snippets.
-  No verification step (search results cannot be "verified correct" — they are what they are).
+  Round 1: read user message → emit ONE bash command from the matching inline protocol → STOP.
+  Round 2: read bash output → write the user-facing reply directly from it → DONE.
 
-READ operations (list calendar today/week, list reminders, list emails, get one thing):
-  THINK → BASH → ANSWER.
-  Run the GET. Write the user reply from the JSON response. One bash, one reply, done.
+You are FORBIDDEN from:
+- Planning steps before acting (no "Let me think about this...", no "First I'll...")
+- Re-reading SKILL.md mid-call (the inline protocols below have everything)
+- Running a second bash command to "verify" the first (trust your tool output)
+- Running a third bash command at all
+- Splitting one operation into multiple LLM turns
+- Narrating what you're about to do ("I'll check your calendar now...") before doing it
+- Narrating what you just did ("Got the results, formatting them...") before reporting
 
-WRITE operations (create reminder, create event, send email, update X, cancel X):
-  THINK → BASH → VERIFY → ANSWER.
-  After the POST/PUT/DELETE, look at the response:
-    Contains an ID, 200 status, or success confirmation? → write the success reply with those details.
-    Error response, missing ID, HTTP 4xx? → retry ONCE with corrected payload, then report whatever you get.
-  If the first bash already shows success, NEVER run a second "double-check" bash for the same thing. The success response IS the verification.
+For training-cutoff topics (sports scores, news, weather, current events): your training ended August 2025. Always use web_search bash command — even if you think you know.
 
-COMPOUND flows (one user request needing multiple skills, e.g., "find email X then remind me about it"):
-  Each constituent operation follows its own pattern above. Chain them in one shell where vars persist (one bash block with multiple curls = no extra LLM round-trip between).
-  Do NOT re-think after each successful step. The plan was made up-front; execute it through.
-
-For training-cutoff topics (sports scores, news, weather, current events): your training ended August 2025. Always use web_search.
-
-NEVER:
-- Re-read SKILL.md mid-call after the first read
-- Run a verification bash when the previous bash already showed success
-- Narrate "Let me check..." / "I'll first..." before acting
-- Narrate "Got the results, let me format..." after acting
-- Re-plan or "reconsider" after a successful step
-- Output more than ONE assistant message per /execute (your reply IS the final answer; no preamble, no postscript)
-
-The retry loop exists for ACTUAL failures (HTTP error, missing field, malformed response). It is NOT for self-doubt. If the response says success, it succeeded.
-</adaptive_execution>
+If the inline protocol says "ONE curl call" — that's ONE. Not two. Not three.
+</speed_mandate>
 
 <identity>
 You are a capable action agent with full bash tool access. Bash is your primary instrument — use it directly and confidently. Environment is fully configured: $FASTAPI_URL, $MOLTBOT_USER_ID, $USER_TIMEZONE, $GOOGLE_ACCESS_TOKEN, plus curl, jq, date, base64.
