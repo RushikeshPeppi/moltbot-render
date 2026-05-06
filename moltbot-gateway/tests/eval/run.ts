@@ -58,8 +58,12 @@ interface ExecuteResponse {
   response?: string;
   action_type?: string;
   tokens_used?: number;
+  input_tokens?: number;
+  output_tokens?: number;
   cache_read?: number;
   cache_write?: number;
+  cache_write_5m?: number;
+  cache_write_1h?: number;
   reminder_trigger_at?: string | null;
   _meta?: {
     iterations: number;
@@ -78,7 +82,46 @@ interface ScoreResult {
   wallMs: number;
   toolCalls: string[];
   reply: string;
+  // Token breakdown — directly from gateway /execute response.
+  inputTokens: number;
+  outputTokens: number;
   cacheRead: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+  totalInput: number; // input + cache_read + cache_write_5m + cache_write_1h
+  // Cost: computed locally using the same formula as playground.py:_row_cost.
+  // Sonnet 4.6 rates per 1M tokens.
+  costUsd: number;
+  // For cross-referencing with Render logs and Anthropic Console.
+  requestId: string;
+}
+
+// Sonnet 4.6 pricing — keep in sync with fastapi-wrapper/app/api/playground.py
+const RATE_INPUT = 3.0;
+const RATE_OUTPUT = 15.0;
+const RATE_CACHE_READ = 0.3;
+const RATE_CW_5M = 3.75;
+const RATE_CW_1H = 6.0;
+
+function computeCost(r: {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read?: number;
+  cache_write_5m?: number;
+  cache_write_1h?: number;
+}): number {
+  const inp = r.input_tokens ?? 0;
+  const out = r.output_tokens ?? 0;
+  const cr = r.cache_read ?? 0;
+  const cw5 = r.cache_write_5m ?? 0;
+  const cw1h = r.cache_write_1h ?? 0;
+  return (
+    (inp / 1_000_000) * RATE_INPUT +
+    (out / 1_000_000) * RATE_OUTPUT +
+    (cr / 1_000_000) * RATE_CACHE_READ +
+    (cw5 / 1_000_000) * RATE_CW_5M +
+    (cw1h / 1_000_000) * RATE_CW_1H
+  );
 }
 
 const GATEWAY_URL = (process.env.GATEWAY_URL ?? "https://openclaw-gateway-dg3y.onrender.com").replace(
@@ -121,27 +164,73 @@ async function main(): Promise<void> {
     results.push(r);
     const status = r.pass ? "PASS" : "FAIL";
     const failNote = r.failures.length ? `  — ${r.failures.join("; ")}` : "";
+    const costStr = r.costUsd < 0.01 ? `$${r.costUsd.toFixed(4)}` : `$${r.costUsd.toFixed(3)}`;
     console.log(
-      `[${status}] ${s.id.padEnd(36)} tier=${s.tier.padEnd(6)} iter=${r.iter} ms=${r.wallMs.toString().padStart(5)} cache_read=${r.cacheRead.toString().padStart(6)} tools=[${r.toolCalls.join(",")}]${failNote}`,
+      `[${status}] ${s.id.padEnd(34)} tier=${s.tier.padEnd(6)} iter=${r.iter} ${(r.wallMs / 1000).toFixed(1).padStart(5)}s in=${r.inputTokens.toString().padStart(5)} out=${r.outputTokens.toString().padStart(4)} cr=${r.cacheRead.toString().padStart(5)} cw5=${r.cacheWrite5m.toString().padStart(4)} cw1h=${r.cacheWrite1h.toString().padStart(5)} cost=${costStr.padStart(8)} req=${r.requestId.slice(0, 8)} tools=[${r.toolCalls.join(",")}]${failNote}`,
     );
+    if (!r.pass && r.reply) {
+      console.log(`     reply: ${r.reply.slice(0, 160)}${r.reply.length > 160 ? "..." : ""}`);
+    }
   }
 
   // Summary
   const total = results.length;
   const passed = results.filter((r) => r.pass).length;
-  const byTier: Record<string, { passed: number; total: number }> = {};
+  const byTier: Record<string, { passed: number; total: number; cost: number; ms: number }> = {};
   for (const r of results) {
-    byTier[r.tier] ??= { passed: 0, total: 0 };
+    byTier[r.tier] ??= { passed: 0, total: 0, cost: 0, ms: 0 };
     byTier[r.tier].total++;
+    byTier[r.tier].cost += r.costUsd;
+    byTier[r.tier].ms += r.wallMs;
     if (r.pass) byTier[r.tier].passed++;
   }
   const avgIter = results.reduce((a, r) => a + r.iter, 0) / Math.max(1, total);
   const avgWall = results.reduce((a, r) => a + r.wallMs, 0) / Math.max(1, total);
+  const totalCost = results.reduce((a, r) => a + r.costUsd, 0);
+  const avgCost = totalCost / Math.max(1, total);
 
-  console.log(`\n[summary] ${passed}/${total} pass  avg_iter=${avgIter.toFixed(2)}  avg_wall_ms=${Math.round(avgWall)}`);
+  console.log(
+    `\n[summary] ${passed}/${total} pass  avg_iter=${avgIter.toFixed(2)}  avg_wall=${(avgWall / 1000).toFixed(1)}s  avg_cost=$${avgCost.toFixed(4)}  total_cost=$${totalCost.toFixed(4)}`,
+  );
   for (const [tier, c] of Object.entries(byTier)) {
-    console.log(`  ${tier.padEnd(7)} ${c.passed}/${c.total}`);
+    const tierAvgCost = c.cost / Math.max(1, c.total);
+    const tierAvgWall = c.ms / Math.max(1, c.total) / 1000;
+    console.log(
+      `  ${tier.padEnd(7)} ${c.passed}/${c.total}  avg_wall=${tierAvgWall.toFixed(1)}s  avg_cost=$${tierAvgCost.toFixed(4)}`,
+    );
   }
+
+  // Print structured JSON line as the last line — useful for piping to jq or
+  // attaching to a report.
+  console.log(
+    "\n" +
+      JSON.stringify({
+        evt: "eval_summary",
+        passed,
+        total,
+        avg_iter: Number(avgIter.toFixed(2)),
+        avg_wall_ms: Math.round(avgWall),
+        total_cost_usd: Number(totalCost.toFixed(4)),
+        avg_cost_usd: Number(avgCost.toFixed(4)),
+        results: results.map((r) => ({
+          id: r.id,
+          tier: r.tier,
+          pass: r.pass,
+          iter: r.iter,
+          wall_ms: r.wallMs,
+          input_tokens: r.inputTokens,
+          output_tokens: r.outputTokens,
+          cache_read: r.cacheRead,
+          cache_write_5m: r.cacheWrite5m,
+          cache_write_1h: r.cacheWrite1h,
+          total_input: r.totalInput,
+          cost_usd: Number(r.costUsd.toFixed(6)),
+          request_id: r.requestId,
+          tool_calls: r.toolCalls,
+          failures: r.failures,
+        })),
+      }),
+  );
 
   process.exit(passed === total ? 0 : 1);
 }
@@ -178,7 +267,14 @@ async function runOne(s: Scenario): Promise<ScoreResult> {
       wallMs,
       toolCalls: [],
       reply: "",
+      inputTokens: 0,
+      outputTokens: 0,
       cacheRead: 0,
+      cacheWrite5m: 0,
+      cacheWrite1h: 0,
+      totalInput: 0,
+      costUsd: 0,
+      requestId: "",
     };
   }
 
@@ -216,6 +312,14 @@ async function runOne(s: Scenario): Promise<ScoreResult> {
   // 6. success flag
   if (!resp.success) failures.push(`gateway error: ${resp.error ?? "unknown"}`);
 
+  const inputTokens = resp.input_tokens ?? 0;
+  const outputTokens = resp.output_tokens ?? 0;
+  const cacheRead = resp.cache_read ?? 0;
+  const cacheWrite5m = resp.cache_write_5m ?? 0;
+  const cacheWrite1h = resp.cache_write_1h ?? 0;
+  const totalInput = inputTokens + cacheRead + cacheWrite5m + cacheWrite1h;
+  const costUsd = computeCost(resp);
+
   return {
     id: s.id,
     tier: s.tier,
@@ -224,8 +328,15 @@ async function runOne(s: Scenario): Promise<ScoreResult> {
     iter,
     wallMs,
     toolCalls: tools,
-    reply: reply.slice(0, 200),
-    cacheRead: resp.cache_read ?? 0,
+    reply: reply.slice(0, 300),
+    inputTokens,
+    outputTokens,
+    cacheRead,
+    cacheWrite5m,
+    cacheWrite1h,
+    totalInput,
+    costUsd,
+    requestId: meta?.request_id ?? "",
   };
 }
 

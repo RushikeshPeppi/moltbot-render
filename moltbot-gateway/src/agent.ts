@@ -366,9 +366,20 @@ function trimHistory(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
 }
 
 function extractText(resp: Anthropic.Message): string {
+  // Sonnet sometimes emits literal <thinking>...</thinking> XML tags inside
+  // text blocks, mimicking the structured-thinking style. They MUST NOT reach
+  // the SMS user. Strip both closed pairs and dangling open tags. Observed in
+  // hard-find-thread-and-reply (req b1d7767a) on 2026-05-06.
+  const stripThinking = (t: string): string =>
+    t
+      .replace(/<thinking>[\s\S]*?<\/thinking>/gi, "")
+      .replace(/<thinking>[\s\S]*$/i, "")
+      .replace(/^[\s\S]*?<\/thinking>/i, "")
+      .trim();
   return resp.content
     .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
+    .map((b) => stripThinking(b.text))
+    .filter((t) => t.length > 0)
     .join("\n");
 }
 
