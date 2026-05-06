@@ -17,6 +17,7 @@ import * as rem from "./reminders.js";
 import * as cal from "./calendar.js";
 import * as gm from "./gmail.js";
 import * as img from "./image.js";
+import * as tm from "./time.js";
 
 export interface ToolContext {
   userId: string;
@@ -38,6 +39,7 @@ export interface ToolContext {
 // Adding a separate breakpoint here would write a redundant `tools-only` cache
 // entry that's never re-read in practice.
 export const TOOLS: Anthropic.Tool[] = [
+  tm.CURRENT_TIME_TOOL,
   web.WEB_SEARCH_TOOL,
   rem.REMINDER_CREATE_TOOL,
   rem.REMINDER_LIST_TOOL,
@@ -57,6 +59,9 @@ export const TOOLS: Anthropic.Tool[] = [
 export async function dispatchTool(name: string, input: unknown, ctx: ToolContext): Promise<unknown> {
   const i = input as Record<string, unknown>;
   switch (name) {
+    case "current_time":
+      return tm.execute(i as Record<string, never>, ctx);
+
     case "web_search":
       return web.execute(i as { query: string; time_range?: string }, ctx);
 
