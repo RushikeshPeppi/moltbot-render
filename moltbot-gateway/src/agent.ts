@@ -74,6 +74,40 @@ const MAX_TOKENS = 1024;
 const MAX_TOOL_ITERATIONS = 6;
 const HISTORY_TURNS_KEPT = 20; // last 10 user/assistant pairs
 
+// Tools that have side effects (creates / updates / sends). Within a single
+// agent run, if the model emits two tool_use blocks with the SAME tool name
+// and byte-identical args (a write fingerprint collision), only the first
+// runs; the others get a synthetic tool_result telling the model the call
+// was deduplicated. Belt-and-suspenders against the duplicate-write seen in
+// 2026-05-06 eval (medium-chain-find-and-remind, req bbfccb7a). Reads
+// (list / search / handle) are unaffected.
+const WRITE_TOOLS = new Set<string>([
+  "reminder_create",
+  "reminder_update",
+  "reminder_cancel",
+  "calendar_create",
+  "calendar_update",
+  "calendar_delete",
+  "gmail_send",
+  "gmail_reply",
+  "gmail_mark",
+]);
+
+function writeFingerprint(name: string, input: unknown): string {
+  // Stable JSON: deterministic key order via Object.keys().sort() — guarantees
+  // {a:1,b:2} and {b:2,a:1} hash the same.
+  const stable = (v: unknown): unknown => {
+    if (v === null || typeof v !== "object") return v;
+    if (Array.isArray(v)) return v.map(stable);
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) {
+      out[k] = stable((v as Record<string, unknown>)[k]);
+    }
+    return out;
+  };
+  return `${name}:${JSON.stringify(stable(input))}`;
+}
+
 // Extended thinking, gated. Per Anthropic, thinking improves multi-step planning
 // noticeably but adds output-rate-billed tokens. We only enable it on the FIRST
 // iteration of a compound turn (detected heuristically), then let the loop run
@@ -165,6 +199,11 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
   // which doesn't need re-planning.
   const useThinking = shouldEnableThinking(input.userText);
 
+  // Fingerprints of write tool calls already executed in this run. If the
+  // model emits a second write with identical args (parallel or across iters),
+  // we skip the actual dispatch and surface a "duplicate skipped" tool_result.
+  const writeFingerprintsExecuted = new Set<string>();
+
   while (iter < MAX_TOOL_ITERATIONS) {
     iter++;
 
@@ -245,6 +284,26 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
       const results = await Promise.all(
         toolUses.map(async (tu) => {
           const tStart = performance.now();
+
+          // Defensive write dedup: if this is a write and we've already run a
+          // write with byte-identical args in this run, skip the actual call.
+          // Surface a synthetic tool_result so the model knows it was a dupe
+          // and can stop re-emitting.
+          if (WRITE_TOOLS.has(tu.name)) {
+            const fp = writeFingerprint(tu.name, tu.input);
+            if (writeFingerprintsExecuted.has(fp)) {
+              toolCalls.push({ name: tu.name, durationMs: 0, ok: true });
+              return {
+                type: "tool_result" as const,
+                tool_use_id: tu.id,
+                content:
+                  `Duplicate write skipped — ${tu.name} with identical args was already executed in this turn. ` +
+                  `The first call is the authoritative one; do not retry. Continue with the rest of your plan or reply to the user.`,
+              };
+            }
+            writeFingerprintsExecuted.add(fp);
+          }
+
           try {
             const out = await dispatchTool(tu.name, tu.input, input.ctx);
             // Track action_type + reminder_trigger_at for the response envelope.
