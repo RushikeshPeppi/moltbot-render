@@ -74,6 +74,27 @@ const MAX_TOKENS = 1024;
 const MAX_TOOL_ITERATIONS = 6;
 const HISTORY_TURNS_KEPT = 20; // last 10 user/assistant pairs
 
+// Extended thinking, gated. Per Anthropic, thinking improves multi-step planning
+// noticeably but adds output-rate-billed tokens. We only enable it on the FIRST
+// iteration of a compound turn (detected heuristically), then let the loop run
+// non-thinking. Budget is intentionally small — Sonnet 4.6 plans well in under
+// 1024 thinking tokens for the kinds of compound flows Peppi sees.
+const THINKING_BUDGET_TOKENS = 1024;
+// max_tokens must exceed budget_tokens; 2048 leaves ~1024 for the visible reply.
+const MAX_TOKENS_WITH_THINKING = 2048;
+// Triggers that indicate a multi-step / multi-tool intent. Calibrated to
+// over-trigger slightly — false positives cost ~$0.015 each, false negatives
+// cost a wrong action.
+const COMPOUND_TRIGGER_RE =
+  /\b(and then|then |after |before my |everyone|all of |each |every (?:weekday|day|monday|tuesday|wednesday|thursday|friday|saturday|sunday)|reply to|cancel .* and|move my|find .* and|email .* and|forward |something came up)\b/i;
+const LONG_MESSAGE_THRESHOLD = 120;
+
+function shouldEnableThinking(userText: string): boolean {
+  if (!userText) return false;
+  if (userText.length > LONG_MESSAGE_THRESHOLD) return true;
+  return COMPOUND_TRIGGER_RE.test(userText);
+}
+
 // Load agent.md once at import-time. ESM top-level await is fine in Node 22.
 const AGENT_MD = await readFile(join(__dirname, "..", "prompts", "agent.md"), "utf-8");
 
@@ -139,12 +160,24 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
   const toolCalls: AgentOutput["toolCalls"] = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 };
 
+  // Decide once, up front, whether this turn warrants extended thinking.
+  // Only applied to iter 1 — subsequent iterations operate on tool_result feedback,
+  // which doesn't need re-planning.
+  const useThinking = shouldEnableThinking(input.userText);
+
   while (iter < MAX_TOOL_ITERATIONS) {
     iter++;
 
+    // Thinking only on iter 1 of compound turns. iter 2+ operates on tool_results
+    // and doesn't benefit from re-planning. Note: max_tokens must exceed
+    // thinking budget, so we bump it for the thinking iteration.
+    const thinkingThisIter = useThinking && iter === 1;
     const resp: Anthropic.Message = await client.messages.create({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
+      max_tokens: thinkingThisIter ? MAX_TOKENS_WITH_THINKING : MAX_TOKENS,
+      ...(thinkingThisIter
+        ? { thinking: { type: "enabled" as const, budget_tokens: THINKING_BUDGET_TOKENS } }
+        : {}),
       // bp1 (1h TTL): caches the entire (tools + system) prefix.
       system: [
         {
