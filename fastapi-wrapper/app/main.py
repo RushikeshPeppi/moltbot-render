@@ -13,6 +13,7 @@ from .api import google_services
 from .api import reminders
 from .api import outbound
 from .api import playground
+from .api import admin
 from .core.database import db
 from .core.redis_client import redis_client
 
@@ -194,6 +195,7 @@ app.include_router(google_services.router, prefix=f"/api/{settings.API_VERSION}"
 app.include_router(reminders.router, prefix=f"/api/{settings.API_VERSION}")
 app.include_router(outbound.router, prefix=f"/api/{settings.API_VERSION}")
 app.include_router(playground.router, prefix=f"/api/{settings.API_VERSION}")
+app.include_router(admin.router, prefix=f"/api/{settings.API_VERSION}")
 
 
 # Root endpoint

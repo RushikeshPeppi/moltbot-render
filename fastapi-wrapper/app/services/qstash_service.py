@@ -137,6 +137,19 @@ class QStashService:
             logger.error(f"Failed to delete QStash schedule {schedule_id}: {e}")
             raise
 
+    def list_schedules(self) -> list:
+        """
+        List all QStash schedules. Used by the admin cleanup endpoint to find
+        orphaned schedules (in QStash but no matching active reminder in DB).
+        Returns the raw list from the SDK — each item has scheduleId, cron,
+        destination, body, createdAt, etc.
+        """
+        try:
+            return self.client.schedule.list() or []
+        except Exception as e:
+            logger.error(f"Failed to list QStash schedules: {e}")
+            raise
+
 
 # Singleton instance
 qstash_service = QStashService()
