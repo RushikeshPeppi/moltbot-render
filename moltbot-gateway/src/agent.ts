@@ -1,0 +1,342 @@
+/**
+ * Core agent loop — direct Anthropic SDK, replaces OpenClaw subprocess.
+ *
+ * Pattern: Anthropic cookbook customer-service agent + Cline's anthropic.ts
+ * provider, adapted for SMS-shaped webhook flow.
+ *
+ * Key design choices (all backed by research in PEPPI_DEEP_RESEARCH.md /
+ * PEPPI_SDK_MIGRATION_RESEARCH.md):
+ *
+ *   1. Manual tool loop (`while (iter < MAX)`) — not toolRunner. SDK's toolRunner
+ *      has open issue #922 (defaultHeaders dropped on follow-up) and we want
+ *      explicit control over cache_control and parallel execution.
+ *
+ *   2. stop_reason switch handles all 6 values (end_turn, tool_use, max_tokens,
+ *      refusal, stop_sequence, pause_turn). end_turn / tool_use are the hot path.
+ *
+ *   3. Parallel tool execution via Promise.all — Sonnet 4.6 emits parallel
+ *      tool_use blocks for independent reads. Errors from any one tool become
+ *      a tool_result with is_error: true so Claude can self-correct.
+ *
+ *   4. Cache control breakpoints:
+ *        bp1 (1h TTL) on last tool def — covers (tools + system) prefix.
+ *        bp2 (5min TTL) on last STABLE assistant turn — covers conversation history.
+ *      Dynamic content (oauth, timestamps, image URLs) lives in the FRESH user
+ *      message, AFTER all breakpoints — never busts cache.
+ *
+ *   5. MAX_TOOL_ITERATIONS = 6 — hard cap to prevent runaway loops. Real SMS
+ *      compound flows top out at 3-4 iterations.
+ *
+ *   6. timeout: 90s — fails fast inside Render's 120s shutdown grace.
+ *
+ *   7. thinking off — Sonnet 4.6 with extended thinking on simple tasks is
+ *      net-negative per Anthropic's own data.
+ */
+
+import Anthropic from "@anthropic-ai/sdk";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { TOOLS, dispatchTool, type ToolContext } from "./tools/index.js";
+import type { Session } from "./session.js";
+import { logCall } from "./observability.js";
+import { env } from "./env.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ─── Client ────────────────────────────────────────────────────────────
+
+const client = new Anthropic({
+  apiKey: env.ANTHROPIC_API_KEY,
+  // Built-in retry: 2 retries on connection errors / 408 / 409 / 429 / >=500.
+  maxRetries: 2,
+  // Default 10min — way too long for SMS. Tighten so we fail fast.
+  timeout: 90 * 1000,
+  // Optional Helicone proxy (free tier, observability)
+  ...(env.HELICONE_PROXY
+    ? {
+        baseURL: "https://anthropic.helicone.ai",
+        defaultHeaders: { "Helicone-Auth": `Bearer ${env.HELICONE_KEY}` },
+      }
+    : {}),
+});
+
+// ─── Constants ─────────────────────────────────────────────────────────
+
+const MODEL = "claude-sonnet-4-5-20250929";
+const MAX_TOKENS = 1024;
+const MAX_TOOL_ITERATIONS = 6;
+const HISTORY_TURNS_KEPT = 20; // last 10 user/assistant pairs
+
+// Load agent.md once at import-time. ESM top-level await is fine in Node 22.
+const AGENT_MD = await readFile(join(__dirname, "..", "prompts", "agent.md"), "utf-8");
+
+// ─── Types ─────────────────────────────────────────────────────────────
+
+export interface AgentInput {
+  sessionId: string;
+  userId: string;
+  userText: string;
+  imageUrls?: string[];
+  ctx: ToolContext;
+}
+
+export interface AgentOutput {
+  reply: string;
+  actionType: string;
+  tokens: {
+    total: number;
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite5m: number;
+    cacheWrite1h: number;
+  };
+  iterations: number;
+  toolCalls: Array<{ name: string; durationMs: number; ok: boolean }>;
+  reminderTriggerAt?: string;
+}
+
+// ─── Main loop ─────────────────────────────────────────────────────────
+
+export async function runAgentLoop(input: AgentInput, session: Session): Promise<AgentOutput> {
+  const t0 = performance.now();
+
+  const messages: Anthropic.MessageParam[] = [...session.history];
+
+  // Build the user message: text + optional images.
+  const userContent: Anthropic.ContentBlockParam[] = [];
+  if (input.imageUrls?.length) {
+    for (const url of input.imageUrls) {
+      userContent.push({
+        type: "image",
+        source: { type: "url", url },
+      });
+    }
+  }
+  if (input.userText) {
+    userContent.push({ type: "text", text: input.userText });
+  }
+  if (userContent.length === 0) {
+    userContent.push({
+      type: "text",
+      text: "[empty message — describe the conversation context if any, otherwise ask the user what they need]",
+    });
+  }
+  messages.push({ role: "user", content: userContent });
+
+  // Loop state
+  let iter = 0;
+  let actionType = "chat";
+  let reminderTriggerAt: string | undefined;
+  const toolCalls: AgentOutput["toolCalls"] = [];
+  const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 };
+
+  while (iter < MAX_TOOL_ITERATIONS) {
+    iter++;
+
+    const resp: Anthropic.Message = await client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      // bp2 (1h TTL): system prompt
+      system: [
+        {
+          type: "text",
+          text: AGENT_MD,
+          cache_control: { type: "ephemeral", ttl: "1h" },
+        },
+      ],
+      // bp1 (1h TTL): last tool already has cache_control set in tools/index.ts
+      tools: TOOLS,
+      // bp3 (5m TTL): cache_control on last stable assistant turn (applied inline)
+      messages: applyHistoryBreakpoint(messages),
+    });
+
+    // Accumulate usage
+    usage.input += resp.usage.input_tokens ?? 0;
+    usage.output += resp.usage.output_tokens ?? 0;
+    usage.cacheRead += resp.usage.cache_read_input_tokens ?? 0;
+    // SDK exposes cache creation as either a flat cache_creation_input_tokens (older shape)
+    // or a structured cache_creation: {ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}.
+    const cc = (resp.usage as unknown as { cache_creation?: { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number } }).cache_creation;
+    if (cc) {
+      usage.cacheWrite5m += cc.ephemeral_5m_input_tokens ?? 0;
+      usage.cacheWrite1h += cc.ephemeral_1h_input_tokens ?? 0;
+    } else {
+      usage.cacheWrite5m += resp.usage.cache_creation_input_tokens ?? 0;
+    }
+
+    // ─── stop_reason dispatch ────────────────────────────────────────
+    if (resp.stop_reason === "end_turn") {
+      const text = extractText(resp).trim();
+      messages.push({ role: "assistant", content: resp.content });
+      session.history = trimHistory(messages);
+      logCall({
+        sessionId: input.sessionId,
+        userId: input.userId,
+        iterations: iter,
+        elapsedMs: performance.now() - t0,
+        usage,
+        actionType,
+        toolCalls,
+        requestId: input.ctx.requestId,
+      });
+      return {
+        reply: text || "(no reply)",
+        actionType,
+        tokens: tokenTotal(usage),
+        iterations: iter,
+        toolCalls,
+        reminderTriggerAt,
+      };
+    }
+
+    if (resp.stop_reason === "tool_use") {
+      const toolUses = resp.content.filter(
+        (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+      );
+      // Persist the assistant turn (with all blocks including text + tool_use) BEFORE the tool_result.
+      messages.push({ role: "assistant", content: resp.content });
+
+      const results = await Promise.all(
+        toolUses.map(async (tu) => {
+          const tStart = performance.now();
+          try {
+            const out = await dispatchTool(tu.name, tu.input, input.ctx);
+            // Track action_type + reminder_trigger_at for the response envelope.
+            actionType = inferActionType(tu.name, actionType);
+            if (tu.name === "reminder_create" && out && typeof out === "object" && "trigger_at" in out) {
+              reminderTriggerAt = (out as { trigger_at: string }).trigger_at;
+            }
+            toolCalls.push({ name: tu.name, durationMs: performance.now() - tStart, ok: true });
+            return {
+              type: "tool_result" as const,
+              tool_use_id: tu.id,
+              content: stringifyToolOutput(out),
+            };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            toolCalls.push({ name: tu.name, durationMs: performance.now() - tStart, ok: false });
+            // CRITICAL: never throw out of dispatcher — return error as tool_result so
+            // Claude can self-correct (per Anthropic's writing-tools-for-agents guidance).
+            return {
+              type: "tool_result" as const,
+              tool_use_id: tu.id,
+              content: `Error: ${msg}`,
+              is_error: true as const,
+            };
+          }
+        }),
+      );
+
+      messages.push({ role: "user", content: results });
+      continue;
+    }
+
+    if (resp.stop_reason === "max_tokens") {
+      const partial = extractText(resp).trim();
+      session.history = trimHistory([...messages, { role: "assistant", content: resp.content }]);
+      return {
+        reply: partial || "I hit a length limit — try rephrasing if the answer feels cut off.",
+        actionType,
+        tokens: tokenTotal(usage),
+        iterations: iter,
+        toolCalls,
+        reminderTriggerAt,
+      };
+    }
+
+    if (resp.stop_reason === "refusal") {
+      session.history = trimHistory([...messages, { role: "assistant", content: resp.content }]);
+      return {
+        reply: "I can't help with that one — try a different request.",
+        actionType: "refused",
+        tokens: tokenTotal(usage),
+        iterations: iter,
+        toolCalls,
+      };
+    }
+
+    // pause_turn / stop_sequence — unexpected for our config. Bail.
+    throw new Error(`Unexpected stop_reason: ${resp.stop_reason}`);
+  }
+
+  // Hit MAX_TOOL_ITERATIONS — return whatever text we have.
+  throw new Error(`Agent loop exceeded ${MAX_TOOL_ITERATIONS} iterations without end_turn`);
+}
+
+// ─── Helpers ───────────────────────────────────────────────────────────
+
+function applyHistoryBreakpoint(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  // bp3 (5m TTL): cache_control on the last STABLE assistant turn (i.e., the turn
+  // BEFORE the current user message). The fresh user turn stays uncached so
+  // per-call dynamic content (timestamps, image URLs) never busts cache.
+  if (msgs.length < 2) return msgs;
+  const out = msgs.map((m) => ({ ...m }));
+  const lastStableIdx = out.length - 2;
+  const lastStable = out[lastStableIdx];
+  if (lastStable.role !== "assistant") return out;
+
+  const content = Array.isArray(lastStable.content)
+    ? [...lastStable.content]
+    : [{ type: "text" as const, text: lastStable.content }];
+  // Add cache_control to the LAST block of the prior assistant turn.
+  if (content.length === 0) return out;
+  const lastBlock = content[content.length - 1];
+  // Spread + add the cache_control field. Block types vary; cast through unknown to bypass strict typing.
+  content[content.length - 1] = {
+    ...(lastBlock as object),
+    cache_control: { type: "ephemeral" },
+  } as Anthropic.ContentBlockParam;
+  out[lastStableIdx] = { ...lastStable, content };
+  return out;
+}
+
+function trimHistory(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  if (msgs.length <= HISTORY_TURNS_KEPT) return msgs;
+  return msgs.slice(-HISTORY_TURNS_KEPT);
+}
+
+function extractText(resp: Anthropic.Message): string {
+  return resp.content
+    .filter((b): b is Anthropic.TextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+function stringifyToolOutput(out: unknown): string {
+  if (out === null || out === undefined) return "";
+  if (typeof out === "string") return out;
+  // For objects/arrays, JSON stringify (compact). Tools that return human-readable
+  // strings (web_search) take the string path above.
+  return JSON.stringify(out);
+}
+
+function inferActionType(toolName: string, current: string): string {
+  if (toolName === "web_search") return "web_search";
+  if (toolName.startsWith("reminder_")) {
+    const op = toolName.split("_")[1] ?? "action";
+    return `reminder_${op}`;
+  }
+  if (toolName.startsWith("calendar_")) {
+    const op = toolName.split("_")[1] ?? "action";
+    return `calendar_${op}`;
+  }
+  if (toolName.startsWith("gmail_")) {
+    const op = toolName.split("_")[1] ?? "action";
+    return `gmail_${op}`;
+  }
+  if (toolName === "image_handle") return "image_handle";
+  return current;
+}
+
+function tokenTotal(u: AgentOutput["tokens"] | { input: number; output: number; cacheRead: number; cacheWrite5m: number; cacheWrite1h: number }): AgentOutput["tokens"] {
+  return {
+    total: u.input + u.output + u.cacheRead + u.cacheWrite5m + u.cacheWrite1h,
+    input: u.input,
+    output: u.output,
+    cacheRead: u.cacheRead,
+    cacheWrite5m: u.cacheWrite5m,
+    cacheWrite1h: u.cacheWrite1h,
+  };
+}
