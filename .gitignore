@@ -51,6 +51,9 @@ __pycache__/
 .brainsync/agent-rules.md
 AGENT.md
 CLAUDE.md
+# Negation: our intentional system prompt for the SDK gateway is checked in
+# (the AGENT.md rule above matches case-insensitively on macOS / APFS).
+!moltbot-gateway/prompts/agent.md
 
 # Auto-generated AI agent exclusions
 .cursorrules
