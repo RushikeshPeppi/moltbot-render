@@ -25,12 +25,16 @@ export interface CallMeta {
   actionType: string;
   toolCalls: Array<{ name: string; durationMs: number; ok: boolean }>;
   requestId: string;
+  /** Anthropic-side request id (`_request_id` on the SDK response, last iteration). Useful for support tickets. */
+  anthropicRequestId?: string | null;
 }
 
 export function logCall(c: CallMeta): void {
-  const cw = c.usage.cacheWrite5m + c.usage.cacheWrite1h;
-  const denom = c.usage.cacheRead + cw;
-  const hit = denom > 0 ? c.usage.cacheRead / denom : 0;
+  // Cache hit ratio: fraction of total *input* tokens that came from cache.
+  // Total input = input (uncached) + cache_creation_5m + cache_creation_1h + cache_read
+  // (Anthropic docs explicitly note these three counters do not overlap.)
+  const totalInput = c.usage.input + c.usage.cacheRead + c.usage.cacheWrite5m + c.usage.cacheWrite1h;
+  const hit = totalInput > 0 ? c.usage.cacheRead / totalInput : 0;
   console.log(
     JSON.stringify({
       ts: new Date().toISOString(),
@@ -38,6 +42,7 @@ export function logCall(c: CallMeta): void {
       session: c.sessionId,
       user: c.userId,
       req: c.requestId,
+      anth_req: c.anthropicRequestId ?? null,
       iter: c.iterations,
       ms: Math.round(c.elapsedMs),
       action: c.actionType,

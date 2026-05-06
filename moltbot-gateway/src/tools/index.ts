@@ -32,8 +32,12 @@ export interface ToolContext {
   requestId: string;
 }
 
-// Tool definitions — last one carries cache_control.
-const baseTools: Anthropic.Tool[] = [
+// Tool definitions. We do NOT add cache_control here — the cache_control on the
+// system text block (see agent.ts) covers the entire (tools + system) prefix in
+// a single breakpoint, since Anthropic's prefix walker is tools → system → messages.
+// Adding a separate breakpoint here would write a redundant `tools-only` cache
+// entry that's never re-read in practice.
+export const TOOLS: Anthropic.Tool[] = [
   web.WEB_SEARCH_TOOL,
   rem.REMINDER_CREATE_TOOL,
   rem.REMINDER_LIST_TOOL,
@@ -49,16 +53,6 @@ const baseTools: Anthropic.Tool[] = [
   gm.GMAIL_MARK_TOOL,
   img.IMAGE_HANDLE_TOOL,
 ];
-
-// Apply cache_control to the LAST tool def. This breakpoint covers
-// (entire tools array) + (system prompt that follows in the request).
-// 1h TTL — tools change only on deploy.
-export const TOOLS: Anthropic.Tool[] = baseTools.map((t, i) => {
-  if (i === baseTools.length - 1) {
-    return { ...t, cache_control: { type: "ephemeral", ttl: "1h" } } as Anthropic.Tool;
-  }
-  return t;
-});
 
 export async function dispatchTool(name: string, input: unknown, ctx: ToolContext): Promise<unknown> {
   const i = input as Record<string, unknown>;

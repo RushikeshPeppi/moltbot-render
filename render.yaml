@@ -18,7 +18,7 @@ services:
       # API secret for authentication
       - key: API_SECRET_KEY
         generateValue: true
-      # OpenClaw Gateway URL (internal service)
+      # Gateway URL (Anthropic SDK service — service name kept for URL stability)
       - key: MOLTBOT_GATEWAY_URL
         value: https://openclaw-gateway-dg3y.onrender.com
       # Upstash Redis
@@ -93,34 +93,40 @@ services:
       - key: PORT
         value: "8080"
 
-  # OpenClaw Gateway - Runs the AI agent
+  # Moltbot Gateway — direct Anthropic SDK (replaces OpenClaw subprocess pattern).
+  # Service name kept as `openclaw-gateway` so the deployed URL
+  # https://openclaw-gateway-dg3y.onrender.com stays stable and FastAPI's
+  # MOLTBOT_GATEWAY_URL above doesn't need changing.
   - type: web
     name: openclaw-gateway
     runtime: node
     region: oregon
     plan: pro
     rootDir: moltbot-gateway
-    buildCommand: |
-      npm install && \
-      npm install -g openclaw@latest
+    # MUST run the TypeScript build — start runs `node dist/server.js`.
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /health
-    disk:
-      name: openclaw-data
-      mountPath: /root/.openclaw
-      sizeGB: 1
+    # Render Pro default shutdown grace = 30s. LLM calls can run 30-90s.
+    # Bump so SIGTERM drain has time to finish in-flight requests.
+    maxShutdownDelaySeconds: 120
     envVars:
       - key: NODE_VERSION
         value: "22"
       - key: NODE_OPTIONS
         value: "--max-old-space-size=2048"
-      # Google Gemini API Key for LLM (REQUIRED)
-      - key: GEMINI_API_KEY
+      # Anthropic API key (required) — the SDK migration replaces Gemini.
+      - key: ANTHROPIC_API_KEY
         sync: false
-      # SearXNG URL (internal free search)
-      - key: SEARXNG_BASE_URL
+      # SearXNG URL — note: env var renamed from SEARXNG_BASE_URL to match src/env.ts.
+      - key: SEARXNG_URL
         value: https://searxng-09k9.onrender.com
-      # FastAPI URL for OAuth token bridge
+      # FastAPI URL — OAuth token bridge + reminder tool dispatch.
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
+      # Optional Helicone observability — set HELICONE_PROXY=true + HELICONE_KEY to enable.
+      - key: HELICONE_PROXY
+        value: "false"
+      - key: HELICONE_KEY
+        sync: false
 

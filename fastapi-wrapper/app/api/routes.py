@@ -259,8 +259,14 @@ async def execute_action(request: ExecuteActionRequest):
         # Note: We skip saving to Redis conversation_history — Peppi already
         # provides full chat history in context. Redis is only used for session_id mapping.
         
-        # 6. Call OpenClaw with retry logic (+ retry on empty payloads)
-        MAX_EMPTY_RETRIES = 2
+        # 6. Call gateway. Empty-payload retry was tuned for OpenClaw, which
+        # could return thinking-only payloads with no text. The SDK gateway
+        # already retries the Anthropic call internally (maxRetries: 2 in the
+        # Node client) and always returns a `response` field. Each retry here
+        # spawns a fresh agent run with a NEW requestId, which means the
+        # gateway-side idempotency keys change → genuine risk of double-execute
+        # on writes. Cap at 1 attempt + the existing has_side_effects fallback.
+        MAX_EMPTY_RETRIES = 1
         clean_response = None
         tokens_used = 0
         openclaw_response = None

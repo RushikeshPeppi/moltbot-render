@@ -10,7 +10,7 @@
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { ToolContext } from "./index.js";
 
 const CAL_BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
@@ -142,14 +142,16 @@ export async function create(
       },
     };
   }
+  // Note: Google Calendar v3 has NO documented header-based idempotency for
+  // events.insert. The conferenceData.createRequest.requestId above dedupes
+  // ONLY the Meet-link generation. If we ever need event-level idempotency,
+  // do a list+match-by-(start,title) BEFORE insert. Out of scope here.
   const url = `${CAL_BASE}${withMeet ? "?conferenceDataVersion=1" : ""}`;
-  const idem = idempotencyKey(ctx, "calendar_create", `${input.title}|${input.start_local}`);
   const resp = await fetch(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${ctx.googleAccessToken}`,
       "Content-Type": "application/json",
-      "X-Goog-Idempotency-Key": idem,
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
@@ -332,9 +334,3 @@ function getTimezoneOffsetMinutes(at: Date, timezone: string): number {
   }
 }
 
-function idempotencyKey(ctx: ToolContext, op: string, payload: string): string {
-  return createHash("sha256")
-    .update(`${ctx.userId}|${ctx.requestId}|${op}|${payload}`)
-    .digest("hex")
-    .slice(0, 32);
-}

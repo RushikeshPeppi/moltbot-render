@@ -18,9 +18,13 @@
  *      tool_use blocks for independent reads. Errors from any one tool become
  *      a tool_result with is_error: true so Claude can self-correct.
  *
- *   4. Cache control breakpoints:
- *        bp1 (1h TTL) on last tool def — covers (tools + system) prefix.
- *        bp2 (5min TTL) on last STABLE assistant turn — covers conversation history.
+ *   4. Cache control breakpoints (max 4 allowed, we use 2):
+ *        bp1 (1h TTL) on system text — Anthropic's prefix walker is tools →
+ *          system → messages, so this single breakpoint caches the entire
+ *          (tools + system) prefix. agent.md only changes on deploy.
+ *        bp2 (5m TTL) on last STABLE assistant turn — caches the conversation
+ *          history up through the prior assistant reply. Resets each time the
+ *          user sends a new message (current user turn stays uncached).
  *      Dynamic content (oauth, timestamps, image URLs) lives in the FRESH user
  *      message, AFTER all breakpoints — never busts cache.
  *
@@ -63,7 +67,9 @@ const client = new Anthropic({
 
 // ─── Constants ─────────────────────────────────────────────────────────
 
-const MODEL = "claude-sonnet-4-5-20250929";
+// Sonnet 4.6 — current generation as of 2026-05. The aliased ID auto-points at
+// the latest dated build. Verified against @anthropic-ai/sdk Model type union.
+const MODEL = "claude-sonnet-4-6";
 const MAX_TOKENS = 1024;
 const MAX_TOOL_ITERATIONS = 6;
 const HISTORY_TURNS_KEPT = 20; // last 10 user/assistant pairs
@@ -129,6 +135,7 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
   let iter = 0;
   let actionType = "chat";
   let reminderTriggerAt: string | undefined;
+  let anthropicRequestId: string | null | undefined;
   const toolCalls: AgentOutput["toolCalls"] = [];
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 };
 
@@ -138,7 +145,7 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
     const resp: Anthropic.Message = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
-      // bp2 (1h TTL): system prompt
+      // bp1 (1h TTL): caches the entire (tools + system) prefix.
       system: [
         {
           type: "text",
@@ -146,11 +153,14 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
           cache_control: { type: "ephemeral", ttl: "1h" },
         },
       ],
-      // bp1 (1h TTL): last tool already has cache_control set in tools/index.ts
       tools: TOOLS,
-      // bp3 (5m TTL): cache_control on last stable assistant turn (applied inline)
+      // bp2 (5m TTL): cache_control on last stable assistant turn (applied inline).
       messages: applyHistoryBreakpoint(messages),
     });
+
+    // Capture Anthropic's request_id for support tickets / log cross-ref.
+    // The SDK exposes it as `_request_id` on the response object.
+    anthropicRequestId = (resp as unknown as { _request_id?: string | null })._request_id ?? anthropicRequestId;
 
     // Accumulate usage
     usage.input += resp.usage.input_tokens ?? 0;
@@ -180,6 +190,7 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
         actionType,
         toolCalls,
         requestId: input.ctx.requestId,
+        anthropicRequestId,
       });
       return {
         reply: text || "(no reply)",
@@ -294,7 +305,31 @@ function applyHistoryBreakpoint(msgs: Anthropic.MessageParam[]): Anthropic.Messa
 
 function trimHistory(msgs: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
   if (msgs.length <= HISTORY_TURNS_KEPT) return msgs;
-  return msgs.slice(-HISTORY_TURNS_KEPT);
+  // Naive slice can split a tool_use/tool_result pair: if msgs[start] is a
+  // `user` turn whose content is a tool_result, the API rejects the request
+  // because there's no preceding `assistant` tool_use turn. Walk forward from
+  // the cut point until we land on a fresh user query (string content, or a
+  // user turn with NO tool_result blocks). That guarantees the truncated array
+  // starts at a "round boundary."
+  let start = Math.max(0, msgs.length - HISTORY_TURNS_KEPT);
+  while (start < msgs.length) {
+    const m = msgs[start];
+    if (m.role === "user") {
+      const content = m.content;
+      if (typeof content === "string") return msgs.slice(start);
+      if (Array.isArray(content)) {
+        const hasToolResult = content.some(
+          (b) => b && typeof b === "object" && "type" in b && (b as { type: string }).type === "tool_result",
+        );
+        if (!hasToolResult) return msgs.slice(start);
+      }
+    }
+    start++;
+  }
+  // No safe boundary found in the trim window — keep full history rather than
+  // emit a malformed message array. Worst case: this turn pays full price; next
+  // turn's history will have shifted and find a boundary.
+  return msgs;
 }
 
 function extractText(resp: Anthropic.Message): string {

@@ -9,7 +9,6 @@
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { createHash } from "node:crypto";
 import type { ToolContext } from "./index.js";
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -90,14 +89,17 @@ export const GMAIL_MARK_TOOL: Anthropic.Tool = {
 
 export async function send(input: { to: string; subject: string; body: string }, ctx: ToolContext): Promise<{ message_id: string; thread_id: string }> {
   requireToken(ctx);
-  const idem = idempotencyKey(ctx, "gmail_send", `${input.to}|${input.subject}|${input.body.slice(0, 100)}`);
+  // Note: Gmail API has no documented header-based idempotency. If the model
+  // emits two parallel `gmail_send` tool_use blocks with identical args, both
+  // will deliver. Mitigations live in the prompt (single-call rule for writes)
+  // and the per-/execute requestId — within one request, parallel duplicate
+  // tool_use blocks for the same op are vanishingly rare from Sonnet 4.6.
   const raw = encodeBase64Url(buildMime({ to: input.to, subject: input.subject, body: input.body }));
   const resp = await fetch(`${GMAIL_BASE}/messages/send`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${ctx.googleAccessToken}`,
       "Content-Type": "application/json",
-      "X-Goog-Idempotency-Key": idem,
     },
     body: JSON.stringify({ raw }),
     signal: AbortSignal.timeout(15_000),
@@ -183,7 +185,7 @@ export async function reply(input: { message_id: string; body: string }, ctx: To
   const toEmail = parseAddressEmail(origFrom);
   const replySubj = /^Re:/i.test(origSubj) ? origSubj : `Re: ${origSubj}`;
 
-  const idem = idempotencyKey(ctx, "gmail_reply", `${input.message_id}|${input.body.slice(0, 100)}`);
+  // (See gmail_send note: no native idempotency for Gmail API.)
   const raw = encodeBase64Url(
     buildMime({
       to: toEmail,
@@ -198,7 +200,6 @@ export async function reply(input: { message_id: string; body: string }, ctx: To
     headers: {
       Authorization: `Bearer ${ctx.googleAccessToken}`,
       "Content-Type": "application/json",
-      "X-Goog-Idempotency-Key": idem,
     },
     body: JSON.stringify({ raw, threadId: orig.threadId }),
     signal: AbortSignal.timeout(15_000),
@@ -274,9 +275,3 @@ function parseAddressEmail(addr: string): string {
   return addr.trim();
 }
 
-function idempotencyKey(ctx: ToolContext, op: string, payload: string): string {
-  return createHash("sha256")
-    .update(`${ctx.userId}|${ctx.requestId}|${op}|${payload}`)
-    .digest("hex")
-    .slice(0, 32);
-}

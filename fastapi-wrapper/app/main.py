@@ -180,6 +180,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(RequestLoggingMiddleware)
 
+# Idempotency middleware — must be added AFTER RequestLoggingMiddleware so it
+# runs OUTER (Starlette stacks last-added on the outside). On a cache hit we
+# return immediately without re-running the body-rewrite/logging path.
+from .utils.idempotency import IdempotencyMiddleware
+app.add_middleware(IdempotencyMiddleware)
+
 
 # Include routes
 app.include_router(routes.router, prefix=f"/api/{settings.API_VERSION}")
