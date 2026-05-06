@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "description": "Peppi gateway eval scenarios. Each scenario fires one POST /execute and is scored on (a) tool_calls match, (b) reply contains required marker, (c) iteration count, (d) wall time. Read-only scenarios are safe to run repeatedly; write scenarios are flagged so a runner can opt out.",
+  "schema": {
+    "id": "stable identifier — used for diffing across runs",
+    "tier": "simple | medium | hard | edge | image",
+    "side_effect": "read | write — write scenarios actually create reminders/events/emails on the test account",
+    "user_message": "what the SMS user types",
+    "image_urls": "optional — only for image scenarios",
+    "expected_tool_calls": "ordered list of tool names (subset match — extra calls allowed if reasonable)",
+    "expected_actions": "any of the actions in expected_tool_calls MUST appear",
+    "must_contain": "regex (case-insensitive) the reply must match",
+    "must_not_contain": "regex (case-insensitive) the reply MUST NOT match",
+    "max_iterations": "fail if iter exceeds",
+    "max_wall_ms": "fail if elapsed exceeds"
+  },
+  "scenarios": [
+    {
+      "id": "simple-reminder-create",
+      "tier": "simple",
+      "side_effect": "write",
+      "user_message": "remind me at 9pm tonight to take vitamins",
+      "expected_tool_calls": ["reminder_create"],
+      "must_contain": "(reminder|9 ?pm|vitamin)",
+      "must_not_contain": "(\\*\\*|\\[.+\\]\\(http|memory file|bootstrap)",
+      "max_iterations": 2,
+      "max_wall_ms": 30000
+    },
+    {
+      "id": "simple-reminder-list",
+      "tier": "simple",
+      "side_effect": "read",
+      "user_message": "what reminders do i have",
+      "expected_tool_calls": ["reminder_list"],
+      "must_contain": "reminder",
+      "max_iterations": 2,
+      "max_wall_ms": 20000
+    },
+    {
+      "id": "simple-calendar-list",
+      "tier": "simple",
+      "side_effect": "read",
+      "user_message": "what's on my calendar today",
+      "expected_tool_calls": ["calendar_list"],
+      "must_contain": "(today|calendar|event|nothing scheduled|no events)",
+      "max_iterations": 2,
+      "max_wall_ms": 25000
+    },
+    {
+      "id": "simple-gmail-unread",
+      "tier": "simple",
+      "side_effect": "read",
+      "user_message": "any new emails",
+      "expected_tool_calls": ["gmail_list"],
+      "must_contain": "(email|inbox|message|nothing|no new)",
+      "max_iterations": 2,
+      "max_wall_ms": 25000
+    },
+    {
+      "id": "simple-web-search",
+      "tier": "simple",
+      "side_effect": "read",
+      "user_message": "who won the latest f1 race",
+      "expected_tool_calls": ["web_search"],
+      "must_contain": "(race|prix|f1|formula|won|winner|couldn't pull)",
+      "max_iterations": 2,
+      "max_wall_ms": 30000
+    },
+    {
+      "id": "medium-chain-find-and-remind",
+      "tier": "medium",
+      "side_effect": "write",
+      "user_message": "find john's last email and remind me in 2 hours to reply to it",
+      "expected_tool_calls": ["gmail_list", "reminder_create"],
+      "must_contain": "(reminder|2 ?hour|reply)",
+      "must_not_contain": "(memory file|bootstrap|i'm peppi)",
+      "max_iterations": 4,
+      "max_wall_ms": 45000
+    },
+    {
+      "id": "medium-list-then-cancel",
+      "tier": "medium",
+      "side_effect": "write",
+      "user_message": "cancel my vitamin reminder",
+      "expected_tool_calls": ["reminder_list", "reminder_cancel"],
+      "must_contain": "(cancel|removed|done)",
+      "max_iterations": 4,
+      "max_wall_ms": 30000
+    },
+    {
+      "id": "medium-conflict-check-then-create",
+      "tier": "medium",
+      "side_effect": "write",
+      "user_message": "schedule a 30 min sync with sarah tomorrow at 3pm",
+      "expected_tool_calls": ["calendar_create"],
+      "must_contain": "(scheduled|3 ?pm|sync|sarah)",
+      "max_iterations": 3,
+      "max_wall_ms": 35000
+    },
+    {
+      "id": "medium-search-and-summarize",
+      "tier": "medium",
+      "side_effect": "read",
+      "user_message": "what's the weather in mumbai today and tomorrow",
+      "expected_tool_calls": ["web_search"],
+      "must_contain": "(mumbai|weather|°|degree|rain|sunny|cloud|couldn't pull)",
+      "max_iterations": 3,
+      "max_wall_ms": 30000
+    },
+    {
+      "id": "medium-update-existing",
+      "tier": "medium",
+      "side_effect": "write",
+      "user_message": "move my 9pm vitamin reminder to 10pm",
+      "expected_tool_calls": ["reminder_list", "reminder_update"],
+      "must_contain": "(10 ?pm|moved|updated)",
+      "max_iterations": 4,
+      "max_wall_ms": 35000
+    },
+    {
+      "id": "hard-enumeration-email-attendees",
+      "tier": "hard",
+      "side_effect": "write",
+      "user_message": "email everyone in my next meeting saying i'll be 5 min late",
+      "expected_tool_calls": ["calendar_list", "gmail_send"],
+      "must_contain": "(emailed|sent|5 ?min|late|attendees|no attendees)",
+      "max_iterations": 6,
+      "max_wall_ms": 60000
+    },
+    {
+      "id": "hard-time-relative-to-event",
+      "tier": "hard",
+      "side_effect": "write",
+      "user_message": "remind me 30 min before my next meeting to prep",
+      "expected_tool_calls": ["calendar_list", "reminder_create"],
+      "must_contain": "(reminder|30 ?min|prep|before)",
+      "max_iterations": 4,
+      "max_wall_ms": 40000
+    },
+    {
+      "id": "hard-find-thread-and-reply",
+      "tier": "hard",
+      "side_effect": "write",
+      "user_message": "reply to john's last email saying thanks i'll review tonight",
+      "expected_tool_calls": ["gmail_list", "gmail_reply"],
+      "must_contain": "(replied|sent|thanks|review)",
+      "max_iterations": 4,
+      "max_wall_ms": 45000
+    },
+    {
+      "id": "hard-cancel-and-notify",
+      "tier": "hard",
+      "side_effect": "write",
+      "user_message": "cancel my 4pm meeting today and email everyone in it that something came up",
+      "expected_tool_calls": ["calendar_list", "calendar_delete", "gmail_send"],
+      "must_contain": "(cancel|notified|emailed|came up)",
+      "max_iterations": 6,
+      "max_wall_ms": 75000
+    },
+    {
+      "id": "hard-recurring-with-conditions",
+      "tier": "hard",
+      "side_effect": "write",
+      "user_message": "remind me every weekday at 8 am to check my inbox",
+      "expected_tool_calls": ["reminder_create"],
+      "must_contain": "(weekday|8 ?am|inbox|daily)",
+      "max_iterations": 2,
+      "max_wall_ms": 25000
+    },
+    {
+      "id": "edge-bare-hour-ambiguity",
+      "tier": "edge",
+      "side_effect": "write",
+      "user_message": "remind me at 7 to call mom",
+      "expected_tool_calls": ["reminder_create"],
+      "must_contain": "(7 ?(am|pm)|call mom|reminder)",
+      "max_iterations": 2,
+      "max_wall_ms": 25000
+    },
+    {
+      "id": "edge-tomorrow-tz",
+      "tier": "edge",
+      "side_effect": "write",
+      "user_message": "set a reminder for tomorrow morning at 9 to follow up with the dentist",
+      "expected_tool_calls": ["reminder_create"],
+      "must_contain": "(tomorrow|9 ?am|dentist|reminder)",
+      "max_iterations": 2,
+      "max_wall_ms": 25000
+    },
+    {
+      "id": "edge-no-message",
+      "tier": "edge",
+      "side_effect": "read",
+      "user_message": "hi",
+      "expected_tool_calls": [],
+      "must_contain": "(hi|hello|hey|what.*do|need|help)",
+      "must_not_contain": "(i'?m peppi|just woke up|memory file|bootstrap|introduce)",
+      "max_iterations": 1,
+      "max_wall_ms": 10000
+    },
+    {
+      "id": "image-caption-and-act",
+      "tier": "image",
+      "side_effect": "write",
+      "user_message": "schedule what's in this picture",
+      "image_urls": ["__REPLACE_WITH_TEST_IMAGE_URL__"],
+      "expected_tool_calls": ["calendar_create"],
+      "must_contain": "(scheduled|event|created)",
+      "max_iterations": 4,
+      "max_wall_ms": 60000,
+      "skip_reason": "requires a real Twilio image URL — populate image_urls before running"
+    },
+    {
+      "id": "image-email-attach",
+      "tier": "image",
+      "side_effect": "write",
+      "user_message": "send this to john",
+      "image_urls": ["__REPLACE_WITH_TEST_IMAGE_URL__"],
+      "expected_tool_calls": ["image_handle", "gmail_send"],
+      "must_contain": "(sent|emailed|john)",
+      "max_iterations": 4,
+      "max_wall_ms": 60000,
+      "skip_reason": "requires real Twilio image URL + known john contact; gmail_send currently has no attachment support"
+    }
+  ]
+}
