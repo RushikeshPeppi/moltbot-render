@@ -3,21 +3,23 @@ import { useAuth } from '../context/AuthContext';
 import { getTokenUsage, getPlaygroundUsers, getTokenUsageCsvUrl } from '../services/api';
 
 /*
- * Claude Sonnet 4.6 Pricing (as of Apr 2026):
- *   Input (non-cached): $3.00 per 1M tokens
- *   Output:             $15.00 per 1M tokens
- *   Cache Read:         $0.30 per 1M tokens (90% discount)
- *   Cache Write:        $3.75 per 1M tokens (25% premium)
+ * Per-row cost is computed server-side now (FastAPI playground.py:_row_cost)
+ * using the canonical Anthropic pricing for Sonnet 4.6:
+ *   Input (non-cached):  $3.00 / 1M tokens
+ *   Output:              $15.00 / 1M tokens
+ *   Cache Read:          $0.30 / 1M tokens (10% of input)
+ *   Cache Write 5m TTL:  $3.75 / 1M tokens (1.25x input)
+ *   Cache Write 1h TTL:  $6.00 / 1M tokens (2.00x input)
  *
- * Token counts come from OpenClaw's usage metadata (Anthropic API).
- * Cache read/write are reported separately for accurate cost calculation.
+ * The three input counters (input_tokens, cache_read_input_tokens,
+ * cache_creation_input_tokens) are NON-OVERLAPPING per Anthropic — they sum
+ * to the total billable input. Do NOT subtract cache from input.
+ *
+ * Server returns row.cost_usd and row.total_input pre-computed; this component
+ * just displays them. The block below is kept only for the legacy fallback
+ * (the rare row with no token data at all).
  */
-const SONNET_INPUT_RATE      = 3.00;   // $ per 1M non-cached input tokens
-const SONNET_OUTPUT_RATE     = 15.00;  // $ per 1M output tokens
-const SONNET_CACHE_READ_RATE = 0.30;   // $ per 1M cache read tokens
-const SONNET_CACHE_WRITE_RATE = 3.75;  // $ per 1M cache write tokens
-// Blended fallback for rows without detailed breakdown
-const BLENDED_RATE = 0.40 * SONNET_INPUT_RATE + 0.60 * SONNET_OUTPUT_RATE;
+const FALLBACK_BLENDED_RATE = 0.15 * 3.00 + 0.85 * 15.00; // last-resort estimate
 
 // Dark-theme select styles (shared between dropdowns)
 const selectStyle = {
@@ -55,6 +57,7 @@ export default function TokenUsageView() {
     // Totals
     const [totalMessages, setTotalMessages] = useState(0);
     const [totalTokens, setTotalTokens] = useState(0);
+    const [totalCostUsd, setTotalCostUsd] = useState(0);
 
     useEffect(() => {
         loadUsers();
@@ -108,6 +111,7 @@ export default function TokenUsageView() {
             setRows(data.rows || []);
             setTotalMessages(data.total_messages || 0);
             setTotalTokens(data.total_tokens || 0);
+            setTotalCostUsd(data.total_cost_usd || 0);
         } catch (err) {
             console.error('Failed to fetch token usage:', err);
         } finally {
@@ -146,28 +150,26 @@ export default function TokenUsageView() {
         return n.toLocaleString();
     };
 
-    // Cost calculation using Anthropic tiered pricing
-    const estimateCost = (tokens, row = null) => {
-        if (!tokens || tokens === 0) return '--';
-        let cost;
-        if (row && (row.input_tokens || row.output_tokens)) {
-            // Use detailed pricing when we have the breakdown
-            const inp = row.input_tokens || 0;
-            const out = row.output_tokens || 0;
-            const cr = row.cache_read || 0;
-            const cw = row.cache_write || 0;
-            const nonCached = Math.max(0, inp - cr - cw);
-            cost = (nonCached / 1_000_000) * SONNET_INPUT_RATE +
-                   (cr / 1_000_000) * SONNET_CACHE_READ_RATE +
-                   (cw / 1_000_000) * SONNET_CACHE_WRITE_RATE +
-                   (out / 1_000_000) * SONNET_OUTPUT_RATE;
-        } else {
-            // Fallback: blended rate
-            cost = (tokens / 1_000_000) * BLENDED_RATE;
-        }
+    // Cost: prefer server-computed row.cost_usd (correct, single-source-of-truth).
+    // Fall back to a blended estimate ONLY when neither cost_usd nor breakdown exist.
+    const formatCost = (cost) => {
+        if (cost === null || cost === undefined) return '--';
+        if (cost === 0) return '$0';
         if (cost < 0.001) return '<$0.001';
         if (cost < 0.01) return `$${cost.toFixed(4)}`;
-        return `$${cost.toFixed(3)}`;
+        if (cost < 1) return `$${cost.toFixed(3)}`;
+        return `$${cost.toFixed(2)}`;
+    };
+    const rowCost = (row) => {
+        if (!row) return null;
+        if (typeof row.cost_usd === 'number') return row.cost_usd;
+        const tokens = row.tokens_used || 0;
+        if (!tokens) return null;
+        return (tokens / 1_000_000) * FALLBACK_BLENDED_RATE;
+    };
+    const estimateCost = (tokens, row = null) => {
+        const c = row ? rowCost(row) : (tokens ? (tokens / 1_000_000) * FALLBACK_BLENDED_RATE : null);
+        return formatCost(c);
     };
 
     // Count rows that actually have token data
@@ -181,7 +183,7 @@ export default function TokenUsageView() {
                 <div>
                     <h1 style={{ fontSize: '18px', fontWeight: '700', marginBottom: '2px' }}>Token Usage</h1>
                     <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0 }}>
-                        Claude Sonnet 4.6 &middot; $3.00/1M in &middot; $15.00/1M out &middot; ~${BLENDED_RATE.toFixed(2)}/1M blended
+                        Claude Sonnet 4.6 &middot; in $3.00/M &middot; out $15.00/M &middot; cache read $0.30/M &middot; cache write 5m $3.75/M &middot; cache write 1h $6.00/M
                     </p>
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
@@ -207,8 +209,8 @@ export default function TokenUsageView() {
                 {[
                     { label: 'Requests', value: totalMessages, color: 'var(--accent-light)' },
                     { label: 'Tokens', value: formatTokens(totalTokens), color: 'var(--accent-light)' },
-                    { label: 'Est. Cost', value: estimateCost(totalTokens), color: 'var(--warning)' },
-                    { label: 'Avg/Req', value: trackedRows.length > 0 ? formatTokens(Math.round(totalTokens / trackedRows.length)) : '--', color: 'var(--success)' },
+                    { label: 'Total Cost', value: formatCost(totalCostUsd), color: 'var(--warning)' },
+                    { label: 'Avg/Req', value: trackedRows.length > 0 ? formatCost(totalCostUsd / trackedRows.length) : '--', color: 'var(--success)' },
                 ].map((m, i) => (
                     <div key={i} style={{
                         flex: 1, display: 'flex', alignItems: 'center', gap: '10px',
@@ -294,10 +296,13 @@ export default function TokenUsageView() {
 
             {/* Data Table */}
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 'var(--radius)', overflow: 'hidden' }}>
-                {/* Table Header */}
+                {/* Table Header — 11 columns. Token counters use right-align +
+                    monospace so digits column-up. Tooltips on the cache columns
+                    explain rate differences. */}
                 <div style={{
-                    display: 'grid', gridTemplateColumns: '130px 90px 1fr 80px 90px 80px',
-                    gap: '10px', padding: '12px 20px', borderBottom: '1px solid var(--border)',
+                    display: 'grid',
+                    gridTemplateColumns: '110px 80px 1fr 70px 64px 64px 64px 56px 56px 70px 78px',
+                    gap: '8px', padding: '12px 20px', borderBottom: '1px solid var(--border)',
                     fontSize: '11px', fontWeight: '600', color: 'var(--text-muted)',
                     textTransform: 'uppercase', letterSpacing: '0.5px',
                 }}>
@@ -305,7 +310,12 @@ export default function TokenUsageView() {
                     <span>User</span>
                     <span>Request / Response</span>
                     <span>Status</span>
-                    <span style={{ textAlign: 'right' }}>Tokens</span>
+                    <span style={{ textAlign: 'right' }} title="Fresh non-cached input tokens at $3.00/M">Input</span>
+                    <span style={{ textAlign: 'right' }} title="Generated output tokens at $15.00/M">Output</span>
+                    <span style={{ textAlign: 'right' }} title="Cache hits at $0.30/M (10% of input)">Cache R</span>
+                    <span style={{ textAlign: 'right' }} title="Cache writes at 5min TTL — $3.75/M (1.25× input)">CW 5m</span>
+                    <span style={{ textAlign: 'right' }} title="Cache writes at 1h TTL — $6.00/M (2× input)">CW 1h</span>
+                    <span style={{ textAlign: 'right' }} title="Total billable input = Input + Cache R + CW 5m + CW 1h (non-overlapping per Anthropic)">Total In</span>
                     <span style={{ textAlign: 'right' }}>Cost</span>
                 </div>
 
@@ -324,13 +334,31 @@ export default function TokenUsageView() {
                             {rows.map((row) => {
                                 const tokens = row.tokens_used || 0;
                                 const hasTokens = tokens > 0;
+                                const inp = row.input_tokens || 0;
+                                const out = row.output_tokens || 0;
+                                const cr = row.cache_read || 0;
+                                const cw5 = row.cache_write_5m || 0;
+                                const cw1h = row.cache_write_1h || 0;
+                                const cwLegacy = (cw5 + cw1h) > 0 ? 0 : (row.cache_write || 0);
+                                // total_input from server, but compute defensively if missing.
+                                const totalInput = row.total_input ?? (inp + cr + cw5 + cw1h + cwLegacy);
+                                const numCell = (n, color) => (
+                                    <span style={{
+                                        fontSize: '11px', textAlign: 'right', fontFamily: 'monospace',
+                                        lineHeight: '1.6',
+                                        color: n > 0 ? (color || 'var(--text-secondary)') : 'var(--text-muted)',
+                                    }}>
+                                        {n > 0 ? formatTokens(n) : '--'}
+                                    </span>
+                                );
                                 return (
                                     <div key={row.id}>
                                         <div
                                             onClick={() => setExpandedRow(expandedRow === row.id ? null : row.id)}
                                             style={{
-                                                display: 'grid', gridTemplateColumns: '130px 90px 1fr 80px 90px 80px',
-                                                gap: '10px', padding: '11px 20px', borderBottom: '1px solid var(--border)',
+                                                display: 'grid',
+                                                gridTemplateColumns: '110px 80px 1fr 70px 64px 64px 64px 56px 56px 70px 78px',
+                                                gap: '8px', padding: '11px 20px', borderBottom: '1px solid var(--border)',
                                                 cursor: 'pointer', transition: 'background 0.15s ease',
                                                 background: expandedRow === row.id ? 'var(--bg-card-hover)' : 'transparent',
                                             }}
@@ -356,17 +384,18 @@ export default function TokenUsageView() {
                                             <span style={{ fontSize: '12px', fontWeight: '600', color: getStatusColor(row.status), lineHeight: '1.6' }}>
                                                 {row.status?.toUpperCase()}
                                             </span>
-                                            <span style={{
-                                                fontSize: '12px', fontWeight: '600', textAlign: 'right', fontFamily: 'monospace', lineHeight: '1.6',
-                                                color: hasTokens ? 'var(--text-primary)' : 'var(--text-muted)',
-                                            }}>
-                                                {hasTokens ? formatTokens(tokens) : '--'}
-                                            </span>
+                                            {numCell(inp, '#60a5fa')}
+                                            {numCell(out, '#f59e0b')}
+                                            {numCell(cr, '#34d399')}
+                                            {numCell(cw5, '#a78bfa')}
+                                            {numCell(cw1h + cwLegacy, '#c084fc')}
+                                            {numCell(totalInput)}
                                             <span style={{
                                                 fontSize: '11px', textAlign: 'right', fontFamily: 'monospace', lineHeight: '1.6',
-                                                color: hasTokens ? 'var(--text-secondary)' : 'var(--text-muted)',
+                                                color: hasTokens ? 'var(--warning)' : 'var(--text-muted)',
+                                                fontWeight: '600',
                                             }}>
-                                                {hasTokens ? estimateCost(tokens) : '--'}
+                                                {hasTokens ? estimateCost(tokens, row) : '--'}
                                             </span>
                                         </div>
 
@@ -391,12 +420,15 @@ export default function TokenUsageView() {
                                                     <span>ID: {row.id}</span>
                                                     <span>Session: {row.session_id?.slice(0, 16)}</span>
                                                     {hasTokens && <>
-                                                        <span>Total: {tokens.toLocaleString()}</span>
+                                                        <span>Total tokens: {tokens.toLocaleString()}</span>
                                                         <span style={{ color: '#60a5fa' }}>Input: {formatTokens(row.input_tokens || 0)}</span>
                                                         <span style={{ color: '#f59e0b' }}>Output: {formatTokens(row.output_tokens || 0)}</span>
                                                         {(row.cache_read > 0) && <span style={{ color: '#34d399' }}>Cache Read: {formatTokens(row.cache_read)}</span>}
-                                                        {(row.cache_write > 0) && <span style={{ color: '#a78bfa' }}>Cache Write: {formatTokens(row.cache_write)}</span>}
-                                                        <span>Cost: {estimateCost(tokens, row)}</span>
+                                                        {(row.cache_write_5m > 0) && <span style={{ color: '#a78bfa' }}>Cache Write 5m: {formatTokens(row.cache_write_5m)}</span>}
+                                                        {(row.cache_write_1h > 0) && <span style={{ color: '#c084fc' }}>Cache Write 1h: {formatTokens(row.cache_write_1h)}</span>}
+                                                        {(!row.cache_write_5m && !row.cache_write_1h && row.cache_write > 0) && <span style={{ color: '#c084fc' }}>Cache Write (legacy): {formatTokens(row.cache_write)}</span>}
+                                                        {row.total_input != null && <span>Total billable input: {formatTokens(row.total_input)}</span>}
+                                                        <span style={{ color: 'var(--warning)', fontWeight: 600 }}>Cost: {estimateCost(tokens, row)}</span>
                                                     </>}
                                                     {!hasTokens && <span style={{ color: 'var(--warning)' }}>No token data (pre-tracking)</span>}
                                                 </div>
@@ -406,20 +438,32 @@ export default function TokenUsageView() {
                                 );
                             })}
 
-                            {/* Summary Footer Row */}
+                            {/* Summary Footer Row — same 11-column grid as the body */}
                             <div style={{
-                                display: 'grid', gridTemplateColumns: '130px 90px 1fr 80px 90px 80px',
-                                gap: '10px', padding: '14px 20px', background: 'rgba(37, 99, 235, 0.08)',
-                                borderTop: '2px solid var(--accent)', fontWeight: '600', fontSize: '13px',
+                                display: 'grid',
+                                gridTemplateColumns: '110px 80px 1fr 70px 64px 64px 64px 56px 56px 70px 78px',
+                                gap: '8px', padding: '14px 20px', background: 'rgba(37, 99, 235, 0.08)',
+                                borderTop: '2px solid var(--accent)', fontWeight: '600', fontSize: '12px',
+                                fontFamily: 'monospace',
                             }}>
-                                <span style={{ color: 'var(--accent-light)' }}>TOTAL</span>
-                                <span style={{ color: 'var(--text-muted)', fontSize: '11px' }}>{selectedUser === 'all' ? `${allUsers.length} users` : ''}</span>
-                                <span style={{ color: 'var(--text-secondary)' }}>
+                                <span style={{ color: 'var(--accent-light)', fontFamily: 'var(--font)' }}>TOTAL</span>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '11px', fontFamily: 'var(--font)' }}>{selectedUser === 'all' ? `${allUsers.length} users` : ''}</span>
+                                <span style={{ color: 'var(--text-secondary)', fontFamily: 'var(--font)' }}>
                                     {totalMessages} messages{untrackedRows > 0 ? ` (${trackedRows.length} tracked)` : ''}
                                 </span>
                                 <span></span>
-                                <span style={{ color: 'var(--accent-light)', textAlign: 'right', fontFamily: 'monospace' }}>{formatTokens(totalTokens)}</span>
-                                <span style={{ color: 'var(--warning)', textAlign: 'right', fontFamily: 'monospace' }}>{estimateCost(totalTokens)}</span>
+                                <span style={{ textAlign: 'right', color: '#60a5fa' }}>{formatTokens(rows.reduce((a, r) => a + (r.input_tokens || 0), 0))}</span>
+                                <span style={{ textAlign: 'right', color: '#f59e0b' }}>{formatTokens(rows.reduce((a, r) => a + (r.output_tokens || 0), 0))}</span>
+                                <span style={{ textAlign: 'right', color: '#34d399' }}>{formatTokens(rows.reduce((a, r) => a + (r.cache_read || 0), 0))}</span>
+                                <span style={{ textAlign: 'right', color: '#a78bfa' }}>{formatTokens(rows.reduce((a, r) => a + (r.cache_write_5m || 0), 0))}</span>
+                                <span style={{ textAlign: 'right', color: '#c084fc' }}>{formatTokens(rows.reduce((a, r) => {
+                                    const cw5 = r.cache_write_5m || 0;
+                                    const cw1h = r.cache_write_1h || 0;
+                                    const legacy = (cw5 + cw1h) > 0 ? 0 : (r.cache_write || 0);
+                                    return a + cw1h + legacy;
+                                }, 0))}</span>
+                                <span style={{ textAlign: 'right', color: 'var(--text-primary)' }}>{formatTokens(rows.reduce((a, r) => a + (r.total_input || 0), 0))}</span>
+                                <span style={{ textAlign: 'right', color: 'var(--warning)', fontWeight: '700' }}>{formatCost(totalCostUsd)}</span>
                             </div>
                         </>
                     )}
@@ -429,9 +473,16 @@ export default function TokenUsageView() {
             {/* Methodology Note */}
             <div style={{ marginTop: '16px', padding: '12px 16px', borderRadius: 'var(--radius-sm)', background: 'var(--bg-card)', border: '1px solid var(--border)', fontSize: '11px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
                 <span style={{ fontWeight: '600', color: 'var(--text-secondary)' }}>Methodology: </span>
-                Token counts are from Anthropic's API via OpenClaw.
-                Cost uses Claude Sonnet 4.6 rates: $3.00/1M input, $15.00/1M output, $0.30/1M cache read, $3.75/1M cache write.
-                For exact billing, use Anthropic Console.
+                Token counts are returned by Anthropic's Messages API (Claude Sonnet 4.6) and stored
+                per request in the audit log. The three input counters
+                <code style={{ padding: '0 4px' }}>input_tokens</code>,
+                <code style={{ padding: '0 4px' }}>cache_read_input_tokens</code>, and
+                <code style={{ padding: '0 4px' }}>cache_creation_input_tokens</code>
+                are non-overlapping per Anthropic's docs — the table's "Total In" column is
+                their sum and equals the total billable input. Cost is computed server-side
+                using the canonical rates ($3.00 in, $15.00 out, $0.30 cache read,
+                $3.75 cache write 5m, $6.00 cache write 1h, all per 1M tokens). For
+                authoritative invoicing, reconcile with Anthropic Console.
             </div>
         </div>
     );

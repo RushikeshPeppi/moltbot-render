@@ -356,6 +356,13 @@ async def execute_action(request: ExecuteActionRequest):
             output_tokens = openclaw_response.get('output_tokens', 0) or 0
             cache_read = openclaw_response.get('cache_read', 0) or 0
             cache_write = openclaw_response.get('cache_write', 0) or 0
+            # Per-TTL cache write breakdown (gateway sends both since 2026-05).
+            # Older gateways only send the combined cache_write; default to 0/legacy
+            # so historical rows aren't broken. Pricing rates differ:
+            #   5m cache write = 1.25 * input rate
+            #   1h cache write = 2.00 * input rate
+            cache_write_5m = openclaw_response.get('cache_write_5m', 0) or 0
+            cache_write_1h = openclaw_response.get('cache_write_1h', 0) or 0
 
             try:
                 import json
@@ -473,7 +480,9 @@ async def execute_action(request: ExecuteActionRequest):
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cache_read=cache_read,
-                    cache_write=cache_write
+                    cache_write=cache_write,
+                    cache_write_5m=cache_write_5m,
+                    cache_write_1h=cache_write_1h,
                 )
             return create_error_response(
                 code=ResponseCode.INTERNAL_ERROR,
@@ -508,7 +517,9 @@ async def execute_action(request: ExecuteActionRequest):
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read=cache_read,
-                cache_write=cache_write
+                cache_write=cache_write,
+                cache_write_5m=cache_write_5m,
+                cache_write_1h=cache_write_1h,
             )
 
         # 10. If reminder action, fetch the most recently created pending reminder's trigger_at

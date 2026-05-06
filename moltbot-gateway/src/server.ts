@@ -136,7 +136,12 @@ app.post("/execute", async (req: Request, res: Response) => {
       input_tokens: result.tokens.input,
       output_tokens: result.tokens.output,
       cache_read: result.tokens.cacheRead,
+      // Combined cache_write kept for backward compat with older FastAPI versions.
+      // Prefer cache_write_5m / cache_write_1h for accurate billing — the rates
+      // differ (5m = 1.25× input, 1h = 2× input).
       cache_write: result.tokens.cacheWrite5m + result.tokens.cacheWrite1h,
+      cache_write_5m: result.tokens.cacheWrite5m,
+      cache_write_1h: result.tokens.cacheWrite1h,
       reminder_trigger_at: result.reminderTriggerAt ?? null,
       _meta: {
         iterations: result.iterations,

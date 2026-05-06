@@ -332,9 +332,22 @@ async def get_token_usage(
         users = await db.get_all_users()
         user_map = {u["user_id"]: u["name"] for u in users}
 
-        # Enrich rows with user names
+        # Enrich rows: user name + server-computed cost + total_input.
+        # Frontend just reads these — keeps the cost formula in ONE place.
+        total_cost = 0.0
         for row in rows:
             row["user_name"] = user_map.get(row.get("user_id"), "Unknown")
+            inp = row.get("input_tokens", 0) or 0
+            cr = row.get("cache_read", 0) or 0
+            cw5 = row.get("cache_write_5m", 0) or 0
+            cw1h = row.get("cache_write_1h", 0) or 0
+            cw_total = row.get("cache_write", 0) or 0
+            # Total billable input = the three non-overlapping counters.
+            row["total_input"] = inp + cr + cw5 + cw1h + (
+                0 if (cw5 + cw1h) > 0 else cw_total
+            )
+            row["cost_usd"] = round(_row_cost(row), 6)
+            total_cost += row["cost_usd"]
 
         return create_response(
             code=ResponseCode.SUCCESS,
@@ -343,6 +356,15 @@ async def get_token_usage(
                 "rows": rows,
                 "total_messages": total_messages,
                 "total_tokens": total_tokens,
+                "total_cost_usd": round(total_cost, 4),
+                "pricing": {
+                    "model": "claude-sonnet-4-6",
+                    "input_per_mtok": SONNET_INPUT_RATE,
+                    "output_per_mtok": SONNET_OUTPUT_RATE,
+                    "cache_read_per_mtok": SONNET_CACHE_READ_RATE,
+                    "cache_write_5m_per_mtok": SONNET_CACHE_WRITE_5M_RATE,
+                    "cache_write_1h_per_mtok": SONNET_CACHE_WRITE_1H_RATE,
+                },
             },
         )
 
@@ -359,31 +381,76 @@ async def get_token_usage(
         )
 
 
-# Anthropic Claude Sonnet 4.6 pricing (per 1M tokens)
-SONNET_INPUT_RATE = 3.00        # $ per 1M non-cached input tokens
-SONNET_OUTPUT_RATE = 15.00      # $ per 1M output tokens
-SONNET_CACHE_READ_RATE = 0.30   # $ per 1M cache read tokens (90% discount)
-SONNET_CACHE_WRITE_RATE = 3.75  # $ per 1M cache write tokens (25% premium)
-# Blended rate fallback for rows without detailed breakdown
+# Anthropic Claude Sonnet 4.6 pricing (per 1M tokens) — sourced from Anthropic
+# pricing page. Updated 2026-05-06.
+SONNET_INPUT_RATE = 3.00          # $ per 1M non-cached input tokens
+SONNET_OUTPUT_RATE = 15.00        # $ per 1M output tokens
+SONNET_CACHE_READ_RATE = 0.30     # $ per 1M cache read tokens (10% of input)
+SONNET_CACHE_WRITE_5M_RATE = 3.75 # $ per 1M (5min TTL — 1.25x input)
+SONNET_CACHE_WRITE_1H_RATE = 6.00 # $ per 1M (1h TTL — 2.00x input)
+# Legacy combined rate for historical rows that only have the old cache_write
+# field. We bias toward 1h since the gateway's biggest cache writes (system
+# prompt) are 1h TTL. This may modestly overstate historical costs — the
+# alternative is to understate them, which would mislead the VP review more.
+SONNET_CACHE_WRITE_LEGACY_RATE = 6.00
+
+# Blended rate fallback for rows without ANY breakdown (pre-tracking era)
 INPUT_RATIO = 0.15
 OUTPUT_RATIO = 0.85
 BLENDED_RATE = INPUT_RATIO * SONNET_INPUT_RATE + OUTPUT_RATIO * SONNET_OUTPUT_RATE
 
 
-def _estimate_cost_detailed(input_tokens: int, output_tokens: int, cache_read: int, cache_write: int) -> float:
-    """Calculate actual cost using Anthropic's tiered pricing."""
-    # Subtract cache from input to get non-cached input
-    non_cached_input = max(0, input_tokens - cache_read - cache_write)
+def _estimate_cost_detailed(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int,
+    cache_write_5m: int = 0,
+    cache_write_1h: int = 0,
+    cache_write_legacy: int = 0,
+) -> float:
+    """
+    Calculate actual cost using Anthropic's tiered pricing.
+
+    IMPORTANT — three-counter rule (per Anthropic docs):
+    `input_tokens`, `cache_read_input_tokens`, and `cache_creation_input_tokens`
+    are NON-OVERLAPPING. `input_tokens` already excludes cache reads/writes.
+    Do NOT subtract cache from input — that double-discounts and zeros out
+    legitimate input cost on warm cached calls. Charge `input_tokens` directly
+    at the input rate.
+
+    cache_write_legacy is for historical rows where only the combined
+    cache_write column existed. Priced at 1h rate as a conservative proxy.
+    """
     return (
-        (non_cached_input / 1_000_000) * SONNET_INPUT_RATE +
+        (input_tokens / 1_000_000) * SONNET_INPUT_RATE +
         (cache_read / 1_000_000) * SONNET_CACHE_READ_RATE +
-        (cache_write / 1_000_000) * SONNET_CACHE_WRITE_RATE +
+        (cache_write_5m / 1_000_000) * SONNET_CACHE_WRITE_5M_RATE +
+        (cache_write_1h / 1_000_000) * SONNET_CACHE_WRITE_1H_RATE +
+        (cache_write_legacy / 1_000_000) * SONNET_CACHE_WRITE_LEGACY_RATE +
         (output_tokens / 1_000_000) * SONNET_OUTPUT_RATE
     )
 
 
+def _row_cost(row: dict) -> float:
+    """Per-row cost using new breakdown when present, falling back to legacy."""
+    cw5 = row.get("cache_write_5m", 0) or 0
+    cw1h = row.get("cache_write_1h", 0) or 0
+    cw_total = row.get("cache_write", 0) or 0
+    # If the new breakdown is populated, use it and ignore the legacy combined.
+    # If only legacy is populated (pre-migration row), use legacy at 1h rate.
+    cw_legacy = 0 if (cw5 + cw1h) > 0 else cw_total
+    return _estimate_cost_detailed(
+        input_tokens=row.get("input_tokens", 0) or 0,
+        output_tokens=row.get("output_tokens", 0) or 0,
+        cache_read=row.get("cache_read", 0) or 0,
+        cache_write_5m=cw5,
+        cache_write_1h=cw1h,
+        cache_write_legacy=cw_legacy,
+    )
+
+
 def _estimate_cost(tokens: int) -> float:
-    """Estimate cost using Claude Sonnet 4.6 blended rate (fallback)."""
+    """Estimate cost using Claude Sonnet 4.6 blended rate (last-resort fallback)."""
     return (tokens / 1_000_000) * BLENDED_RATE
 
 
@@ -413,7 +480,9 @@ async def download_token_usage_csv(
         writer.writerow([
             "ID", "Timestamp", "User ID", "User Name", "Action Type",
             "Request", "Response", "Status", "Tokens Used",
-            "Input Tokens", "Output Tokens", "Cache Read", "Cache Write", "Est. Cost ($)",
+            "Input Tokens", "Output Tokens", "Cache Read",
+            "Cache Write 5m", "Cache Write 1h", "Cache Write Legacy",
+            "Total Input", "Est. Cost ($)",
         ])
 
         total_tokens = 0
@@ -423,10 +492,13 @@ async def download_token_usage_csv(
             inp = row.get("input_tokens", 0) or 0
             out = row.get("output_tokens", 0) or 0
             cr = row.get("cache_read", 0) or 0
-            cw = row.get("cache_write", 0) or 0
+            cw5 = row.get("cache_write_5m", 0) or 0
+            cw1h = row.get("cache_write_1h", 0) or 0
+            cw_total = row.get("cache_write", 0) or 0
+            cw_legacy = 0 if (cw5 + cw1h) > 0 else cw_total
+            total_input = inp + cr + cw5 + cw1h + cw_legacy
             total_tokens += tokens
-            # Use detailed cost if we have the breakdown, else blended
-            cost = _estimate_cost_detailed(inp, out, cr, cw) if inp or out else _estimate_cost(tokens)
+            cost = _row_cost(row) if (inp or out or cr or cw_total) else _estimate_cost(tokens)
             total_cost += cost
             writer.writerow([
                 row.get("id", ""),
@@ -441,7 +513,10 @@ async def download_token_usage_csv(
                 inp if inp else "",
                 out if out else "",
                 cr if cr else "",
-                cw if cw else "",
+                cw5 if cw5 else "",
+                cw1h if cw1h else "",
+                cw_legacy if cw_legacy else "",
+                total_input if total_input else "",
                 f"{cost:.4f}" if tokens else "",
             ])
 
@@ -450,12 +525,25 @@ async def download_token_usage_csv(
         writer.writerow([
             "TOTAL", "", "", "", "", "", "",
             f"{len(rows)} messages", total_tokens,
-            "", "", "", "",
+            "", "", "", "", "", "", "",
             f"{total_cost:.4f}",
         ])
         writer.writerow([])
-        writer.writerow(["PRICING", f"Claude Sonnet 4.6: Input ${SONNET_INPUT_RATE}/1M, Output ${SONNET_OUTPUT_RATE}/1M, Cache Read ${SONNET_CACHE_READ_RATE}/1M, Cache Write ${SONNET_CACHE_WRITE_RATE}/1M"])
-        writer.writerow(["METHOD", "Token estimation: ~3.5 chars/token (Anthropic docs), +/- 10-15% for English text"])
+        writer.writerow([
+            "PRICING",
+            f"Claude Sonnet 4.6: Input ${SONNET_INPUT_RATE}/1M, "
+            f"Output ${SONNET_OUTPUT_RATE}/1M, "
+            f"Cache Read ${SONNET_CACHE_READ_RATE}/1M, "
+            f"Cache Write 5m ${SONNET_CACHE_WRITE_5M_RATE}/1M, "
+            f"Cache Write 1h ${SONNET_CACHE_WRITE_1H_RATE}/1M",
+        ])
+        writer.writerow([
+            "METHOD",
+            "Per Anthropic docs: input_tokens, cache_read_input_tokens, and cache_creation_input_tokens "
+            "are non-overlapping. Total billable input = sum of all three. Costs are exact "
+            "for rows with the per-TTL breakdown (post 2026-05); pre-migration rows use the legacy "
+            "combined cache_write field priced at the 1h rate.",
+        ])
 
         output.seek(0)
         return StreamingResponse(
