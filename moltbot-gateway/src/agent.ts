@@ -129,6 +129,35 @@ function shouldEnableThinking(userText: string): boolean {
   return COMPOUND_TRIGGER_RE.test(userText);
 }
 
+function buildContextAnchor(ctx: ToolContext): string {
+  // Compose a single-line anchor with current local time + city. ~30 tokens,
+  // sits in the fresh user turn, never enters the cached prefix.
+  // Format example: "[now: 2026-05-06 17:30 Asia/Kolkata; city: Pune]"
+  const tz = ctx.timezone || "UTC";
+  let local = "";
+  try {
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      weekday: "short",
+      hour12: false,
+    });
+    const parts = fmt.formatToParts(new Date()).reduce<Record<string, string>>((acc, p) => {
+      if (p.type !== "literal") acc[p.type] = p.value;
+      return acc;
+    }, {});
+    local = `${parts.year}-${parts.month}-${parts.day} ${parts.weekday} ${parts.hour}:${parts.minute}`;
+  } catch {
+    local = new Date().toISOString();
+  }
+  const cityPart = ctx.city ? `; city: ${ctx.city}` : "";
+  return `[now: ${local} ${tz}${cityPart}]`;
+}
+
 // Load agent.md once at import-time. ESM top-level await is fine in Node 22.
 const AGENT_MD = await readFile(join(__dirname, "..", "prompts", "agent.md"), "utf-8");
 
@@ -165,8 +194,22 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
 
   const messages: Anthropic.MessageParam[] = [...session.history];
 
-  // Build the user message: text + optional images.
+  // Build the user message: optional context-anchor line + text + optional images.
   const userContent: Anthropic.ContentBlockParam[] = [];
+
+  // Anchor line — Sonnet's training cutoff is Aug 2025 and the system prompt
+  // is cached (so we can't put a date there without busting cache). Without
+  // this anchor, "tomorrow"/"tonight"/"next Monday" resolve to whatever the
+  // model thinks today is, which is wrong by ~9+ months. The anchor goes in
+  // the FRESH user message, AFTER all cache breakpoints, so it never busts
+  // cache and the model has hard ground for relative dates.
+  // Bug observed 2026-05-06 (req e125aa9e): "tomorrow at 4pm" replied as
+  // "July 16" instead of "May 7".
+  const anchor = buildContextAnchor(input.ctx);
+  if (anchor) {
+    userContent.push({ type: "text", text: anchor });
+  }
+
   if (input.imageUrls?.length) {
     for (const url of input.imageUrls) {
       userContent.push({
@@ -178,7 +221,7 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
   if (input.userText) {
     userContent.push({ type: "text", text: input.userText });
   }
-  if (userContent.length === 0) {
+  if (userContent.length === 0 || (userContent.length === 1 && anchor)) {
     userContent.push({
       type: "text",
       text: "[empty message — describe the conversation context if any, otherwise ask the user what they need]",
