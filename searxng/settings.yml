@@ -61,6 +61,13 @@ search:
   formats:
     - html
     - json    # MUST be present or every JSON call returns 403 Forbidden.
+  # Engine cooldown tuning. Default SearxEngineTooManyRequests is 3600s (1h) which
+  # parks brave for an hour after a single 429. Brave's actual rate-limit window is
+  # minutes, not hours — 600s lets it recover and contribute bonus 20-result hits
+  # without hammering when actively rate-limited. Other defaults left as-is
+  # (CAPTCHA = 24h, Cloudflare CAPTCHA = 15d) since those are less recoverable.
+  suspended_times:
+    SearxEngineTooManyRequests: 600
 
 outgoing:
   request_timeout: 4.0
@@ -77,15 +84,6 @@ enabled_plugins:
   - 'Tracker URL remover'
   - 'Self Information'
   - 'Hostnames plugin'
-
-# Engine cooldown tuning. Default SearxEngineTooManyRequests is 3600s (1h) which
-# parks brave for an hour after a single 429. Brave's actual rate-limit window is
-# minutes, not hours — 600s lets it recover and contribute bonus 20-result hits
-# without hammering when actively rate-limited. Other defaults left as-is
-# (CAPTCHA = 24h, Cloudflare CAPTCHA = 15d) since those are less recoverable.
-search:
-  suspended_times:
-    SearxEngineTooManyRequests: 600
 
 engines:
   # Reliability matrix from 50-query burst test on Render egress (2026-04-30):
