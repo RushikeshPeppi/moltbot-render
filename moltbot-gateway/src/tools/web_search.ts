@@ -1,17 +1,13 @@
 /**
- * web_search — SearXNG multi-engine search with Tavily API fallback.
+ * web_search — SearXNG primary + Tavily fallback, AI-decided.
  *
- * Engine reality (verified 2026-05-19 from Render egress):
- *   bing       works  — primary anchor for general queries
- *   bing news  works  — essential for time-filtered / news queries (bing general returns 0 with time_range)
- *   startpage  dead   — CAPTCHA-blocked from Render IP, suspended 3600s
- *   brave      dead   — 429 rate-limited from Render IP, suspended 600s
- *   duckduckgo / qwant / mojeek / karmasearch — permanently CAPTCHA / access-denied
+ * Default call uses SearXNG (free, Bing-powered). If the AI judges the results
+ * are garbage (generic homepages, no real data), it calls again with
+ * source="tavily" to get quality results. The AI decides — no heuristics.
  *
- * Fallback chain:
- *   1. SearXNG with pinned engines (bing, bing news, startpage, brave)
- *   2. SearXNG with default engine set (no pin)
- *   3. Tavily API (legitimate API — never blocks, 1000 free/month)
+ * Fallback chain within SearXNG:
+ *   1. Pinned engines (bing, bing news, startpage, brave)
+ *   2. Default engine set (no pin)
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
@@ -20,7 +16,13 @@ import type { ToolContext } from "./index.js";
 export const WEB_SEARCH_TOOL: Anthropic.Tool = {
   name: "web_search",
   description:
-    "Search the web via SearXNG. Returns up to 3 ranked results with title, URL, and short snippet. Use for sports scores, news, weather, current events, business hours, near-me queries, and any topic where current data matters and your training cutoff (Aug 2025) is insufficient. For 'near me' queries append the user's city to the query if available; otherwise call without geography. Do not call more than once per turn.",
+    `Search the web. Returns up to 3 ranked results with title, URL, and snippet.
+
+Use for: sports scores, news, weather, current events, business hours, near-me queries, flight/hotel prices, and any topic where your training cutoff is insufficient.
+
+For 'near me' queries, append the user's city if available.
+
+IMPORTANT: If the results you get back are generic homepage links (e.g. "Google Flights homepage", "Expedia homepage") instead of actual useful content with specific data, DO NOT make excuses or apologize. Instead, call web_search again with source set to "tavily" to get better results. Never tell the user "the search didn't return relevant results" without first trying tavily.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -35,6 +37,12 @@ export const WEB_SEARCH_TOOL: Anthropic.Tool = {
         enum: ["day", "week", "month", "year"],
         description:
           "Optional time filter. Use 'day' for breaking news, 'week' for recent recap, 'month' for trends. Omit for general queries.",
+      },
+      source: {
+        type: "string",
+        enum: ["auto", "tavily"],
+        description:
+          "Search source. Default 'auto' uses SearXNG (free). Use 'tavily' only as a retry when auto returned poor/generic results.",
       },
     },
   },
@@ -62,22 +70,34 @@ interface TavilyResponse {
 }
 
 export async function execute(
-  input: { query: string; time_range?: string },
+  input: { query: string; time_range?: string; source?: string },
   ctx: ToolContext,
 ): Promise<string> {
+  // If the AI explicitly requested Tavily, go straight there.
+  if (input.source === "tavily") {
+    if (!ctx.tavilyApiKey) {
+      return "Tavily API key not configured. No results available.";
+    }
+    console.log(`[web_search] AI requested Tavily for: "${input.query}"`);
+    const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
+    if (tavilyResults && tavilyResults.length > 0) {
+      return formatResults(tavilyResults);
+    }
+    return "No results — try rephrasing or being more specific.";
+  }
+
+  // Default path: SearXNG.
   const baseUrl = `${ctx.searxngUrl}/search`;
   const q = encodeURIComponent(input.query);
   const tr = input.time_range ? `&time_range=${input.time_range}` : "";
-  // Multi-engine — bing + bing news primary, startpage/brave kept as opportunistic fallbacks.
   const primaryUrl = `${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing,bing+news,startpage,brave${tr}`;
 
   let results = await fetchSearxngResults(primaryUrl);
   if (results === null) {
-    // SearXNG returned 429/403 — skip to Tavily directly.
     results = [];
   }
 
-  // Fallback 1: retry without engine pin (uses SearXNG's full default set).
+  // Fallback: retry without engine pin.
   if (results.length === 0) {
     const fallbackUrl = `${baseUrl}?q=${q}&format=json&safesearch=1${tr}`;
     const fallback = await fetchSearxngResults(fallbackUrl);
@@ -86,25 +106,22 @@ export async function execute(
     }
   }
 
-  // Fallback 2: Tavily API (legitimate API, never blocks).
-  if (results.length === 0 && ctx.tavilyApiKey) {
-    console.log(`[web_search] SearXNG returned 0 results, falling back to Tavily`);
-    const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
-    if (tavilyResults && tavilyResults.length > 0) {
-      // Normalize Tavily results to match SearXNG shape.
-      results = tavilyResults.map((r) => ({
-        title: r.title,
-        url: r.url,
-        content: r.content,
-      }));
-    }
-  }
-
   if (results.length === 0) {
+    // If Tavily is available, auto-fallback on zero results.
+    if (ctx.tavilyApiKey) {
+      console.log(`[web_search] SearXNG returned 0 results, auto-falling back to Tavily`);
+      const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
+      if (tavilyResults && tavilyResults.length > 0) {
+        return formatResults(tavilyResults);
+      }
+    }
     return "No results — try rephrasing or being more specific.";
   }
 
-  // Deduplicate by parsed-domain, take top 3, render plain text (NO markdown).
+  return formatResults(results);
+}
+
+function formatResults(results: SearXNGResult[]): string {
   const seenDomains = new Set<string>();
   const lines: string[] = [];
   for (const r of results) {

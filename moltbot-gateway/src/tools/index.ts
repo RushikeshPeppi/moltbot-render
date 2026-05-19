@@ -65,7 +65,7 @@ export async function dispatchTool(name: string, input: unknown, ctx: ToolContex
       return tm.execute(i as Record<string, never>, ctx);
 
     case "web_search":
-      return web.execute(i as { query: string; time_range?: string }, ctx);
+      return web.execute(i as { query: string; time_range?: string; source?: string }, ctx);
 
     case "reminder_create":
       return rem.create(i as { message: string; trigger_at: string; recurrence: string }, ctx);
