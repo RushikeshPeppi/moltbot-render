@@ -22,7 +22,13 @@ Use for: sports scores, news, weather, current events, business hours, near-me q
 
 For 'near me' queries, append the user's city if available.
 
-COST WARNING: The "tavily" source costs real money per call. You MUST use the default results unless they are COMPLETE GARBAGE with ZERO useful information. Average or mediocre results are FINE — use them. If you get website links like cricbuzz.com, espncricinfo.com, iplt20.com for cricket, or any recognizable relevant website for the topic — those are GOOD results, use them directly. Do NOT retry with tavily just because you think you could get "better" results. Only use source="tavily" when every single result is a totally unrelated generic homepage (like getting "Best Buy" or "Merriam-Webster dictionary" when someone asked about restaurants). If results have ANY connection to the query topic, use them as-is.`,
+COST WARNING — source="tavily" costs real money. Only retry with tavily when results are truly useless. Here is how to judge:
+
+USEFUL (do NOT retry): Result snippets contain specific data related to the query — scores, names, prices, dates, article text, stats. Example: searching "IPL scores" and getting cricbuzz.com with "SRH 235/4, PBKS 202/7" in the snippet. USE THESE.
+
+USELESS (retry with tavily): Result snippets are just generic website taglines with zero query-specific data. Example: searching "flights Mumbai to Delhi June 10" and getting "Google Flights - Find Cheap Flights Worldwide" or "Expedia - Book Your Ticket". These are just homepages — no Mumbai, no Delhi, no prices, no dates. RETRY with tavily.
+
+The test is simple: do the snippets mention anything specific from the user's query? If yes → use them. If every snippet is just a site's marketing tagline → retry tavily.`,
   input_schema: {
     type: "object",
     additionalProperties: false,
