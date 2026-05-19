@@ -1,10 +1,11 @@
 /**
  * web_search — SearXNG multi-engine search with zero-result fallback.
  *
- * Engine reality (verified 2026-04-30 from Render egress in 50-query burst test):
- *   bing       50/50 ok — primary
- *   startpage  50/50 ok — secondary
- *   brave      0/50 when in 1h cooldown, 20+ results when fresh — opportunistic bonus
+ * Engine reality (verified 2026-05-19 from Render egress):
+ *   bing       works  — primary anchor for general queries
+ *   bing news  works  — essential for time-filtered / news queries (bing general returns 0 with time_range)
+ *   startpage  dead   — CAPTCHA-blocked from Render IP, suspended 3600s
+ *   brave      dead   — 429 rate-limited from Render IP, suspended 600s
  *   duckduckgo / qwant / mojeek / karmasearch — permanently CAPTCHA / access-denied
  *
  * Order matters: SearXNG processes engines left-to-right, so put the most-reliable first.
@@ -54,8 +55,8 @@ export async function execute(
   const baseUrl = `${ctx.searxngUrl}/search`;
   const q = encodeURIComponent(input.query);
   const tr = input.time_range ? `&time_range=${input.time_range}` : "";
-  // Multi-engine — bing primary, startpage secondary, brave bonus.
-  const primaryUrl = `${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing,startpage,brave${tr}`;
+  // Multi-engine — bing + bing news primary, startpage/brave kept as opportunistic fallbacks.
+  const primaryUrl = `${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing,bing+news,startpage,brave${tr}`;
 
   let results = await fetchResults(primaryUrl);
   if (results === null) {

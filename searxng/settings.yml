@@ -86,10 +86,11 @@ enabled_plugins:
   - 'Hostnames plugin'
 
 engines:
-  # Reliability matrix from 50-query burst test on Render egress (2026-04-30):
-  #   bing      50/50 ok — primary anchor
-  #   startpage 50/50 ok — secondary
-  #   brave     0/50 ok when in cooldown, 20+ results when fresh — opportunistic bonus
+  # Reliability matrix (re-verified 2026-05-19 from Render egress):
+  #   bing       works  — primary anchor for general queries
+  #   bing news  works  — essential for time-filtered / news queries
+  #   startpage  dead   — CAPTCHA-blocked from Render IP, suspended 3600s
+  #   brave      dead   — 429 rate-limited from Render IP, suspended 600s
   #   duckduckgo / qwant / karmasearch / mojeek — CAPTCHA / access-denied / timeout
   #   google*   — block cloud egress entirely
   # Engines left in the active set but blocked still pay full request_timeout
