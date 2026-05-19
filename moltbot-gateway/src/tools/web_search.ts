@@ -82,13 +82,13 @@ export async function execute(
   // If the AI explicitly requested Tavily, try it — but fall back to SearXNG
   // if Tavily fails (rate limit, error, etc). Something is better than nothing.
   if (input.source === "tavily") {
-    if (ctx.tavilyApiKey) {
+    if (ctx.tavilyApiKeys.length > 0) {
       console.log(`[web_search] AI requested Tavily for: "${input.query}"`);
-      const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
+      const tavilyResults = await fetchTavilyWithRotation(input.query, ctx.tavilyApiKeys);
       if (tavilyResults && tavilyResults.length > 0) {
         return formatResults(tavilyResults);
       }
-      console.warn(`[web_search] Tavily failed/empty, falling back to SearXNG`);
+      console.warn(`[web_search] Tavily failed/empty (all keys), falling back to SearXNG`);
     }
     // Tavily failed or not configured — run SearXNG so we return something.
   }
@@ -131,9 +131,9 @@ export async function execute(
 
   if (results.length === 0) {
     // If Tavily is available, auto-fallback on zero results.
-    if (ctx.tavilyApiKey) {
+    if (ctx.tavilyApiKeys.length > 0) {
       console.log(`[web_search] SearXNG returned 0 results, auto-falling back to Tavily`);
-      const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
+      const tavilyResults = await fetchTavilyWithRotation(input.query, ctx.tavilyApiKeys);
       if (tavilyResults && tavilyResults.length > 0) {
         return formatResults(tavilyResults);
       }
@@ -182,10 +182,51 @@ async function fetchSearxngResults(url: string): Promise<SearXNGResult[] | null>
   }
 }
 
+/**
+ * Round-robin counter for Tavily key rotation.
+ * Persists across requests for even key distribution.
+ */
+let tavilyKeyIndex = 0;
+
+/**
+ * Try Tavily with key rotation. Starts from current round-robin position.
+ * If a key returns 429/402 (quota exceeded), tries the next key.
+ * Returns results from first successful key, or null if all keys fail.
+ */
+async function fetchTavilyWithRotation(
+  query: string,
+  keys: string[],
+): Promise<TavilyResult[] | null> {
+  const startIdx = tavilyKeyIndex;
+  for (let i = 0; i < keys.length; i++) {
+    const idx = (startIdx + i) % keys.length;
+    const key = keys[idx];
+    const keyLabel = `key${idx + 1}/${keys.length}`;
+
+    const result = await fetchTavilyResults(query, key, keyLabel);
+
+    if (result === "quota") {
+      // This key is exhausted — try the next one.
+      console.warn(`[web_search] Tavily ${keyLabel} quota exceeded, rotating`);
+      continue;
+    }
+
+    // Advance round-robin for next call (even on success).
+    tavilyKeyIndex = (idx + 1) % keys.length;
+
+    if (result && result.length > 0) {
+      return result;
+    }
+    // Empty results from this key — still try next.
+  }
+  return null;
+}
+
 async function fetchTavilyResults(
   query: string,
   apiKey: string,
-): Promise<TavilyResult[] | null> {
+  keyLabel: string = "key",
+): Promise<TavilyResult[] | null | "quota"> {
   try {
     const resp = await fetch("https://api.tavily.com/search", {
       method: "POST",
@@ -202,13 +243,18 @@ async function fetchTavilyResults(
       signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) {
-      console.warn(`[web_search] Tavily returned ${resp.status}`);
+      // 429 = rate limit, 402 = payment required (quota exceeded)
+      if (resp.status === 429 || resp.status === 402) {
+        return "quota";
+      }
+      console.warn(`[web_search] Tavily ${keyLabel} returned ${resp.status}`);
       return null;
     }
     const json = (await resp.json()) as TavilyResponse;
+    console.log(`[web_search] Tavily ${keyLabel} returned ${json.results?.length ?? 0} results`);
     return json.results ?? [];
   } catch (err) {
-    console.warn(`[web_search] Tavily fetch failed: ${(err as Error).message}`);
+    console.warn(`[web_search] Tavily ${keyLabel} fetch failed: ${(err as Error).message}`);
     return null;
   }
 }

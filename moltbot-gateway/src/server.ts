@@ -111,7 +111,7 @@ app.post("/execute", async (req: Request, res: Response) => {
     city: body.user_context?.city,
     fastApiUrl: env.FASTAPI_URL,
     searxngUrl: env.SEARXNG_URL,
-    tavilyApiKey: env.TAVILY_API_KEY || undefined,
+    tavilyApiKeys: env.TAVILY_API_KEYS,
     requestId,
   };
 

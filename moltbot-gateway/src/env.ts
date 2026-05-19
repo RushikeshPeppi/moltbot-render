@@ -13,7 +13,11 @@ export const env = {
   PORT: parseInt(process.env.PORT ?? "10000", 10),
   HELICONE_PROXY: process.env.HELICONE_PROXY === "true",
   HELICONE_KEY: process.env.HELICONE_KEY ?? "",
-  TAVILY_API_KEY: process.env.TAVILY_API_KEY ?? "",
+  // Comma-separated list of Tavily keys for rotation. Falls back to single TAVILY_API_KEY.
+  TAVILY_API_KEYS: (process.env.TAVILY_API_KEYS || process.env.TAVILY_API_KEY || "")
+    .split(",")
+    .map((k) => k.trim())
+    .filter(Boolean),
   NODE_ENV: process.env.NODE_ENV ?? "production",
 } as const;
 
@@ -30,6 +34,6 @@ export function validateEnv(): void {
   console.log(
     `[env] ANTHROPIC_API_KEY=${env.ANTHROPIC_API_KEY ? "set" : "MISSING"}, ` +
       `FASTAPI_URL=${env.FASTAPI_URL}, SEARXNG_URL=${env.SEARXNG_URL}, PORT=${env.PORT}, ` +
-      `HELICONE=${env.HELICONE_PROXY ? "on" : "off"}`,
+      `HELICONE=${env.HELICONE_PROXY ? "on" : "off"}, TAVILY_KEYS=${env.TAVILY_API_KEYS.length}`,
   );
 }
