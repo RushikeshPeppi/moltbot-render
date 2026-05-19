@@ -13,6 +13,7 @@ export const env = {
   PORT: parseInt(process.env.PORT ?? "10000", 10),
   HELICONE_PROXY: process.env.HELICONE_PROXY === "true",
   HELICONE_KEY: process.env.HELICONE_KEY ?? "",
+  TAVILY_API_KEY: process.env.TAVILY_API_KEY ?? "",
   NODE_ENV: process.env.NODE_ENV ?? "production",
 } as const;
 

@@ -1,5 +1,5 @@
 /**
- * web_search — SearXNG multi-engine search with zero-result fallback.
+ * web_search — SearXNG multi-engine search with Tavily API fallback.
  *
  * Engine reality (verified 2026-05-19 from Render egress):
  *   bing       works  — primary anchor for general queries
@@ -8,7 +8,10 @@
  *   brave      dead   — 429 rate-limited from Render IP, suspended 600s
  *   duckduckgo / qwant / mojeek / karmasearch — permanently CAPTCHA / access-denied
  *
- * Order matters: SearXNG processes engines left-to-right, so put the most-reliable first.
+ * Fallback chain:
+ *   1. SearXNG with pinned engines (bing, bing news, startpage, brave)
+ *   2. SearXNG with default engine set (no pin)
+ *   3. Tavily API (legitimate API — never blocks, 1000 free/month)
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
@@ -48,6 +51,16 @@ interface SearXNGResponse {
   unresponsive_engines?: Array<[string, string]>;
 }
 
+interface TavilyResult {
+  title?: string;
+  url?: string;
+  content?: string;
+}
+
+interface TavilyResponse {
+  results?: TavilyResult[];
+}
+
 export async function execute(
   input: { query: string; time_range?: string },
   ctx: ToolContext,
@@ -58,17 +71,32 @@ export async function execute(
   // Multi-engine — bing + bing news primary, startpage/brave kept as opportunistic fallbacks.
   const primaryUrl = `${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing,bing+news,startpage,brave${tr}`;
 
-  let results = await fetchResults(primaryUrl);
+  let results = await fetchSearxngResults(primaryUrl);
   if (results === null) {
-    return "Web search rate-limited — try again in a moment.";
+    // SearXNG returned 429/403 — skip to Tavily directly.
+    results = [];
   }
 
-  // Zero-result fallback: retry without engine pin (uses SearXNG's full default set).
+  // Fallback 1: retry without engine pin (uses SearXNG's full default set).
   if (results.length === 0) {
     const fallbackUrl = `${baseUrl}?q=${q}&format=json&safesearch=1${tr}`;
-    const fallback = await fetchResults(fallbackUrl);
+    const fallback = await fetchSearxngResults(fallbackUrl);
     if (fallback && fallback.length > 0) {
       results = fallback;
+    }
+  }
+
+  // Fallback 2: Tavily API (legitimate API, never blocks).
+  if (results.length === 0 && ctx.tavilyApiKey) {
+    console.log(`[web_search] SearXNG returned 0 results, falling back to Tavily`);
+    const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
+    if (tavilyResults && tavilyResults.length > 0) {
+      // Normalize Tavily results to match SearXNG shape.
+      results = tavilyResults.map((r) => ({
+        title: r.title,
+        url: r.url,
+        content: r.content,
+      }));
     }
   }
 
@@ -92,7 +120,7 @@ export async function execute(
   return lines.join("\n\n");
 }
 
-async function fetchResults(url: string): Promise<SearXNGResult[] | null> {
+async function fetchSearxngResults(url: string): Promise<SearXNGResult[] | null> {
   try {
     const resp = await fetch(url, {
       headers: {
@@ -109,8 +137,39 @@ async function fetchResults(url: string): Promise<SearXNGResult[] | null> {
     const json = (await resp.json()) as SearXNGResponse;
     return json.results ?? [];
   } catch (err) {
-    console.warn(`[web_search] fetch failed: ${(err as Error).message}`);
+    console.warn(`[web_search] SearXNG fetch failed: ${(err as Error).message}`);
     return [];
+  }
+}
+
+async function fetchTavilyResults(
+  query: string,
+  apiKey: string,
+): Promise<TavilyResult[] | null> {
+  try {
+    const resp = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        search_depth: "basic",
+        max_results: 5,
+        include_answer: false,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) {
+      console.warn(`[web_search] Tavily returned ${resp.status}`);
+      return null;
+    }
+    const json = (await resp.json()) as TavilyResponse;
+    return json.results ?? [];
+  } catch (err) {
+    console.warn(`[web_search] Tavily fetch failed: ${(err as Error).message}`);
+    return null;
   }
 }
 

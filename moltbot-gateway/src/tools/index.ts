@@ -26,6 +26,8 @@ export interface ToolContext {
   city?: string;
   fastApiUrl: string;
   searxngUrl: string;
+  /** Tavily API key for fallback search when SearXNG returns no results. Optional. */
+  tavilyApiKey?: string;
   /**
    * Per-/execute UUID. Used to seed deterministic idempotency keys across
    * tool retries. Same userId + same requestId + same args → same key.
