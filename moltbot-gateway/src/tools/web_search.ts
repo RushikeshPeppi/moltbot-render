@@ -22,7 +22,7 @@ Use for: sports scores, news, weather, current events, business hours, near-me q
 
 For 'near me' queries, append the user's city if available.
 
-IMPORTANT: If the results you get back are generic homepage links (e.g. "Google Flights homepage", "Expedia homepage") instead of actual useful content with specific data, DO NOT make excuses or apologize. Instead, call web_search again with source set to "tavily" to get better results. Never tell the user "the search didn't return relevant results" without first trying tavily.`,
+Most results will be good enough — use them directly. Only retry with source="tavily" when EVERY result is a generic homepage (e.g. all 3 results are just "Expedia.com", "KAYAK.com", "Google Flights" with zero specific data about the user's actual query like prices, dates, names, scores). If even one result has useful specific info, use what you have. Do not retry just because results could be "better".`,
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -73,17 +73,18 @@ export async function execute(
   input: { query: string; time_range?: string; source?: string },
   ctx: ToolContext,
 ): Promise<string> {
-  // If the AI explicitly requested Tavily, go straight there.
+  // If the AI explicitly requested Tavily, try it — but fall back to SearXNG
+  // if Tavily fails (rate limit, error, etc). Something is better than nothing.
   if (input.source === "tavily") {
-    if (!ctx.tavilyApiKey) {
-      return "Tavily API key not configured. No results available.";
+    if (ctx.tavilyApiKey) {
+      console.log(`[web_search] AI requested Tavily for: "${input.query}"`);
+      const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
+      if (tavilyResults && tavilyResults.length > 0) {
+        return formatResults(tavilyResults);
+      }
+      console.warn(`[web_search] Tavily failed/empty, falling back to SearXNG`);
     }
-    console.log(`[web_search] AI requested Tavily for: "${input.query}"`);
-    const tavilyResults = await fetchTavilyResults(input.query, ctx.tavilyApiKey);
-    if (tavilyResults && tavilyResults.length > 0) {
-      return formatResults(tavilyResults);
-    }
-    return "No results — try rephrasing or being more specific.";
+    // Tavily failed or not configured — run SearXNG so we return something.
   }
 
   // Default path: SearXNG.
