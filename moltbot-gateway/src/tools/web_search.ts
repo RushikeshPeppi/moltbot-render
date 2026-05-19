@@ -90,17 +90,33 @@ export async function execute(
   // Default path: SearXNG.
   const baseUrl = `${ctx.searxngUrl}/search`;
   const q = encodeURIComponent(input.query);
-  const tr = input.time_range ? `&time_range=${input.time_range}` : "";
-  const primaryUrl = `${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing,bing+news,startpage,brave${tr}`;
 
-  let results = await fetchSearxngResults(primaryUrl);
-  if (results === null) {
-    results = [];
+  let results: SearXNGResult[] = [];
+
+  if (input.time_range) {
+    // Bing general CANNOT do time_range (SearXNG limitation — depends on JS).
+    // Fire two parallel calls and merge:
+    //   1. Bing general WITHOUT time_range → web results (scores, pages, etc.)
+    //   2. Bing news WITH time_range → fresh time-filtered news articles
+    const [webResults, newsResults] = await Promise.all([
+      fetchSearxngResults(`${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing`),
+      fetchSearxngResults(`${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing+news&time_range=${input.time_range}`),
+    ]);
+    results = [...(newsResults ?? []), ...(webResults ?? [])];
+  } else {
+    // No time_range — single call with all engines.
+    const primaryUrl = `${baseUrl}?q=${q}&format=json&safesearch=1&engines=bing,bing+news,startpage,brave`;
+    const primary = await fetchSearxngResults(primaryUrl);
+    if (primary === null) {
+      results = [];
+    } else {
+      results = primary;
+    }
   }
 
-  // Fallback: retry without engine pin.
+  // Fallback: retry without engine pin or time_range.
   if (results.length === 0) {
-    const fallbackUrl = `${baseUrl}?q=${q}&format=json&safesearch=1${tr}`;
+    const fallbackUrl = `${baseUrl}?q=${q}&format=json&safesearch=1`;
     const fallback = await fetchSearxngResults(fallbackUrl);
     if (fallback && fallback.length > 0) {
       results = fallback;
