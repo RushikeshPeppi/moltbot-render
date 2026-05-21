@@ -14,7 +14,7 @@ Note: Rate limiting is handled by Peppi (Laravel), not here.
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import logging
@@ -898,12 +898,16 @@ async def register_user(request: RegisterUserRequest):
         # Clean inputs
         city_clean = (request.city or "").strip() or None
 
+        # Check if user already exists to preserve google_connected status
+        existing_user = await db.get_user(request.user_id.strip())
+        google_connected = existing_user.get("google_connected", False) if existing_user else False
+
         # Upsert user (creates if new, updates if existing)
         user = await db.upsert_user(
             user_id=request.user_id.strip(),
             name=request.name.strip(),
             email=request.email,
-            google_connected=False,
+            google_connected=google_connected,
             timezone=request.timezone or "UTC",
             city=city_clean,
         )
