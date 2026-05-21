@@ -734,8 +734,53 @@ class Database:
             logger.error(f"Error updating google_connected for user {user_id}: {e}")
             return False
 
+    async def delete_user(self, user_id: str) -> Dict[str, int]:
+        """
+        Hard-delete a user and all their personal data.
+
+        Removes rows from tbl_clawdbot_users, tbl_clawdbot_credentials,
+        and tbl_clawdbot_reminders. Audit log rows are intentionally kept
+        (compliance / forensics) — they reference user_id by value, not FK.
+
+        Returns a dict with per-table delete counts. Missing tables are
+        treated as zero.
+        """
+        counts = {"users": 0, "credentials": 0, "reminders": 0}
+        if not self._client:
+            await self.initialize()
+            if not self._client:
+                return counts
+
+        try:
+            response = self._client.table("tbl_clawdbot_credentials").delete().eq(
+                "user_id", user_id
+            ).execute()
+            counts["credentials"] = len(response.data or [])
+        except Exception as e:
+            logger.error(f"delete_user: credentials delete failed for {user_id}: {e}")
+
+        try:
+            response = self._client.table("tbl_clawdbot_reminders").delete().eq(
+                "user_id", user_id
+            ).execute()
+            counts["reminders"] = len(response.data or [])
+        except Exception as e:
+            # Table may not exist in older deployments — non-fatal.
+            logger.warning(f"delete_user: reminders delete skipped for {user_id}: {e}")
+
+        try:
+            response = self._client.table("tbl_clawdbot_users").delete().eq(
+                "user_id", user_id
+            ).execute()
+            counts["users"] = len(response.data or [])
+        except Exception as e:
+            logger.error(f"delete_user: users delete failed for {user_id}: {e}")
+
+        logger.info(f"Deleted user {user_id}: {counts}")
+        return counts
+
     # ==================== Utility ====================
-    
+
     async def health_check(self) -> bool:
         """Check database connectivity"""
         try:

@@ -843,3 +843,170 @@ async def get_action_history(user_id: str, limit: int = 50, offset: int = 0):
             error="HISTORY_GET_ERROR",
             exception=str(e)
         )
+
+
+# ==================== User Registration (Production) ====================
+
+class RegisterUserRequest(BaseModel):
+    """Register a Peppi user in the moltbot system."""
+    user_id: str = Field(..., description="Peppi's user ID (from Laravel)")
+    name: str = Field(..., description="User's display name")
+    email: Optional[str] = Field(None, description="User's email address")
+    timezone: str = Field(default="UTC", description="IANA timezone (e.g. 'Asia/Kolkata')")
+    city: Optional[str] = Field(None, description="User's city (e.g. 'Pune, India')")
+    phone_number: Optional[str] = Field(None, description="User's phone number (for reference)")
+
+
+@router.post("/users/register")
+async def register_user(request: RegisterUserRequest):
+    """
+    Register a new user from the Peppi production system.
+
+    Call this when a user creates their account on the Peppi website.
+    This must happen BEFORE any /execute-action or /oauth/google/init calls,
+    otherwise those endpoints will return USER_NOT_FOUND.
+
+    If the user_id already exists, the record is updated (upsert).
+
+    Request body:
+        {
+            "user_id": "peppi_abc123",
+            "name": "John Doe",
+            "email": "john@example.com",
+            "timezone": "Asia/Kolkata",
+            "city": "Pune, India"
+        }
+    """
+    try:
+        # Validate user_id is not empty
+        if not request.user_id or not request.user_id.strip():
+            return create_error_response(
+                code=ResponseCode.BAD_REQUEST,
+                message="user_id is required and cannot be empty",
+                error="INVALID_USER_ID",
+                exception=None
+            )
+
+        if not request.name or not request.name.strip():
+            return create_error_response(
+                code=ResponseCode.BAD_REQUEST,
+                message="name is required and cannot be empty",
+                error="INVALID_NAME",
+                exception=None
+            )
+
+        # Clean inputs
+        city_clean = (request.city or "").strip() or None
+
+        # Upsert user (creates if new, updates if existing)
+        user = await db.upsert_user(
+            user_id=request.user_id.strip(),
+            name=request.name.strip(),
+            email=request.email,
+            google_connected=False,
+            timezone=request.timezone or "UTC",
+            city=city_clean,
+        )
+
+        if not user:
+            return create_error_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to register user in database",
+                error="USER_REGISTER_FAILED",
+                exception=None
+            )
+
+        logger.info(f"Registered production user: {request.user_id} ({request.name})")
+
+        return {
+            "code": ResponseCode.CREATED,
+            "message": "User registered successfully",
+            "data": {
+                "user_id": user.get("user_id", request.user_id),
+                "name": user.get("name", request.name),
+                "email": user.get("email"),
+                "timezone": user.get("timezone", "UTC"),
+                "city": user.get("city"),
+                "google_connected": user.get("google_connected", False),
+            },
+            "error": None,
+            "exception": None,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"Error registering user {request.user_id}: {e}")
+        return create_error_response(
+            code=ResponseCode.INTERNAL_ERROR,
+            message="Failed to register user",
+            error="USER_REGISTER_ERROR",
+            exception=str(e)
+        )
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str):
+    """
+    Hard-delete a Peppi user from the moltbot system.
+
+    Called when the user deletes their Peppi account. Behavior:
+      1. Best-effort revoke Google OAuth tokens at Google's revocation endpoint
+      2. Delete encrypted credentials (tbl_clawdbot_credentials)
+      3. Delete pending reminders (tbl_clawdbot_reminders)
+      4. Delete the user row (tbl_clawdbot_users)
+      5. Audit log rows are RETAINED for compliance / forensics
+
+    Idempotent — calling on a non-existent user returns 200 with zero counts.
+    """
+    if not user_id or not user_id.strip():
+        return create_error_response(
+            code=ResponseCode.BAD_REQUEST,
+            message="user_id is required",
+            error="INVALID_USER_ID",
+            exception=None
+        )
+
+    user_id = user_id.strip()
+
+    # Best-effort Google revoke — don't block deletion if Google is unreachable.
+    try:
+        await credential_manager.revoke_google_token(user_id)
+    except Exception as e:
+        logger.warning(f"delete_user: Google revoke failed for {user_id}: {e}")
+
+    try:
+        counts = await db.delete_user(user_id)
+
+        # Audit the deletion itself (separate from the retained per-action log).
+        try:
+            await db.log_action(
+                user_id=user_id,
+                session_id="user_lifecycle",
+                action_type="user_delete",
+                request_summary="User account deleted by Peppi",
+                response_summary=f"counts={counts}",
+                status="success"
+            )
+        except Exception as e:
+            logger.warning(f"delete_user: audit log write failed: {e}")
+
+        return {
+            "code": ResponseCode.SUCCESS,
+            "message": "User deleted successfully",
+            "data": {
+                "user_id": user_id,
+                "deleted": counts,
+                "audit_log_retained": True
+            },
+            "error": None,
+            "exception": None,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error deleting user {user_id}: {e}")
+        return create_error_response(
+            code=ResponseCode.INTERNAL_ERROR,
+            message="Failed to delete user",
+            error="USER_DELETE_ERROR",
+            exception=str(e)
+        )
