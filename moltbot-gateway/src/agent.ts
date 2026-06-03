@@ -217,6 +217,10 @@ export async function runAgentLoop(input: AgentInput, session: Session): Promise
         source: { type: "url", url },
       });
     }
+    // Expose this turn's image URLs to tools (e.g. gmail attach) WITHOUT putting
+    // them in the model-visible text. The model gates attachment via a boolean
+    // param; the bytes are fetched server-side from these URLs.
+    input.ctx.imageUrls = input.imageUrls;
   }
   if (input.userText) {
     userContent.push({ type: "text", text: input.userText });

@@ -8,6 +8,8 @@
  * gmail_mark: read/unread/starred/important via /messages/{id}/modify.
  */
 
+import { lookup } from "node:dns/promises";
+import net from "node:net";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext } from "./index.js";
 
@@ -18,7 +20,7 @@ const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 export const GMAIL_SEND_TOOL: Anthropic.Tool = {
   name: "gmail_send",
   description:
-    "Send an email from the user's Gmail. Pass recipient email (resolve names to addresses first — ask the user if uncertain), subject, body. Returns message_id on success.",
+    "Send an email from the user's Gmail. Pass recipient email (resolve names to addresses first — ask the user if uncertain), subject, body. Returns message_id on success. If the user attached one or more images in THIS message and wants them sent in the email, set attach_images=true — the attached image(s) are added automatically; you do not need their URLs.",
   input_schema: {
     type: "object",
     additionalProperties: false,
@@ -27,6 +29,11 @@ export const GMAIL_SEND_TOOL: Anthropic.Tool = {
       to: { type: "string", description: "Recipient email address." },
       subject: { type: "string", description: "Email subject line." },
       body: { type: "string", description: "Email body (plain text)." },
+      attach_images: {
+        type: "boolean",
+        description:
+          "Set true to attach the image(s) the user sent in this message. Only valid when the user actually attached an image this turn; ignored otherwise.",
+      },
     },
   },
 };
@@ -63,6 +70,11 @@ export const GMAIL_REPLY_TOOL: Anthropic.Tool = {
     properties: {
       message_id: { type: "string", description: "Gmail message id from gmail_list." },
       body: { type: "string", description: "Reply body (plain text)." },
+      attach_images: {
+        type: "boolean",
+        description:
+          "Set true to attach the image(s) the user sent in this message to the reply. Only valid when the user actually attached an image this turn.",
+      },
     },
   },
 };
@@ -87,14 +99,15 @@ export const GMAIL_MARK_TOOL: Anthropic.Tool = {
 
 // ─── Implementations ───────────────────────────────────────────────────
 
-export async function send(input: { to: string; subject: string; body: string }, ctx: ToolContext): Promise<{ message_id: string; thread_id: string }> {
+export async function send(input: { to: string; subject: string; body: string; attach_images?: boolean }, ctx: ToolContext): Promise<{ message_id: string; thread_id: string }> {
   requireToken(ctx);
   // Note: Gmail API has no documented header-based idempotency. If the model
   // emits two parallel `gmail_send` tool_use blocks with identical args, both
   // will deliver. Mitigations live in the prompt (single-call rule for writes)
   // and the per-/execute requestId — within one request, parallel duplicate
   // tool_use blocks for the same op are vanishingly rare from Sonnet 4.6.
-  const raw = encodeBase64Url(buildMime({ to: input.to, subject: input.subject, body: input.body }));
+  const attachments = input.attach_images ? await fetchAttachments(ctx.imageUrls ?? []) : [];
+  const raw = encodeBase64Url(buildMime({ to: input.to, subject: input.subject, body: input.body, attachments }));
   const resp = await fetch(`${GMAIL_BASE}/messages/send`, {
     method: "POST",
     headers: {
@@ -161,7 +174,7 @@ export async function list(input: { query?: string; max_results?: number }, ctx:
   return details.filter((d): d is NonNullable<typeof d> => d !== null);
 }
 
-export async function reply(input: { message_id: string; body: string }, ctx: ToolContext): Promise<{ message_id: string; thread_id: string }> {
+export async function reply(input: { message_id: string; body: string; attach_images?: boolean }, ctx: ToolContext): Promise<{ message_id: string; thread_id: string }> {
   requireToken(ctx);
   // Fetch thread + headers from the original message.
   const origResp = await fetch(
@@ -186,6 +199,7 @@ export async function reply(input: { message_id: string; body: string }, ctx: To
   const replySubj = /^Re:/i.test(origSubj) ? origSubj : `Re: ${origSubj}`;
 
   // (See gmail_send note: no native idempotency for Gmail API.)
+  const attachments = input.attach_images ? await fetchAttachments(ctx.imageUrls ?? []) : [];
   const raw = encodeBase64Url(
     buildMime({
       to: toEmail,
@@ -193,6 +207,7 @@ export async function reply(input: { message_id: string; body: string }, ctx: To
       body: input.body,
       inReplyTo: origMsgId,
       references: origMsgId,
+      attachments,
     }),
   );
   const sendResp = await fetch(`${GMAIL_BASE}/messages/send`, {
@@ -245,19 +260,176 @@ function requireToken(ctx: ToolContext): void {
   }
 }
 
-function buildMime(opts: { to: string; subject: string; body: string; inReplyTo?: string; references?: string }): string {
-  const lines: string[] = [
-    `From: me`,
-    `To: ${opts.to}`,
-    `Subject: ${opts.subject}`,
-    `MIME-Version: 1.0`,
-    `Content-Type: text/plain; charset=UTF-8`,
-  ];
-  if (opts.inReplyTo) lines.push(`In-Reply-To: ${opts.inReplyTo}`);
-  if (opts.references) lines.push(`References: ${opts.references}`);
-  lines.push("");
-  lines.push(opts.body);
-  return lines.join("\r\n");
+interface Attachment {
+  filename: string;
+  contentType: string;
+  /** Standard base64 (NOT base64url) — MIME bodies use RFC 2045 base64. */
+  base64: string;
+}
+
+function buildMime(opts: {
+  to: string;
+  subject: string;
+  body: string;
+  inReplyTo?: string;
+  references?: string;
+  attachments?: Attachment[];
+}): string {
+  const headerLines: string[] = [`From: me`, `To: ${opts.to}`, `Subject: ${opts.subject}`, `MIME-Version: 1.0`];
+  if (opts.inReplyTo) headerLines.push(`In-Reply-To: ${opts.inReplyTo}`);
+  if (opts.references) headerLines.push(`References: ${opts.references}`);
+
+  const attachments = opts.attachments ?? [];
+  if (attachments.length === 0) {
+    return [...headerLines, `Content-Type: text/plain; charset=UTF-8`, "", opts.body].join("\r\n");
+  }
+
+  // multipart/mixed: a text/plain part followed by one part per attachment.
+  // Boundary is derived from requestId-free static + index by the caller's content;
+  // a fixed token is fine since it cannot collide with base64 (no '=' runs of this form).
+  const boundary = "peppi_mixed_boundary_b3a1c9f2";
+  const parts: string[] = [];
+  parts.push(`--${boundary}`);
+  parts.push(`Content-Type: text/plain; charset=UTF-8`);
+  parts.push(`Content-Transfer-Encoding: 7bit`);
+  parts.push("");
+  parts.push(opts.body);
+  for (const att of attachments) {
+    parts.push(`--${boundary}`);
+    parts.push(`Content-Type: ${att.contentType}; name="${att.filename}"`);
+    parts.push(`Content-Transfer-Encoding: base64`);
+    parts.push(`Content-Disposition: attachment; filename="${att.filename}"`);
+    parts.push("");
+    // RFC 2045 caps encoded lines at 76 chars.
+    parts.push(att.base64.replace(/.{76}/g, "$&\r\n"));
+  }
+  parts.push(`--${boundary}--`);
+
+  return [...headerLines, `Content-Type: multipart/mixed; boundary="${boundary}"`, "", ...parts].join("\r\n");
+}
+
+const MAX_IMAGE_REDIRECTS = 3;
+
+/**
+ * Classify an IP literal as non-public (loopback / private / link-local / ULA /
+ * unspecified / CGNAT). Anything we can't parse is treated as unsafe.
+ */
+function isNonPublicAddress(ip: string): boolean {
+  if (net.isIPv4(ip)) {
+    const p = ip.split(".").map(Number);
+    if (p[0] === 0) return true; // 0.0.0.0/8
+    if (p[0] === 10) return true; // 10/8
+    if (p[0] === 127) return true; // loopback
+    if (p[0] === 169 && p[1] === 254) return true; // link-local 169.254/16
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true; // 172.16/12
+    if (p[0] === 192 && p[1] === 168) return true; // 192.168/16
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT 100.64/10
+    return false;
+  }
+  if (net.isIPv6(ip)) {
+    const lc = ip.toLowerCase();
+    if (lc === "::1" || lc === "::") return true; // loopback / unspecified
+    const mapped = lc.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+    if (mapped) return isNonPublicAddress(mapped[1]); // IPv4-mapped
+    if (lc.startsWith("fc") || lc.startsWith("fd")) return true; // ULA fc00::/7
+    if (/^fe[89ab]/.test(lc)) return true; // link-local fe80::/10
+    return false;
+  }
+  return true; // unrecognized format → reject
+}
+
+/**
+ * SSRF guard: require https and reject any URL whose host resolves to a
+ * non-public address. Run on the initial URL AND every redirect Location.
+ * Residual: DNS-rebinding between this check and the fetch is not closed here
+ * (would require IP-pinned connects + manual SNI); the practical SSRF vectors
+ * — direct internal URLs, redirect-to-internal, cloud metadata 169.254.169.254
+ * — are blocked.
+ */
+async function assertSafePublicUrl(raw: string): Promise<void> {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error("invalid image URL");
+  }
+  if (u.protocol !== "https:") throw new Error("image URL must use https");
+  const host = u.hostname.toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
+  if (net.isIP(host)) {
+    if (isNonPublicAddress(host)) throw new Error("image URL points to a non-public address");
+    return;
+  }
+  const addrs = await lookup(host, { all: true });
+  if (addrs.length === 0) throw new Error("image host did not resolve");
+  for (const a of addrs) {
+    if (isNonPublicAddress(a.address)) {
+      throw new Error("image URL resolves to a non-public address");
+    }
+  }
+}
+
+/** Fetch an image with redirects handled manually so each hop is re-validated. */
+async function fetchImageSafely(startUrl: string): Promise<Response> {
+  let url = startUrl;
+  for (let hop = 0; hop <= MAX_IMAGE_REDIRECTS; hop++) {
+    await assertSafePublicUrl(url);
+    const resp = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
+    if (resp.status >= 300 && resp.status < 400) {
+      const loc = resp.headers.get("location");
+      if (!loc) throw new Error("image redirect missing Location");
+      url = new URL(loc, url).toString();
+      continue;
+    }
+    return resp;
+  }
+  throw new Error("too many redirects fetching image");
+}
+
+/**
+ * Fetch the bytes for each image URL and return MIME-ready base64 attachments.
+ * Throws on an expired/unreachable URL so the model can tell the user to resend.
+ * Skips silently-empty input. Total guarded at 25 MB (Gmail raw-send cap is ~35 MB
+ * base64-inflated; we stay well under).
+ */
+async function fetchAttachments(urls: string[]): Promise<Attachment[]> {
+  if (urls.length === 0) {
+    throw new Error("no image found on this message to attach — ask the user to resend the image");
+  }
+  const out: Attachment[] = [];
+  let totalBytes = 0;
+  for (let i = 0; i < urls.length; i++) {
+    const url = urls[i];
+    const resp = await fetchImageSafely(url);
+    if (!resp.ok) {
+      throw new Error(
+        resp.status === 404 || resp.status === 410
+          ? "the attached image is no longer available (link expired) — please resend it"
+          : `could not fetch the attached image (HTTP ${resp.status})`,
+      );
+    }
+    const contentType = resp.headers.get("content-type") ?? "image/jpeg";
+    if (!contentType.toLowerCase().startsWith("image/")) {
+      throw new Error("attached file is not an image");
+    }
+    const buf = Buffer.from(await resp.arrayBuffer());
+    totalBytes += buf.length;
+    if (totalBytes > 25 * 1024 * 1024) {
+      throw new Error("attached image(s) too large to email (over 25 MB total)");
+    }
+    out.push({
+      filename: filenameFor(url, contentType, i),
+      contentType,
+      base64: buf.toString("base64"),
+    });
+  }
+  return out;
+}
+
+function filenameFor(url: string, contentType: string, index: number): string {
+  const fromUrl = url.split("?")[0].split("/").pop() ?? "";
+  if (fromUrl && /\.[a-z0-9]{2,4}$/i.test(fromUrl)) return fromUrl;
+  const ext = contentType.split("/")[1]?.split("+")[0] || "jpg";
+  return `image_${index + 1}.${ext}`;
 }
 
 function encodeBase64Url(s: string): string {

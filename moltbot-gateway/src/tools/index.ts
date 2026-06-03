@@ -24,6 +24,13 @@ export interface ToolContext {
   googleAccessToken?: string;
   timezone: string;
   city?: string;
+  /**
+   * Image URLs attached to the CURRENT turn (MMS / peppi.ai uploads). The model
+   * never sees these as text — they're injected as vision blocks — so attachment
+   * is gated by a boolean tool param and the URLs are pulled from here, not echoed
+   * back by the model. Empty/undefined when the turn has no image.
+   */
+  imageUrls?: string[];
   fastApiUrl: string;
   searxngUrl: string;
   /** Tavily API keys for fallback search — rotated on quota errors. */
@@ -110,11 +117,11 @@ export async function dispatchTool(name: string, input: unknown, ctx: ToolContex
       return cal.delete_(i as { event_id: string }, ctx);
 
     case "gmail_send":
-      return gm.send(i as { to: string; subject: string; body: string }, ctx);
+      return gm.send(i as { to: string; subject: string; body: string; attach_images?: boolean }, ctx);
     case "gmail_list":
       return gm.list(i as { query?: string; max_results?: number }, ctx);
     case "gmail_reply":
-      return gm.reply(i as { message_id: string; body: string }, ctx);
+      return gm.reply(i as { message_id: string; body: string; attach_images?: boolean }, ctx);
     case "gmail_mark":
       return gm.mark(
         i as { message_id: string; action: "read" | "unread" | "starred" | "unstarred" },
