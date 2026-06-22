@@ -59,3 +59,7 @@ CLAUDE.md
 .cursorrules
 .clineRules
 .cline/
+
+# Data exports / dumps (may contain user PII — never commit)
+tbl_chat_history.csv
+*.csv

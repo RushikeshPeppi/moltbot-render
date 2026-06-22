@@ -21,7 +21,6 @@ class GoogleCalendarService:
     def __init__(self):
         self.credential_manager = CredentialManager()
         self.scopes = [
-            'https://www.googleapis.com/auth/calendar',
             'https://www.googleapis.com/auth/calendar.events'
         ]
 
