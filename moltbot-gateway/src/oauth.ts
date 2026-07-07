@@ -30,7 +30,9 @@ export async function fetchGoogleToken(userId: string): Promise<string | null> {
     const j = (await r.json()) as { data?: { access_token?: string } };
     return j.data?.access_token ?? null;
   } catch (err) {
-    console.warn(`[oauth] fetch failed for user ${userId}:`, (err as Error).message);
+    // Constant format string (values passed as args) so user-derived data never
+    // sits in console's printf format position — keeps the SAST scan clean.
+    console.warn("[oauth] fetch failed for user %s: %s", userId, (err as Error).message);
     return null;
   }
 }
