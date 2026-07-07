@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.responses import JSONResponse
 from qstash import Receiver
 
 from ..models import (
@@ -117,8 +118,13 @@ def _verify_qstash_signature(raw_body: bytes, signature: str) -> bool:
     next_key = settings.QSTASH_NEXT_SIGNING_KEY
 
     if not current_key or not next_key:
-        logger.warning("QStash signing keys not configured — skipping signature verification")
-        return True
+        # FAIL CLOSED (P1-5). /reminders/deliver is publicly reachable (QStash
+        # calls it), so if we cannot verify the signature we must REJECT — never
+        # accept an unverified webhook that then sends SMS to a user.
+        logger.critical(
+            "QStash signing keys not configured — rejecting webhook (fail closed)"
+        )
+        return False
 
     try:
         receiver = Receiver(
@@ -343,10 +349,14 @@ async def deliver_reminder(request: Request):
         raw_body = await request.body()
         signature = request.headers.get("upstash-signature", "")
 
-        # 1. Verify QStash signature
+        # 1. Verify QStash signature — reject with 401 (returned, not raised, so
+        #    the broad `except` below cannot downgrade it to a 200).
         if not _verify_qstash_signature(raw_body, signature):
             logger.error("QStash signature verification failed — rejecting request")
-            return {"status": "rejected", "reason": "invalid_signature"}
+            return JSONResponse(
+                status_code=401,
+                content={"status": "rejected", "reason": "invalid_signature"},
+            )
 
         # 2. Parse payload
         import json
