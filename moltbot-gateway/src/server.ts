@@ -19,6 +19,7 @@ import { env, validateEnv } from "./env.js";
 import { runAgentLoop } from "./agent.js";
 import { getSession, setSessionHistory, sessionCount } from "./session.js";
 import { fetchGoogleToken } from "./oauth.js";
+import { requireServiceAuth } from "./auth.js";
 import { logError } from "./observability.js";
 
 validateEnv();
@@ -29,8 +30,13 @@ app.use(express.json({ limit: "5mb" })); // headroom for image-attached payloads
 // ─── Health ────────────────────────────────────────────────────────────
 
 app.get("/health", (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: "online",
+  // Fail the health check (→ Render rolls back the deploy) if the service key is
+  // unset: without it, requireServiceAuth 503s every /execute, and we do NOT want
+  // a deploy that silently rejects all real traffic to look healthy. Mirrors the
+  // FastAPI wrapper's agent_md_ready gate.
+  const serviceKeyReady = !!env.INTERNAL_SERVICE_KEY;
+  res.status(serviceKeyReady ? 200 : 503).json({
+    status: serviceKeyReady ? "online" : "degraded",
     service: "moltbot-gateway",
     version: "2.0.0",
     sessions: sessionCount(),
@@ -39,6 +45,7 @@ app.get("/health", (_req: Request, res: Response) => {
       fastapi: !!env.FASTAPI_URL,
       searxng: !!env.SEARXNG_URL,
       helicone: env.HELICONE_PROXY,
+      internal_key: serviceKeyReady,
     },
   });
 });
@@ -61,7 +68,7 @@ interface ExecuteBody {
   image_urls?: string[];
 }
 
-app.post("/execute", async (req: Request, res: Response) => {
+app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => {
   const requestId = randomUUID();
   const body = (req.body ?? {}) as ExecuteBody;
   const sessionId = body.session_id ?? "";
@@ -95,14 +102,13 @@ app.post("/execute", async (req: Request, res: Response) => {
   const peerKey = userId; // session per user (matches OpenClaw's per-peer scoping)
   const session = getSession(peerKey);
 
-  // Resolve Google OAuth token. Prefer caller-supplied (for FastAPI's pre-resolved path);
-  // fall back to fetching from FastAPI ourselves.
-  let googleAccessToken: string | undefined;
-  if (body.credentials?.google_access_token) {
-    googleAccessToken = body.credentials.google_access_token;
-  } else if (userId) {
-    googleAccessToken = (await fetchGoogleToken(userId)) ?? undefined;
-  }
+  // Resolve the Google OAuth token SERVER-SIDE only. A caller-supplied
+  // credentials.google_access_token is an injection vector (act as an arbitrary
+  // user with a token you bring), so it is deliberately ignored — the token is
+  // always fetched from the wrapper for the authenticated user_id (P0-3).
+  const googleAccessToken: string | undefined = userId
+    ? ((await fetchGoogleToken(userId)) ?? undefined)
+    : undefined;
 
   const ctx = {
     userId,

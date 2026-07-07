@@ -18,6 +18,7 @@ You can read it from the Render dashboard for the moltbot-fastapi service.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 from typing import List, Optional
@@ -35,9 +36,8 @@ router = APIRouter(prefix="/admin", tags=["Admin"])
 
 def _require_admin(authorization: Optional[str]) -> None:
     """
-    Auth gate. Compares the bearer token against settings.API_SECRET_KEY.
-    Constant-time comparison would be ideal but the token is provisioned by
-    Render and shared — the threat model here is misconfiguration, not timing.
+    Auth gate. Compares the bearer token against settings.API_SECRET_KEY using a
+    timing-safe comparison (CASA Ch1 / P2-2).
     """
     if not settings.API_SECRET_KEY:
         # Misconfigured deploy — fail closed. We never want admin endpoints
@@ -47,7 +47,7 @@ def _require_admin(authorization: Optional[str]) -> None:
             detail="API_SECRET_KEY not configured on server",
         )
     expected = f"Bearer {settings.API_SECRET_KEY}"
-    if authorization != expected:
+    if not hmac.compare_digest(authorization or "", expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing Authorization header",

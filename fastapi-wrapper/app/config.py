@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     
     # Security
     API_SECRET_KEY: str = os.getenv("API_SECRET_KEY", "")
+    # Shared service-to-service secret. Trusted internal callers (Peppi Laravel,
+    # the gateway) must present it in the X-Moltbot-Key header. Guarded routes
+    # fail CLOSED (503) when this is unset — never open. Must be IDENTICAL across
+    # moltbot-fastapi, the gateway, and Peppi Laravel.
+    INTERNAL_SERVICE_KEY: str = os.getenv("INTERNAL_SERVICE_KEY", "")
     ALLOWED_ORIGINS: List[str] = ["*"]
     
     # Peppi Website

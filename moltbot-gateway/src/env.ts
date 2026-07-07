@@ -18,6 +18,9 @@ export const env = {
     .split(",")
     .map((k) => k.trim())
     .filter(Boolean),
+  // Shared service-to-service secret (must match moltbot-fastapi + Peppi Laravel).
+  // Guards POST /execute and is sent on the FastAPI token-bridge fetch.
+  INTERNAL_SERVICE_KEY: process.env.INTERNAL_SERVICE_KEY ?? "",
   NODE_ENV: process.env.NODE_ENV ?? "production",
 } as const;
 

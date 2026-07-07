@@ -18,6 +18,12 @@ services:
       # API secret for authentication
       - key: API_SECRET_KEY
         generateValue: true
+      # Shared service-to-service key for internal callers (gateway, Peppi Laravel).
+      # MUST be identical across moltbot-fastapi, openclaw-gateway, and Peppi Laravel,
+      # so it is set manually (generateValue would differ per service). Guarded
+      # routes fail closed (503) if empty.
+      - key: INTERNAL_SERVICE_KEY
+        sync: false
       # Gateway URL (Anthropic SDK service — service name kept for URL stability)
       - key: MOLTBOT_GATEWAY_URL
         value: https://openclaw-gateway-dg3y.onrender.com
@@ -124,6 +130,10 @@ services:
       # FastAPI URL — OAuth token bridge + reminder tool dispatch.
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
+      # Shared service key — MUST match moltbot-fastapi's INTERNAL_SERVICE_KEY.
+      # Gateway sends it on the token-bridge fetch and requires it on /execute.
+      - key: INTERNAL_SERVICE_KEY
+        sync: false
       # Optional Helicone observability — set HELICONE_PROXY=true + HELICONE_KEY to enable.
       - key: HELICONE_PROXY
         value: "false"

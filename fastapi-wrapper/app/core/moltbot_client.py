@@ -83,10 +83,17 @@ class OpenClawClient:
             try:
                 logger.info(f"[{session_id}] Attempt {attempt}/{self.MAX_RETRIES}: Sending message")
                 
+                # Present the shared service key so the gateway's /execute gate
+                # (requireServiceAuth) admits us. Sent only when configured.
+                headers = {}
+                if settings.INTERNAL_SERVICE_KEY:
+                    headers["X-Moltbot-Key"] = settings.INTERNAL_SERVICE_KEY
+
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.post(
                         f"{self.base_url}/execute",
-                        json=payload
+                        json=payload,
+                        headers=headers,
                     )
                     
                     # Check if response is retryable

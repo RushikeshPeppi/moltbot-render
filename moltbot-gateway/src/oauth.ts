@@ -17,7 +17,12 @@ export async function fetchGoogleToken(userId: string): Promise<string | null> {
   try {
     const r = await fetch(
       `${env.FASTAPI_URL}/api/v1/oauth/google/token/${encodeURIComponent(userId)}`,
-      { signal: AbortSignal.timeout(10_000) },
+      {
+        signal: AbortSignal.timeout(10_000),
+        headers: env.INTERNAL_SERVICE_KEY
+          ? { "X-Moltbot-Key": env.INTERNAL_SERVICE_KEY }
+          : {},
+      },
     );
     if (!r.ok) {
       console.warn(`[oauth] FastAPI returned ${r.status} for user ${userId}`);
