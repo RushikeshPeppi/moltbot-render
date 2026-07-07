@@ -68,7 +68,11 @@ def call_api(message: str, tz: str, _attempt: int = 1) -> dict:
     }
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
-            resp = client.post(f"{API_URL}/execute-action", json=payload)
+            resp = client.post(
+                f"{API_URL}/execute-action",
+                json=payload,
+                headers={"X-Moltbot-Key": os.getenv("INTERNAL_SERVICE_KEY", "")},
+            )
         try:
             return resp.json()
         except json.JSONDecodeError as je:

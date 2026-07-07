@@ -8,6 +8,7 @@ Usage:
 """
 
 import json
+import os
 import time
 import argparse
 import httpx
@@ -58,7 +59,11 @@ def call_api(message: str, tz: str, image_urls=None, num_media=0, _attempt: int 
     }
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
-            resp = client.post(f"{API_URL}/execute-action", json=payload)
+            resp = client.post(
+                f"{API_URL}/execute-action",
+                json=payload,
+                headers={"X-Moltbot-Key": os.getenv("INTERNAL_SERVICE_KEY", "")},
+            )
         try:
             return resp.json()
         except json.JSONDecodeError as je:
