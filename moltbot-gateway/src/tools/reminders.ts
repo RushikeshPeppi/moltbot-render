@@ -11,6 +11,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { createHash } from "node:crypto";
 import type { ToolContext } from "./index.js";
+import { serviceKeyHeaders } from "../auth.js";
 
 // ─── Schemas ───────────────────────────────────────────────────────────
 
@@ -105,6 +106,7 @@ export async function create(
     headers: {
       "Content-Type": "application/json",
       "X-Idempotency-Key": idem,
+      ...serviceKeyHeaders(),
     },
     body: JSON.stringify({
       user_id: ctx.userId,
@@ -125,7 +127,7 @@ export async function create(
 export async function list(_input: unknown, ctx: ToolContext): Promise<Array<{ id: number; message: string; trigger_at: string; recurrence: string }>> {
   const resp = await fetch(
     `${ctx.fastApiUrl}/api/v1/reminders/list/${encodeURIComponent(ctx.userId)}?status=pending`,
-    { signal: AbortSignal.timeout(10_000) },
+    { signal: AbortSignal.timeout(10_000), headers: serviceKeyHeaders() },
   );
   if (!resp.ok) throw new Error(`reminder list failed (HTTP ${resp.status})`);
   const j = (await resp.json()) as { data?: { reminders?: Array<{ id: number; message: string; trigger_at: string; recurrence: string }> } };
@@ -146,6 +148,7 @@ export async function cancel(input: { reminder_id: number }, ctx: ToolContext): 
     headers: {
       "Content-Type": "application/json",
       "X-Idempotency-Key": idem,
+      ...serviceKeyHeaders(),
     },
     body: JSON.stringify({ user_id: ctx.userId, reminder_id: input.reminder_id }),
     signal: AbortSignal.timeout(10_000),
@@ -182,6 +185,7 @@ export async function update(
     headers: {
       "Content-Type": "application/json",
       "X-Idempotency-Key": idem,
+      ...serviceKeyHeaders(),
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10_000),

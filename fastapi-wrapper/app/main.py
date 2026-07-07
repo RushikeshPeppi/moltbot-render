@@ -2,11 +2,12 @@
 Main FastAPI application with lifespan management.
 """
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
 from .config import settings
+from .core.service_auth import require_service_auth
 from .api import routes
 from .api import oauth
 from .api import google_services
@@ -188,13 +189,25 @@ from .utils.idempotency import IdempotencyMiddleware
 app.add_middleware(IdempotencyMiddleware)
 
 
-# Include routes
-app.include_router(routes.router, prefix=f"/api/{settings.API_VERSION}")
+# Include routes.
+#
+# Service-to-service auth (require_service_auth, fail-closed) protects every route
+# that touches a user's tokens / mailbox / calendar / credentials / PII. It is
+# applied at the router level for fully-internal routers, and per-route inside
+# oauth.py / reminders.py so their PUBLIC entrypoints stay reachable:
+#   - oauth.py     → /oauth/google/callback stays public (Google redirects to it)
+#   - reminders.py → /reminders/deliver stays public (QStash webhook; authed by
+#                    its own HMAC signature, not the service key)
+#   - admin.py     → keeps its own API_SECRET_KEY gate (_require_admin)
+# NOTE: /api/v1/health (routes.py) is gated too; Render's health check uses the
+# top-level /health (defined below), which stays public.
+_svc = [Depends(require_service_auth)]
+app.include_router(routes.router, prefix=f"/api/{settings.API_VERSION}", dependencies=_svc)
 app.include_router(oauth.router, prefix=f"/api/{settings.API_VERSION}")
-app.include_router(google_services.router, prefix=f"/api/{settings.API_VERSION}")
+app.include_router(google_services.router, prefix=f"/api/{settings.API_VERSION}", dependencies=_svc)
 app.include_router(reminders.router, prefix=f"/api/{settings.API_VERSION}")
-app.include_router(outbound.router, prefix=f"/api/{settings.API_VERSION}")
-app.include_router(playground.router, prefix=f"/api/{settings.API_VERSION}")
+app.include_router(outbound.router, prefix=f"/api/{settings.API_VERSION}", dependencies=_svc)
+app.include_router(playground.router, prefix=f"/api/{settings.API_VERSION}", dependencies=_svc)
 app.include_router(admin.router, prefix=f"/api/{settings.API_VERSION}")
 
 

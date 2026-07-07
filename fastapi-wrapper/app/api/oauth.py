@@ -14,11 +14,12 @@ import logging
 import secrets
 from typing import Optional
 from datetime import datetime
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 import httpx
 
 from ..config import settings
+from ..core.service_auth import require_service_auth
 from ..core.credential_manager import CredentialManager
 from ..core.database import db
 from ..core.redis_client import redis_client
@@ -61,7 +62,7 @@ def create_error_response(
     )
 
 
-@router.get("/google/init")
+@router.get("/google/init", dependencies=[Depends(require_service_auth)])
 async def google_oauth_init(
     user_id: str = Query(..., description="Peppi user ID"),
     redirect_uri: Optional[str] = Query(None, description="Where to redirect after OAuth completes")
@@ -319,7 +320,7 @@ async def google_oauth_callback(
         )
 
 
-@router.get("/google/status/{user_id}")
+@router.get("/google/status/{user_id}", dependencies=[Depends(require_service_auth)])
 async def google_oauth_status(user_id: str):
     """
     Check if a user has connected their Google account.
@@ -349,7 +350,7 @@ async def google_oauth_status(user_id: str):
         )
 
 
-@router.delete("/google/disconnect/{user_id}")
+@router.delete("/google/disconnect/{user_id}", dependencies=[Depends(require_service_auth)])
 async def google_oauth_disconnect(user_id: str):
     """
     Disconnect (revoke) a user's Google connection.
@@ -391,7 +392,7 @@ async def google_oauth_disconnect(user_id: str):
         )
 
 
-@router.post("/google/refresh/{user_id}")
+@router.post("/google/refresh/{user_id}", dependencies=[Depends(require_service_auth)])
 async def google_oauth_refresh(user_id: str):
     """
     Manually refresh a user's Google access token.
@@ -425,7 +426,7 @@ async def google_oauth_refresh(user_id: str):
         )
 
 
-@router.get("/google/token/{user_id}")
+@router.get("/google/token/{user_id}", dependencies=[Depends(require_service_auth)])
 async def google_oauth_get_token(user_id: str):
     """
     Get a valid Google access token for a user.

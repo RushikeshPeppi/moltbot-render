@@ -11,6 +11,7 @@
  */
 
 import { env } from "./env.js";
+import { serviceKeyHeaders } from "./auth.js";
 
 export async function fetchGoogleToken(userId: string): Promise<string | null> {
   if (!userId) return null;
@@ -19,9 +20,7 @@ export async function fetchGoogleToken(userId: string): Promise<string | null> {
       `${env.FASTAPI_URL}/api/v1/oauth/google/token/${encodeURIComponent(userId)}`,
       {
         signal: AbortSignal.timeout(10_000),
-        headers: env.INTERNAL_SERVICE_KEY
-          ? { "X-Moltbot-Key": env.INTERNAL_SERVICE_KEY }
-          : {},
+        headers: serviceKeyHeaders(),
       },
     );
     if (!r.ok) {

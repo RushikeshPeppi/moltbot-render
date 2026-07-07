@@ -23,6 +23,16 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+/**
+ * Header map for the gateway's own OUTBOUND calls to the FastAPI wrapper
+ * (token bridge + reminder tools). Wrapper routes now require this key. Empty
+ * object when unset — the wrapper then fails closed, so a missing key surfaces
+ * as a 401/503 rather than a silent bypass.
+ */
+export function serviceKeyHeaders(): Record<string, string> {
+  return env.INTERNAL_SERVICE_KEY ? { "X-Moltbot-Key": env.INTERNAL_SERVICE_KEY } : {};
+}
+
 export function requireServiceAuth(
   req: Request,
   res: Response,

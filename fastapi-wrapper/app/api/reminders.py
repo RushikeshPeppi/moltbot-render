@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException
 from qstash import Receiver
 
 from ..models import (
@@ -32,6 +32,7 @@ from ..models import (
     error_response,
     ResponseCode,
 )
+from ..core.service_auth import require_service_auth
 from ..core.database import db
 from ..core.redis_client import redis_client
 from ..services.qstash_service import qstash_service
@@ -140,6 +141,7 @@ def _verify_qstash_signature(raw_body: bytes, signature: str) -> bool:
 
 @router.post(
     "/reminders/create",
+    dependencies=[Depends(require_service_auth)],
     response_model=BaseResponse,
     summary="Create a new reminder",
     description="Create a one-time or recurring reminder. The reminder is saved to the database "
@@ -538,6 +540,7 @@ async def _create_delivery_audit_log(payload: DeliverReminderPayload) -> None:
 
 @router.get(
     "/reminders/list/{user_id}",
+    dependencies=[Depends(require_service_auth)],
     response_model=BaseResponse,
     summary="List user's reminders",
     description="Get all reminders for a user, optionally filtered by status.",
@@ -572,6 +575,7 @@ async def list_reminders(user_id: str, status: Optional[str] = None):
 
 @router.post(
     "/reminders/cancel",
+    dependencies=[Depends(require_service_auth)],
     response_model=BaseResponse,
     summary="Cancel a reminder",
     description="Cancel a pending reminder. Removes the QStash scheduled message/schedule "
@@ -637,6 +641,7 @@ async def cancel_reminder(request: CancelReminderRequest):
 
 @router.post(
     "/reminders/update",
+    dependencies=[Depends(require_service_auth)],
     response_model=BaseResponse,
     summary="Update an existing reminder",
     description="Update reminder message, time, or recurrence. Cancels old QStash schedule "
