@@ -15,6 +15,7 @@ from datetime import datetime
 
 from ..core.database import db
 from ..core.redis_client import redis_client
+from ..core.redirect_validation import is_allowed_redirect
 from ..config import settings
 from ..models import ResponseCode
 
@@ -98,6 +99,18 @@ async def create_playground_user(request: CreatePlaygroundUserRequest):
     3. Returns user_id and OAuth authorization URL if Google OAuth is configured
     """
     try:
+        # CASA 3.2.2 — reject an off-allowlist post-callback redirect_uri before
+        # creating anything (the same open-redirect chokepoint as oauth init).
+        if request.redirect_uri and not is_allowed_redirect(request.redirect_uri):
+            return JSONResponse(
+                status_code=400,
+                content=create_response(
+                    code=ResponseCode.BAD_REQUEST,
+                    message="redirect_uri is not allow-listed",
+                    error="INVALID_REDIRECT_URI",
+                ),
+            )
+
         # Generate alphanumeric user_id
         new_user_id = await db.generate_user_id()
 

@@ -14,12 +14,14 @@ import logging
 import secrets
 from typing import Optional
 from datetime import datetime
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 import httpx
 
 from ..config import settings
 from ..core.service_auth import require_service_auth
+from ..core.redirect_validation import is_allowed_redirect, safe_redirect_base
 from ..core.credential_manager import CredentialManager
 from ..core.database import db
 from ..core.redis_client import redis_client
@@ -83,7 +85,18 @@ async def google_oauth_init(
                 error="OAUTH_NOT_CONFIGURED",
                 exception=None
             )
-        
+
+        # CASA 3.2.2 — never honor an arbitrary post-callback redirect_uri. Reject
+        # anything not on the allow-list up front (None → the safe default below).
+        if redirect_uri and not is_allowed_redirect(redirect_uri):
+            logger.warning(f"OAuth init rejected off-allowlist redirect_uri for user {user_id}")
+            return create_error_response(
+                code=ResponseCode.BAD_REQUEST,
+                message="redirect_uri is not allow-listed",
+                error="INVALID_REDIRECT_URI",
+                exception=None
+            )
+
         # Generate state for CSRF protection
         state = secrets.token_urlsafe(32)
         
@@ -188,8 +201,12 @@ async def google_oauth_callback(
                 url=f"{default_redirect}/clawdbot/oauth?status=error&error=INVALID_USER_ID"
             )
 
-        redirect_uri = state_data.get("redirect_uri", default_redirect)
-        
+        # CASA 3.2.2 — re-validate the stored redirect_uri (defense-in-depth against a
+        # stale/tampered state blob); fall back to the safe default if not allow-listed.
+        redirect_uri = safe_redirect_base(
+            state_data.get("redirect_uri") or default_redirect, default_redirect
+        )
+
         # Exchange code for tokens with retry logic
         tokens = None
         last_error = None
@@ -252,7 +269,7 @@ async def google_oauth_callback(
         except Exception as e:
             logger.error(f"Exception storing tokens for user {user_id}: {e}")
             return RedirectResponse(
-                url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_ERROR&details={str(e)[:100]}"
+                url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_ERROR"
             )
 
         # Fetch Google profile info and upsert user
@@ -310,7 +327,7 @@ async def google_oauth_callback(
 
         separator = "&" if "?" in base_url else "?"
         return RedirectResponse(
-            url=f"{base_url}{separator}status=success&service=google&user_id={user_id}"
+            url=f"{base_url}{separator}status=success&service=google&user_id={quote(user_id, safe='')}"
         )
         
     except Exception as e:

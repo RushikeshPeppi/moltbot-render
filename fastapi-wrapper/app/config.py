@@ -56,7 +56,14 @@ class Settings(BaseSettings):
     # moltbot-fastapi, the gateway, and Peppi Laravel.
     INTERNAL_SERVICE_KEY: str = os.getenv("INTERNAL_SERVICE_KEY", "")
     ALLOWED_ORIGINS: List[str] = ["*"]
-    
+
+    # OAuth open-redirect allow-list (CASA 3.2.2). Comma-separated EXACT origins
+    # (scheme://host[:port]) we are willing to 302 a user back to after the OAuth
+    # callback. When set it REPLACES the built-in Peppi default set in
+    # core/redirect_validation.py; empty = use that default. PEPPI_WEBSITE_URL's
+    # origin is always trusted regardless.
+    OAUTH_ALLOWED_REDIRECT_ORIGINS: str = os.getenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "")
+
     # Peppi Website
     PEPPI_WEBSITE_URL: str = os.getenv("PEPPI_WEBSITE_URL", "https://peppi.app")
     
