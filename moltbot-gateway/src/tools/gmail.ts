@@ -8,10 +8,9 @@
  * gmail_mark: read/unread/starred/important via /messages/{id}/modify.
  */
 
-import { lookup } from "node:dns/promises";
-import net from "node:net";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext } from "./index.js";
+import { fetchSafely } from "../net/ssrf.js";
 
 const GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me";
 
@@ -147,7 +146,7 @@ export async function list(input: { query?: string; max_results?: number }, ctx:
   const details = await Promise.all(
     ids.map(async (m) => {
       const r = await fetch(
-        `${GMAIL_BASE}/messages/${m.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+        `${GMAIL_BASE}/messages/${encodeURIComponent(m.id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
         {
           headers: { Authorization: `Bearer ${ctx.googleAccessToken}` },
           signal: AbortSignal.timeout(10_000),
@@ -178,7 +177,7 @@ export async function reply(input: { message_id: string; body: string; attach_im
   requireToken(ctx);
   // Fetch thread + headers from the original message.
   const origResp = await fetch(
-    `${GMAIL_BASE}/messages/${input.message_id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID`,
+    `${GMAIL_BASE}/messages/${encodeURIComponent(input.message_id)}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Message-ID`,
     {
       headers: { Authorization: `Bearer ${ctx.googleAccessToken}` },
       signal: AbortSignal.timeout(15_000),
@@ -236,7 +235,7 @@ export async function mark(input: { message_id: string; action: "read" | "unread
   };
   const lbls = labelMap[input.action];
   if (!lbls) throw new Error(`unknown action: ${input.action}`);
-  const resp = await fetch(`${GMAIL_BASE}/messages/${input.message_id}/modify`, {
+  const resp = await fetch(`${GMAIL_BASE}/messages/${encodeURIComponent(input.message_id)}/modify`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${ctx.googleAccessToken}`,
@@ -308,83 +307,6 @@ function buildMime(opts: {
   return [...headerLines, `Content-Type: multipart/mixed; boundary="${boundary}"`, "", ...parts].join("\r\n");
 }
 
-const MAX_IMAGE_REDIRECTS = 3;
-
-/**
- * Classify an IP literal as non-public (loopback / private / link-local / ULA /
- * unspecified / CGNAT). Anything we can't parse is treated as unsafe.
- */
-function isNonPublicAddress(ip: string): boolean {
-  if (net.isIPv4(ip)) {
-    const p = ip.split(".").map(Number);
-    if (p[0] === 0) return true; // 0.0.0.0/8
-    if (p[0] === 10) return true; // 10/8
-    if (p[0] === 127) return true; // loopback
-    if (p[0] === 169 && p[1] === 254) return true; // link-local 169.254/16
-    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true; // 172.16/12
-    if (p[0] === 192 && p[1] === 168) return true; // 192.168/16
-    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true; // CGNAT 100.64/10
-    return false;
-  }
-  if (net.isIPv6(ip)) {
-    const lc = ip.toLowerCase();
-    if (lc === "::1" || lc === "::") return true; // loopback / unspecified
-    const mapped = lc.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-    if (mapped) return isNonPublicAddress(mapped[1]); // IPv4-mapped
-    if (lc.startsWith("fc") || lc.startsWith("fd")) return true; // ULA fc00::/7
-    if (/^fe[89ab]/.test(lc)) return true; // link-local fe80::/10
-    return false;
-  }
-  return true; // unrecognized format → reject
-}
-
-/**
- * SSRF guard: require https and reject any URL whose host resolves to a
- * non-public address. Run on the initial URL AND every redirect Location.
- * Residual: DNS-rebinding between this check and the fetch is not closed here
- * (would require IP-pinned connects + manual SNI); the practical SSRF vectors
- * — direct internal URLs, redirect-to-internal, cloud metadata 169.254.169.254
- * — are blocked.
- */
-async function assertSafePublicUrl(raw: string): Promise<void> {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    throw new Error("invalid image URL");
-  }
-  if (u.protocol !== "https:") throw new Error("image URL must use https");
-  const host = u.hostname.toLowerCase().replace(/\.$/, "").replace(/^\[|\]$/g, "");
-  if (net.isIP(host)) {
-    if (isNonPublicAddress(host)) throw new Error("image URL points to a non-public address");
-    return;
-  }
-  const addrs = await lookup(host, { all: true });
-  if (addrs.length === 0) throw new Error("image host did not resolve");
-  for (const a of addrs) {
-    if (isNonPublicAddress(a.address)) {
-      throw new Error("image URL resolves to a non-public address");
-    }
-  }
-}
-
-/** Fetch an image with redirects handled manually so each hop is re-validated. */
-async function fetchImageSafely(startUrl: string): Promise<Response> {
-  let url = startUrl;
-  for (let hop = 0; hop <= MAX_IMAGE_REDIRECTS; hop++) {
-    await assertSafePublicUrl(url);
-    const resp = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15_000) });
-    if (resp.status >= 300 && resp.status < 400) {
-      const loc = resp.headers.get("location");
-      if (!loc) throw new Error("image redirect missing Location");
-      url = new URL(loc, url).toString();
-      continue;
-    }
-    return resp;
-  }
-  throw new Error("too many redirects fetching image");
-}
-
 /**
  * Fetch the bytes for each image URL and return MIME-ready base64 attachments.
  * Throws on an expired/unreachable URL so the model can tell the user to resend.
@@ -399,7 +321,7 @@ async function fetchAttachments(urls: string[]): Promise<Attachment[]> {
   let totalBytes = 0;
   for (let i = 0; i < urls.length; i++) {
     const url = urls[i];
-    const resp = await fetchImageSafely(url);
+    const resp = await fetchSafely(url);
     if (!resp.ok) {
       throw new Error(
         resp.status === 404 || resp.status === 410

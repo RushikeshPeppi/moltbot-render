@@ -13,6 +13,7 @@
 
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext } from "./index.js";
+import { fetchSafely } from "../net/ssrf.js";
 
 export const IMAGE_HANDLE_TOOL: Anthropic.Tool = {
   name: "image_handle",
@@ -38,11 +39,9 @@ export async function handle(input: { image_url: string }, _ctx: ToolContext): P
   reason?: string;
 }> {
   try {
-    const resp = await fetch(input.image_url, {
-      method: "HEAD",
-      redirect: "follow",
-      signal: AbortSignal.timeout(8_000),
-    });
+    // SSRF guard: https-only, reject non-public hosts, re-validate every redirect
+    // hop (shared with the Gmail attach path — see net/ssrf.ts).
+    const resp = await fetchSafely(input.image_url, { method: "HEAD", timeoutMs: 8_000 });
     if (!resp.ok) {
       return {
         ok: false,
