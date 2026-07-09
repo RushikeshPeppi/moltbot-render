@@ -66,6 +66,10 @@ def _build_allowlist() -> frozenset:
             "https://peppi.app",
             "https://www.peppi.app",
             "https://peppi-playground.onrender.com",
+            # TEMP dev-testing origin — local Peppi against prod moltbot OAuth.
+            # REMOVE before the final phase / paid CASA lab scan (re-opens CWE-601
+            # redirect-to-localhost). Tracked in CASA/moltbot/PROGRESS.md §2 Phase 5.
+            "http://127.0.0.1:8000",
         }
 
     site_origin = _origin(settings.PEPPI_WEBSITE_URL or "")
