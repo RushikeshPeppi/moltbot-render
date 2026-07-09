@@ -66,6 +66,8 @@ def _build_allowlist() -> frozenset:
             "https://peppi.app",
             "https://www.peppi.app",
             "https://peppi-playground.onrender.com",
+            # Staging environment (Dashtechs) — used for pre-prod OAuth testing.
+            "https://stagingpeppi.dashtechs.com",
             # TEMP dev-testing origin — local Peppi against prod moltbot OAuth.
             # REMOVE before the final phase / paid CASA lab scan (re-opens CWE-601
             # redirect-to-localhost). Tracked in CASA/moltbot/PROGRESS.md §2 Phase 5.
