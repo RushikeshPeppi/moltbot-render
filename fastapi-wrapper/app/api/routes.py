@@ -244,7 +244,30 @@ async def execute_action(request: ExecuteActionRequest):
                 # Non-fatal — skills that need city will ask the user.
                 logger.warning(f"Could not enrich user_context with city for {user_id}: {e}")
 
-        logger.debug(f"Retrieved user context for {user_id}: {user_context}")
+        # Enrich user_context with identity names. REQUEST-ONLY, no DB fallback
+        # (unlike city): tbl_clawdbot_users.name gets overwritten by the Google
+        # OAuth callback with the Google profile display name — or a synthetic
+        # "User usr_xxx" placeholder — so falling back to it risks the agent
+        # signing third-party emails with a wrong identity, which is exactly
+        # the bug this field exists to fix. Absent names are non-fatal: the
+        # agent simply doesn't claim a name.
+        #   bot_name  — the name the user gave their buddy; the agent
+        #               speaks/signs as this instead of an internal codename.
+        #   user_name — the user's own name, for "acting on behalf of".
+        request_buddy_name = (request.buddy_name or "").strip()
+        if request_buddy_name:
+            user_context["bot_name"] = request_buddy_name
+        request_user_name = (request.user_name or "").strip()
+        if request_user_name:
+            user_context["user_name"] = request_user_name
+
+        # Mask identity names — real user/buddy names are PII and must not land
+        # in logs (CASA posture).
+        logger.debug(
+            "Retrieved user context for %s: %s",
+            user_id,
+            {k: ("***" if k in ("bot_name", "user_name") and v else v) for k, v in user_context.items()},
+        )
         
         # 4. Log action start (include image count if present)
         img_prefix = f"[{request.num_media} image(s)] " if request.num_media else ""

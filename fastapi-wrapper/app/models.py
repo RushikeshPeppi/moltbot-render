@@ -74,6 +74,24 @@ class ExecuteActionRequest(BaseModel):
             "If omitted, falls back to tbl_clawdbot_users.city (playground path)."
         ),
     )
+    buddy_name: Optional[str] = Field(
+        None,
+        description=(
+            "Name the user gave their buddy (tbl_buddies.name in Peppi). "
+            "The agent speaks/signs as this name instead of an internal codename. "
+            "Peppi backend should pass this on every call. If omitted, the agent "
+            "uses no name (it never invents one)."
+        ),
+    )
+    user_name: Optional[str] = Field(
+        None,
+        description=(
+            "The user's own name (tbl_users.name in Peppi). Used when the agent "
+            "acts on the user's behalf toward third parties (e.g. emails). "
+            "Request-only, no DB fallback (tbl_clawdbot_users.name can hold a "
+            "Google display name or placeholder — wrong identity risk)."
+        ),
+    )
 
     @field_validator("message", mode="before")
     @classmethod

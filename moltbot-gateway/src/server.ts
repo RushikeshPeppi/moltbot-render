@@ -68,6 +68,28 @@ interface ExecuteBody {
   image_urls?: string[];
 }
 
+// Names and city are end-user-controlled text that lands inside the single-line
+// context anchor, so they must not be able to break out of it or forge its
+// segments: strip the anchor's own delimiters ([ ] ; and the key separator :)
+// and newlines, collapse whitespace, cap length (names: 50, matching Peppi's
+// max:50 buddy validation; city gets 80 for "City, Long Country Name" strings).
+function sanitizeName(v: unknown, max = 50): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const clean = v
+    .replace(/[[\];:\r\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, max)
+    // The 50-unit slice can split an emoji's surrogate pair (Laravel's max:50
+    // counts an emoji as 1 char, UTF-16 as 2), and JSON can smuggle lone
+    // surrogates directly — either way an ill-formed string 400s at the
+    // Anthropic API on EVERY call for this user until they rename the buddy.
+    // Drop lone surrogate halves (valid pairs are untouched).
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
+    .trim();
+  return clean || undefined;
+}
+
 app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => {
   const requestId = randomUUID();
   const body = (req.body ?? {}) as ExecuteBody;
@@ -114,7 +136,9 @@ app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => 
     userId,
     googleAccessToken,
     timezone: body.timezone ?? "UTC",
-    city: body.user_context?.city,
+    city: sanitizeName(body.user_context?.city, 80),
+    botName: sanitizeName(body.user_context?.bot_name),
+    userName: sanitizeName(body.user_context?.user_name),
     fastApiUrl: env.FASTAPI_URL,
     searxngUrl: env.SEARXNG_URL,
     tavilyApiKeys: env.TAVILY_API_KEYS,

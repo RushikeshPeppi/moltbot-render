@@ -25,6 +25,14 @@ export interface ToolContext {
   timezone: string;
   city?: string;
   /**
+   * The name the user gave their buddy (Peppi tbl_buddies.name), sanitized at
+   * the /execute boundary. Surfaced in the context anchor so the agent
+   * speaks/signs as this name. Absent → the agent claims no name.
+   */
+  botName?: string;
+  /** The user's own name, for acting on their behalf (e.g. email sign-offs). */
+  userName?: string;
+  /**
    * Image URLs attached to the CURRENT turn (MMS / peppi.ai uploads). The model
    * never sees these as text — they're injected as vision blocks — so attachment
    * is gated by a boolean tool param and the URLs are pulled from here, not echoed

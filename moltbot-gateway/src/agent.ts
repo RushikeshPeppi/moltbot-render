@@ -130,9 +130,12 @@ function shouldEnableThinking(userText: string): boolean {
 }
 
 function buildContextAnchor(ctx: ToolContext): string {
-  // Compose a single-line anchor with current local time + city. ~30 tokens,
-  // sits in the fresh user turn, never enters the cached prefix.
-  // Format example: "[now: 2026-05-06 17:30 Asia/Kolkata; city: Pune]"
+  // Compose a single-line anchor with current local time + city + identity
+  // names. ~40 tokens, sits in the fresh user turn, never enters the cached
+  // prefix — so per-user names are cache-safe here (they would NOT be in the
+  // shared 1h-cached system prompt).
+  // Format example:
+  //   "[now: 2026-05-06 17:30 Asia/Kolkata; city: Pune; you: Ziggy; user: Marvin]"
   const tz = ctx.timezone || "UTC";
   let local = "";
   try {
@@ -155,7 +158,9 @@ function buildContextAnchor(ctx: ToolContext): string {
     local = new Date().toISOString();
   }
   const cityPart = ctx.city ? `; city: ${ctx.city}` : "";
-  return `[now: ${local} ${tz}${cityPart}]`;
+  const youPart = ctx.botName ? `; you: ${ctx.botName}` : "";
+  const userPart = ctx.userName ? `; user: ${ctx.userName}` : "";
+  return `[now: ${local} ${tz}${cityPart}${youPart}${userPart}]`;
 }
 
 // Load agent.md once at import-time. ESM top-level await is fine in Node 22.
