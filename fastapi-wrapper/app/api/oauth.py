@@ -14,14 +14,14 @@ import logging
 import secrets
 from typing import Optional
 from datetime import datetime
-from urllib.parse import quote
+from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 import httpx
 
 from ..config import settings
 from ..core.service_auth import require_service_auth
-from ..core.redirect_validation import is_allowed_redirect, safe_redirect_base
+from ..core.redirect_validation import is_allowed_redirect, origin_of, safe_redirect_base
 from ..core.credential_manager import CredentialManager
 from ..core.database import db
 from ..core.redis_client import redis_client
@@ -64,10 +64,36 @@ def create_error_response(
     )
 
 
+def build_peppi_redirect(base: str, default_redirect: str, params: dict) -> str:
+    """Build the 302 target back to the caller (Peppi website / playground).
+
+    A bare website origin (the safe default) gets the legacy /clawdbot/oauth page
+    appended; an explicit callback URL (Peppi's /auth/google/callback, the
+    playground's /oauth-callback) is used as-is. None-valued params are omitted —
+    in particular `app_state` is only echoed when one was stored for this flow
+    (CASA 3.2.2: Peppi validates it against the session nonce on success AND error).
+    """
+    if base == default_redirect and not any(
+        p in base for p in ("/oauth-callback", "/callback")
+    ):
+        base = f"{base}/clawdbot/oauth"
+    query = urlencode({k: v for k, v in params.items() if v is not None})
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}{query}"
+
+
 @router.get("/google/init", dependencies=[Depends(require_service_auth)])
 async def google_oauth_init(
     user_id: str = Query(..., description="Peppi user ID"),
-    redirect_uri: Optional[str] = Query(None, description="Where to redirect after OAuth completes")
+    redirect_uri: Optional[str] = Query(None, description="Where to redirect after OAuth completes"),
+    app_state: Optional[str] = Query(
+        None,
+        description=(
+            "Opaque first-party CSRF nonce minted by the caller (Peppi). Stored "
+            "verbatim and echoed back on the post-callback redirect — never sent "
+            "to Google, never parsed (CASA 3.2.2)."
+        ),
+    )
 ):
     """
     Initialize Google OAuth flow.
@@ -89,7 +115,12 @@ async def google_oauth_init(
         # CASA 3.2.2 — never honor an arbitrary post-callback redirect_uri. Reject
         # anything not on the allow-list up front (None → the safe default below).
         if redirect_uri and not is_allowed_redirect(redirect_uri):
-            logger.warning(f"OAuth init rejected off-allowlist redirect_uri for user {user_id}")
+            # Log only the origin (never the full URL) so a misconfigured caller
+            # (e.g. Peppi's GOOGLE_REDIRECT_URI left relative) is diagnosable.
+            logger.warning(
+                f"OAuth init rejected off-allowlist redirect_uri "
+                f"(origin={origin_of(redirect_uri)!r}) for user {user_id}"
+            )
             return create_error_response(
                 code=ResponseCode.BAD_REQUEST,
                 message="redirect_uri is not allow-listed",
@@ -99,11 +130,15 @@ async def google_oauth_init(
 
         # Generate state for CSRF protection
         state = secrets.token_urlsafe(32)
-        
+
         # Store state in Redis with 10 minute expiration
         state_data = {
             "user_id": user_id,
-            "redirect_uri": redirect_uri or settings.PEPPI_WEBSITE_URL
+            "redirect_uri": redirect_uri or settings.PEPPI_WEBSITE_URL,
+            # Opaque Peppi-side CSRF nonce, echoed back verbatim on the final
+            # redirect (success and error). Empty string is treated as absent so
+            # the echo is omitted entirely rather than sent as `app_state=`.
+            "app_state": app_state or None
         }
         
         # Store OAuth state in Redis
@@ -112,10 +147,18 @@ async def google_oauth_init(
             state_data,
             ttl=600  # 10 minutes
         )
-        
+
         if not stored:
-            # Fallback: in-memory (not recommended for production)
-            logger.warning("Redis unavailable, using in-memory state storage")
+            # Fail closed: without the stored state the callback can only ever
+            # end in INVALID_STATE, so sending the user to Google's consent
+            # screen would burn a full flow for a guaranteed failure.
+            logger.error("OAuth init: failed to store state in Redis")
+            return create_error_response(
+                code=ResponseCode.INTERNAL_ERROR,
+                message="Failed to persist OAuth state",
+                error="STATE_STORAGE_FAILED",
+                exception=None
+            )
         
         # Build authorization URL
         scopes = " ".join(settings.GOOGLE_SCOPES)
@@ -165,47 +208,95 @@ async def google_oauth_callback(
     """
     # Default redirect for errors
     default_redirect = settings.PEPPI_WEBSITE_URL or "https://peppi.app"
-    
-    # Handle Google errors
-    if error:
-        logger.error(f"OAuth error from Google: {error}")
+    # Resolved as soon as the state blob is loaded; the except handler below uses
+    # whatever was resolved by the time of the failure.
+    redirect_uri = default_redirect
+    app_state = None
+
+    def peppi_redirect(base: str, params: dict) -> RedirectResponse:
         return RedirectResponse(
-            url=f"{default_redirect}/clawdbot/oauth?status=error&error=GOOGLE_DENIED"
+            url=build_peppi_redirect(base, default_redirect, params)
         )
-    
+
+    async def recover_and_burn_state() -> None:
+        """On early-exit paths, recover the stored redirect_uri + app_state from
+        the state blob (so Peppi can validate the origin and clear its session
+        nonce even on failure — CASA 3.2.2) and burn the state (single-use)."""
+        nonlocal redirect_uri, app_state
+        if not state:
+            return
+        try:
+            state_data = await redis_client.get(f"oauth_state:{state}")
+            if state_data:
+                await redis_client.delete(f"oauth_state:{state}")
+                redirect_uri = safe_redirect_base(
+                    state_data.get("redirect_uri") or default_redirect,
+                    default_redirect,
+                )
+                app_state = state_data.get("app_state")
+        except Exception as e:
+            logger.error(f"Failed to load state on early-exit path: {e}")
+
+    # Handle Google errors (user declined consent, etc.). Google echoes our
+    # `state` on error redirects too — recover the blob so the app_state echo
+    # reaches Peppi on the error path as well.
+    if error:
+        # repr + truncate: `error` is attacker-controlled input on a public
+        # endpoint — never interpolate it raw (log-line injection, CWE-117).
+        logger.error("OAuth error from Google: %r", (error or "")[:64])
+        await recover_and_burn_state()
+        return peppi_redirect(redirect_uri, {
+            "status": "error",
+            "error": "GOOGLE_DENIED",
+            "app_state": app_state,
+        })
+
     # Validate required parameters
     if not code or not state:
         logger.error("Missing code or state parameter")
-        return RedirectResponse(
-            url=f"{default_redirect}/clawdbot/oauth?status=error&error=INVALID_REQUEST"
-        )
-    
+        await recover_and_burn_state()
+        return peppi_redirect(redirect_uri, {
+            "status": "error",
+            "error": "INVALID_REQUEST",
+            "app_state": app_state,
+        })
+
     try:
         # Get state data from Redis
         state_data = await redis_client.get(f"oauth_state:{state}")
-        
+
         if not state_data:
-            logger.error(f"Invalid or expired state: {state}")
-            return RedirectResponse(
-                url=f"{default_redirect}/clawdbot/oauth?status=error&error=INVALID_STATE"
-            )
-        
+            # Don't print the state value — attacker-controlled on a public
+            # endpoint, and main.py deliberately redacts it from query logs.
+            logger.error("Invalid or expired OAuth state (not found in Redis)")
+            return peppi_redirect(default_redirect, {
+                "status": "error",
+                "error": "INVALID_STATE",
+            })
+
         # Delete state (one-time use)
         await redis_client.delete(f"oauth_state:{state}")
 
-        # Extract user_id
-        user_id = str(state_data.get("user_id", ""))
-        if not user_id:
-            logger.error(f"Missing user_id in state data: {state_data}")
-            return RedirectResponse(
-                url=f"{default_redirect}/clawdbot/oauth?status=error&error=INVALID_USER_ID"
-            )
+        # Opaque Peppi CSRF nonce — echoed verbatim on every outcome below.
+        app_state = state_data.get("app_state")
 
         # CASA 3.2.2 — re-validate the stored redirect_uri (defense-in-depth against a
         # stale/tampered state blob); fall back to the safe default if not allow-listed.
         redirect_uri = safe_redirect_base(
             state_data.get("redirect_uri") or default_redirect, default_redirect
         )
+
+        # Extract user_id
+        user_id = str(state_data.get("user_id", ""))
+        if not user_id:
+            # Log keys only — the blob carries app_state (a live CSRF nonce)
+            # and the redirect_uri; neither belongs in logs.
+            logger.error(f"Missing user_id in state data (keys={list(state_data.keys())})")
+            return peppi_redirect(redirect_uri, {
+                "status": "error",
+                "error": "INVALID_USER_ID",
+                "app_state": app_state,
+            })
 
         # Exchange code for tokens with retry logic
         tokens = None
@@ -242,9 +333,11 @@ async def google_oauth_callback(
         
         if not tokens:
             logger.error(f"Token exchange failed after retries: {last_error}")
-            return RedirectResponse(
-                url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_EXCHANGE_FAILED"
-            )
+            return peppi_redirect(redirect_uri, {
+                "status": "error",
+                "error": "TOKEN_EXCHANGE_FAILED",
+                "app_state": app_state,
+            })
         
         # Store tokens
         try:
@@ -263,14 +356,18 @@ async def google_oauth_callback(
 
             if not stored:
                 logger.error(f"Failed to store tokens for user {user_id}")
-                return RedirectResponse(
-                    url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_FAILED"
-                )
+                return peppi_redirect(redirect_uri, {
+                    "status": "error",
+                    "error": "TOKEN_STORAGE_FAILED",
+                    "app_state": app_state,
+                })
         except Exception as e:
             logger.error(f"Exception storing tokens for user {user_id}: {e}")
-            return RedirectResponse(
-                url=f"{redirect_uri}/clawdbot/oauth?status=error&error=TOKEN_STORAGE_ERROR"
-            )
+            return peppi_redirect(redirect_uri, {
+                "status": "error",
+                "error": "TOKEN_STORAGE_ERROR",
+                "app_state": app_state,
+            })
 
         # Fetch Google profile info and upsert user
         try:
@@ -316,25 +413,23 @@ async def google_oauth_callback(
 
         logger.info(f"OAuth completed for user {user_id}")
 
-        # Redirect to success page
-        # Only append /clawdbot/oauth for the Peppi website (base domain with no path)
-        # For custom redirect_uris (like playground's /oauth-callback), use as-is
-        base_url = redirect_uri
-        if redirect_uri == default_redirect and not any(
-            p in redirect_uri for p in ["/oauth-callback", "/callback"]
-        ):
-            base_url = f"{redirect_uri}/clawdbot/oauth"
+        # Redirect to success page. build_peppi_redirect appends /clawdbot/oauth
+        # only for the bare website default; explicit callback URLs (Peppi's
+        # /auth/google/callback, playground's /oauth-callback) are used as-is.
+        return peppi_redirect(redirect_uri, {
+            "status": "success",
+            "service": "google",
+            "user_id": user_id,
+            "app_state": app_state,
+        })
 
-        separator = "&" if "?" in base_url else "?"
-        return RedirectResponse(
-            url=f"{base_url}{separator}status=success&service=google&user_id={quote(user_id, safe='')}"
-        )
-        
     except Exception as e:
         logger.error(f"OAuth callback error: {e}")
-        return RedirectResponse(
-            url=f"{default_redirect}/clawdbot/oauth?status=error&error=CALLBACK_ERROR"
-        )
+        return peppi_redirect(redirect_uri, {
+            "status": "error",
+            "error": "CALLBACK_ERROR",
+            "app_state": app_state,
+        })
 
 
 @router.get("/google/status/{user_id}", dependencies=[Depends(require_service_auth)])

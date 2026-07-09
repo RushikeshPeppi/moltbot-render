@@ -124,6 +124,24 @@ _SKIP_LOG_PATHS = {"/health", "/", "/docs", "/openapi.json", "/redoc", "/favicon
 # Prefix patterns to skip (polling endpoints that fire every few seconds)
 _SKIP_LOG_PREFIXES = ("/api/v1/playground/messages/",)
 
+# Query params whose VALUES must never reach the logs: the Google authorization
+# `code` (exchangeable for tokens), our OAuth `state`, and Peppi's first-party
+# CSRF nonce `app_state` (CASA logging hygiene — secrets don't belong in logs).
+_SENSITIVE_QUERY_KEYS = {"code", "state", "app_state"}
+
+
+def _redact_query(query: str) -> str:
+    """Redact sensitive values from a raw query string for logging."""
+    from urllib.parse import parse_qsl, urlencode
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True)
+    except ValueError:
+        return "***UNPARSEABLE_QUERY***"
+    return urlencode([
+        (k, "***REDACTED***" if k.lower() in _SENSITIVE_QUERY_KEYS else v)
+        for k, v in pairs
+    ])
+
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """
@@ -158,9 +176,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         if not skip:
             log_parts = [f"→ {method} {path}"]
 
-            # Add query params if present
+            # Add query params if present (sensitive values redacted)
             if request.url.query:
-                log_parts.append(f"  query: {request.url.query}")
+                log_parts.append(f"  query: {_redact_query(request.url.query)}")
 
             # Add redacted payload for POST/PUT/PATCH
             if parsed_body is not None:

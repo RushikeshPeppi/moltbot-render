@@ -83,6 +83,10 @@ def _build_allowlist() -> frozenset:
 
 ALLOWED_REDIRECT_ORIGINS = _build_allowlist()
 
+# Public alias for callers that need the parsed origin (e.g. for safe logging
+# of a rejected redirect_uri without echoing the full attacker-supplied URL).
+origin_of = _origin
+
 
 def is_allowed_redirect(url: str) -> bool:
     """True only if `url` is an absolute http(s) URL whose exact origin is allow-listed."""
