@@ -57,7 +57,8 @@ def create_error_response(
     error: str,
     exception: str = None
 ) -> JSONResponse:
-    """Create a standardized error JSON response"""
+    """Create a standardized error JSON response. `exception` sanitized (P2-5)."""
+    from ..core.error_sanitizer import client_safe_exception
     return JSONResponse(
         status_code=code,
         content={
@@ -65,7 +66,7 @@ def create_error_response(
             "message": message,
             "data": None,
             "error": error,
-            "exception": exception,
+            "exception": client_safe_exception(exception),
             "timestamp": datetime.utcnow().isoformat()
         }
     )

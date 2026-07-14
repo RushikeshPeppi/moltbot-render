@@ -83,7 +83,9 @@ export async function execute(
   // if Tavily fails (rate limit, error, etc). Something is better than nothing.
   if (input.source === "tavily") {
     if (ctx.tavilyApiKeys.length > 0) {
-      console.log(`[web_search] AI requested Tavily for: "${input.query}"`);
+      // Log the query LENGTH, never the text (CASA 6.5.1 — a search query is user content
+      // and can carry PII/message context; it must not sit in Render's log viewer).
+      console.log(`[web_search] AI requested Tavily (query ${input.query.length} chars)`);
       const tavilyResults = await fetchTavilyWithRotation(input.query, ctx.tavilyApiKeys);
       if (tavilyResults && tavilyResults.length > 0) {
         return formatResults(tavilyResults);

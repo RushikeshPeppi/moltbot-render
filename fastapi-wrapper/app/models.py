@@ -343,11 +343,12 @@ def error_response(
     code: int = ResponseCode.INTERNAL_ERROR,
     exception: str = None
 ) -> BaseResponse:
-    """Create an error response"""
+    """Create an error response. `exception` is sanitized — never raw in prod (P2-5)."""
+    from .core.error_sanitizer import client_safe_exception
     return BaseResponse(
         code=code,
         message=message,
         data=None,
         error=error,
-        exception=exception
+        exception=client_safe_exception(exception)
     )

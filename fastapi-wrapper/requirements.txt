@@ -1,24 +1,36 @@
 # FastAPI and Server
-fastapi==0.115.0
+# fastapi 0.115.0 pinned starlette <0.39, which stranded us on starlette 0.38.6 and its
+# 8 CVEs (BadHost CVE-2026-48710, multipart/large-file DoS). fastapi >=0.139 relaxes the
+# pin to starlette>=0.46.0, which is what lets us reach the fixed 1.3.1 below (CASA 6.1.1).
+fastapi==0.139.0
+# Pinned EXPLICITLY even though fastapi pulls it transitively: starlette was the package
+# carrying the most CVEs here, and an unpinned transitive is one `pip install` away from
+# silently regressing. Pinning makes the fix auditable by the lab.
+starlette==1.3.1
 uvicorn[standard]==0.32.0
 gunicorn==23.0.0
 
 # Pydantic
 pydantic>=2.11.7,<3.0.0
 pydantic-settings==2.6.1
-email-validator==2.1.0
+# 2.1.0 was YANKED on PyPI (bad python_requires) — pip warns on every build.
+email-validator==2.3.0
 
 # HTTP Client
 httpx==0.28.1
 
 # Multipart forms
-python-multipart==0.0.12
+# 0.0.12 → 0.0.32: CVE-2024-53981 (boundary DoS, 7.5) + CVE-2026-24486 (arbitrary file
+# write, 8.3) + 5 more. Both above the CASA 6.1.1 CVSS>=7.0 bar.
+python-multipart==0.0.32
 
-# Encryption
-cryptography==44.0.0
+# Encryption — Fernet/MultiFernet for the Google token blobs.
+# 44.0.0 → 49.0.0: GHSA-537c-gmf6-5ccf (HIGH, vulnerable OpenSSL in the shipped wheel)
+# + CVE-2024-12797 + 3 more.
+cryptography==49.0.0
 
 # Environment
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 
 # Async file operations
 aiofiles==24.1.0
@@ -32,11 +44,12 @@ qstash>=2.0.0
 # Supabase
 supabase==2.27.3
 
-# Google OAuth
-google-auth==2.27.0
-google-auth-oauthlib==1.2.0
+# Google OAuth — no CVE against the old pins, but they were 2024-vintage (Jan-2024) and
+# these clients carry the restricted-scope traffic; staying current is the ask in PHASE_4 §4.1.
+google-auth==2.56.0
+google-auth-oauthlib==1.2.2
 google-auth-httplib2==0.2.0
-google-api-python-client==2.114.0
+google-api-python-client==2.198.0
 
 # Rate Limiting
 slowapi==0.1.9

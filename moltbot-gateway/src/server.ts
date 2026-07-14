@@ -13,7 +13,7 @@
  *   }
  */
 
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import { randomUUID } from "node:crypto";
 import { env, validateEnv } from "./env.js";
 import { runAgentLoop } from "./agent.js";
@@ -21,10 +21,19 @@ import { getSession, setSessionHistory, sessionCount } from "./session.js";
 import { fetchGoogleToken } from "./oauth.js";
 import { requireServiceAuth } from "./auth.js";
 import { logError } from "./observability.js";
+import { securityHeaders } from "./security-headers.js";
 
 validateEnv();
 
 const app = express();
+
+// Stop advertising the framework + version (ZAP [10037], CASA 6.2.1 fingerprinting).
+app.disable("x-powered-by");
+
+// Security headers FIRST, so every response carries them — including the 401 from
+// requireServiceAuth, the 413 from the body cap, and error responses (CASA 4.1.1/5.1.7).
+app.use(securityHeaders);
+
 app.use(express.json({ limit: "5mb" })); // headroom for image-attached payloads
 
 // ─── Health ────────────────────────────────────────────────────────────
@@ -189,6 +198,33 @@ app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => 
       request_id: requestId,
     });
   }
+});
+
+// ─── Error handler (must be LAST, and must take 4 args to be an error handler) ──
+//
+// body-parser rejects malformed JSON and >5mb bodies BEFORE any route runs, i.e. before
+// requireServiceAuth — so this path is reachable UNAUTHENTICATED and its output is part of
+// our public attack surface. Express's built-in handler renders `err.stack` as HTML unless
+// NODE_ENV=production. Render happens to set that today (verified live: a malformed body
+// returns a bare "Bad Request"), but leaving stack-trace suppression dependent on an
+// implicit platform env var is exactly the fail-open pattern this phase exists to remove.
+// Own the response: generic JSON, no stack, ever (CASA 6.2.1).
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction): void => {
+  const e = err as { type?: string; status?: number };
+  const requestId = randomUUID();
+  logError(requestId, "request_rejected", err); // full detail server-side only
+
+  if (res.headersSent) return;
+
+  if (e?.type === "entity.too.large") {
+    res.status(413).json({ success: false, error: "request body too large", request_id: requestId });
+    return;
+  }
+  if (e?.type === "entity.parse.failed" || e?.status === 400) {
+    res.status(400).json({ success: false, error: "malformed request body", request_id: requestId });
+    return;
+  }
+  res.status(500).json({ success: false, error: "internal error", request_id: requestId });
 });
 
 // ─── Server bootstrap + SIGTERM drain ──────────────────────────────────

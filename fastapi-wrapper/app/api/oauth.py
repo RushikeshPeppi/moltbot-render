@@ -21,6 +21,7 @@ import httpx
 
 from ..config import settings
 from ..core.service_auth import require_service_auth
+from ..core.rate_limit import limit_oauth_callback, limit_oauth_init
 from ..core.redirect_validation import is_allowed_redirect, origin_of, safe_redirect_base
 from ..core.credential_manager import CredentialManager
 from ..core.database import db
@@ -40,13 +41,18 @@ def create_response(
     error: str = None,
     exception: str = None
 ) -> dict:
-    """Create standardized response"""
+    """Create standardized response. `exception` sanitized — never raw in prod (P2-5).
+
+    create_error_response() below delegates here, so both OAuth builders are covered
+    by this one choke point.
+    """
+    from ..core.error_sanitizer import client_safe_exception
     return {
         "code": code,
         "message": message,
         "data": data,
         "error": error,
-        "exception": exception,
+        "exception": client_safe_exception(exception),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -82,7 +88,10 @@ def build_peppi_redirect(base: str, default_redirect: str, params: dict) -> str:
     return f"{base}{separator}{query}"
 
 
-@router.get("/google/init", dependencies=[Depends(require_service_auth)])
+@router.get(
+    "/google/init",
+    dependencies=[Depends(require_service_auth), Depends(limit_oauth_init)],
+)
 async def google_oauth_init(
     user_id: str = Query(..., description="Peppi user ID"),
     redirect_uri: Optional[str] = Query(None, description="Where to redirect after OAuth completes"),
@@ -194,7 +203,9 @@ async def google_oauth_init(
         )
 
 
-@router.get("/google/callback")
+# PUBLIC (Google redirects the user's browser here) — the only anonymous-reachable route
+# in this router, so it is the one that gets a rate limit (P2-4).
+@router.get("/google/callback", dependencies=[Depends(limit_oauth_callback)])
 async def google_oauth_callback(
     code: str = Query(None, description="Authorization code from Google"),
     state: str = Query(None, description="State parameter for CSRF verification"),

@@ -10,8 +10,10 @@ class Settings(BaseSettings):
     API_VERSION: str = "v1"
     DEBUG: bool = False
     
-    # Moltbot Gateway
-    MOLTBOT_GATEWAY_URL: str = os.getenv("MOLTBOT_GATEWAY_URL", "http://moltbot-gateway:18789")
+    # Moltbot Gateway. HTTPS-only default: the Google access token is sent to the
+    # gateway in the request body (core/moltbot_client.py), so a plaintext http://
+    # default is a token-disclosure risk if the env var is ever missing (CASA 4.1.1).
+    MOLTBOT_GATEWAY_URL: str = os.getenv("MOLTBOT_GATEWAY_URL", "https://openclaw-gateway-dg3y.onrender.com")
     # Must exceed the gateway's longest internal skill timeout (320s post-2026-04-28
     # bump — heavy web-search compounds on cold-cache observed at 262s in prod).
     # Render Pro caps a single HTTP request at 600s, so 360s leaves comfortable
@@ -31,8 +33,15 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     
-    # Encryption
+    # Encryption. ENCRYPTION_KEY is the PRIMARY key — everything is encrypted with it.
+    # ENCRYPTION_KEYS_OLD is an optional comma-separated list of RETIRED keys kept only
+    # so previously-stored tokens still decrypt during a rotation (MultiFernet keyring,
+    # core/database.py). Rotation procedure: prepend the old primary to
+    # ENCRYPTION_KEYS_OLD, set the new key as ENCRYPTION_KEY, redeploy, re-encrypt, then
+    # drop the retired key. Without this, rotating ENCRYPTION_KEY silently makes every
+    # stored Google token undecryptable (CASA 6.7.1 / ASVS 6.2.4 crypto agility).
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
+    ENCRYPTION_KEYS_OLD: str = os.getenv("ENCRYPTION_KEYS_OLD", "")
     
     # Google OAuth
     GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -55,7 +64,24 @@ class Settings(BaseSettings):
     # fail CLOSED (503) when this is unset — never open. Must be IDENTICAL across
     # moltbot-fastapi, the gateway, and Peppi Laravel.
     INTERNAL_SERVICE_KEY: str = os.getenv("INTERNAL_SERVICE_KEY", "")
-    ALLOWED_ORIGINS: List[str] = ["*"]
+
+    # CORS allow-list (CASA 6.3.1 / P2-1). Was `["*"]` with allow_credentials=True.
+    # Every route that touches user data now requires the X-Moltbot-Key service
+    # header (Phase 1), which no browser can safely hold — so there is NO legitimate
+    # cross-origin browser caller, and the correct default is DENY-ALL (empty list).
+    # Comma-separated exact origins if one is ever needed (e.g. a future first-party
+    # SPA fronted by a server that injects the key).
+    ALLOWED_ORIGINS_RAW: str = os.getenv("ALLOWED_ORIGINS", "")
+
+    @property
+    def ALLOWED_ORIGINS(self) -> List[str]:
+        """Explicit origin allow-list; empty = no cross-origin browser access."""
+        return [o.strip() for o in self.ALLOWED_ORIGINS_RAW.split(",") if o.strip()]
+
+    # Max accepted request body (CASA 5.1.x resource-exhaustion). Matches the
+    # gateway's express.json({limit:"5mb"}) so the two tiers agree. Enforced by
+    # core/body_limit.py at the ASGI layer — before any handler buffers the body.
+    MAX_REQUEST_BODY_BYTES: int = int(os.getenv("MAX_REQUEST_BODY_BYTES", str(5 * 1024 * 1024)))
 
     # OAuth open-redirect allow-list (CASA 3.2.2). Comma-separated EXACT origins
     # (scheme://host[:port]) we are willing to 302 a user back to after the OAuth

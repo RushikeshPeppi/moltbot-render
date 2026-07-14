@@ -22,13 +22,18 @@ gmail_service = GmailService()
 
 
 def create_response(code: int, message: str, data=None, error=None, exception=None):
-    """Create standardized response"""
+    """Create standardized response. `exception` sanitized — never raw in prod (P2-5).
+
+    Matters most here: these handlers wrap the Gmail/Calendar API clients, whose
+    exception text can carry mailbox/event content and Google internals.
+    """
+    from ..core.error_sanitizer import client_safe_exception
     return {
         "code": code,
         "message": message,
         "data": data,
         "error": error,
-        "exception": exception,
+        "exception": client_safe_exception(exception),
         "timestamp": datetime.utcnow().isoformat()
     }
 

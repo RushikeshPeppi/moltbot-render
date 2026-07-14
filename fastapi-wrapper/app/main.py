@@ -61,21 +61,35 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-# Create FastAPI app
+# Create FastAPI app.
+#
+# Interactive docs are DISABLED in production (CASA 6.2.1). /docs, /redoc and
+# /openapi.json published the complete route inventory — every path, param and schema —
+# to anonymous callers, which is a free map of the attack surface. They now exist only
+# when DEBUG=true (local dev); in prod all three 404.
+_docs_enabled = settings.DEBUG
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.API_VERSION,
     description="Multi-tenant Moltbot wrapper API for Peppi SMS platform",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
-# CORS middleware
+# CORS (P2-1). Was allow_origins=["*"] + allow_credentials=True — a wildcard-with-
+# credentials config that every DAST flags. Every data-bearing route now requires the
+# X-Moltbot-Key service header (Phase 1), which no browser can safely hold, so there is
+# no legitimate cross-origin browser caller and the default allow-list is EMPTY.
+# Origins can be re-added via the ALLOWED_ORIGINS env var if a first-party SPA ever
+# needs one. allow_credentials is False: we authenticate with a header, never a cookie.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Moltbot-Key", "Authorization", "Idempotency-Key"],
 )
 
 
@@ -85,11 +99,26 @@ import time as _time
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
-# Fields to redact from logged payloads (case-insensitive partial match)
+# Fields to redact from logged payloads.
+#
+# Two classes, both must go (CASA 6.5.1 — no credentials or personal data in logs):
+#   1. SECRETS — tokens/keys. A log aggregator is not a secret store.
+#   2. RESTRICTED GOOGLE / PERSONAL CONTENT — the actual Gmail + SMS payloads. This is the
+#      class the first pass missed (P3-3): `message` (SMS body), `to`/`recipient`,
+#      `subject`, `body`/`snippet` (mail content), `email`, `phone`. Under Google's
+#      Limited-Use policy this content must not be sitting in Render's log viewer, and
+#      logging it is exactly what control 6.5.1 fails you for.
 _SENSITIVE_KEYS = {
+    # secrets
     "token", "access_token", "refresh_token", "google_access_token",
     "google_token", "api_key", "api_secret", "secret", "password",
     "credentials", "encryption_key", "authorization", "cookie",
+    "code", "state", "app_state", "client_secret", "signature",
+    # restricted Google user data + PII
+    "message", "text", "body", "subject", "snippet", "to", "cc", "bcc",
+    "recipient", "recipients", "from", "sender", "email", "email_address",
+    "phone", "phone_number", "user_message", "response", "reply",
+    "query", "search_query", "attachments", "image_url", "image_urls",
 }
 
 _req_logger = logging.getLogger("api.requests")
@@ -206,6 +235,23 @@ app.add_middleware(RequestLoggingMiddleware)
 from .utils.idempotency import IdempotencyMiddleware
 app.add_middleware(IdempotencyMiddleware)
 
+# ── Outermost middlewares (Starlette stacks last-added OUTERMOST) ──────────────
+#
+# Order is load-bearing, and both of these MUST sit outside the logging/idempotency
+# pair above:
+#
+#   BodySizeLimit  — must reject an oversized body BEFORE RequestLoggingMiddleware
+#                    buffers it with `await request.body()`. Mounted inside the logger,
+#                    the cap would fire only after the DoS it exists to prevent.
+#   SecurityHeaders— must be OUTERMOST so it stamps EVERY response, including ones an
+#                    inner middleware short-circuits (idempotency cache hit, 413 reject)
+#                    and CORS preflights. Headers set only on the happy path are exactly
+#                    what a DAST crawl catches.
+from .core.body_limit import BodySizeLimitMiddleware
+from .core.security_headers import SecurityHeadersMiddleware
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.MAX_REQUEST_BODY_BYTES)
+app.add_middleware(SecurityHeadersMiddleware)
+
 
 # Include routes.
 #
@@ -229,15 +275,50 @@ app.include_router(playground.router, prefix=f"/api/{settings.API_VERSION}", dep
 app.include_router(admin.router, prefix=f"/api/{settings.API_VERSION}")
 
 
+# Catch-all for UNHANDLED exceptions (CASA 6.2.1 + security-headers-on-every-response).
+#
+# This closes the Phase-4 critic's Defect 1. A handler registered for `Exception` becomes
+# Starlette's ServerErrorMiddleware handler — and ServerErrorMiddleware is the OUTERMOST
+# frame, outside SecurityHeadersMiddleware, so the 500 it sends can never be reached by that
+# middleware. The fix is to attach the header set to THIS response directly (sharing the one
+# security_headers() source so the two stampers can't drift). It also guarantees a generic
+# body with no stack/exception text on the unhandled path (belt-and-suspenders for P2-5).
+from fastapi import Request as _Request
+from fastapi.responses import JSONResponse as _JSONResponse
+from .core.security_headers import security_headers as _security_headers
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: _Request, exc: Exception):
+    logger.error(
+        f"Unhandled exception on {request.method} {request.url.path}: {exc}",
+        exc_info=True,  # full traceback to the server log — never to the client
+    )
+    return _JSONResponse(
+        status_code=500,
+        content={
+            "code": 500,
+            "message": "Internal server error",
+            "data": None,
+            "error": "INTERNAL_ERROR",
+            "exception": None,
+        },
+        headers=_security_headers(),
+    )
+
+
 # Root endpoint
 @app.get("/")
 async def root():
-    """Root endpoint with API info"""
+    """Root endpoint with API info.
+
+    Deliberately does NOT advertise "/docs" any more (CASA 6.2.1): the docs are
+    disabled in prod, and pointing an anonymous caller at the schema was free recon.
+    """
     return {
         "status": "online",
         "service": settings.APP_NAME,
         "version": settings.API_VERSION,
-        "docs": "/docs"
     }
 
 

@@ -8,7 +8,7 @@ import logging
 import secrets
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 from supabase import create_client, Client
 from ..config import settings
 
@@ -20,7 +20,7 @@ class Database:
     
     _instance: Optional["Database"] = None
     _client: Optional[Client] = None
-    _cipher: Optional[Fernet] = None
+    _cipher: Optional[MultiFernet] = None
     
     def __new__(cls):
         if cls._instance is None:
@@ -47,8 +47,34 @@ class Database:
         
         if self._cipher is None and settings.ENCRYPTION_KEY:
             try:
-                self._cipher = Fernet(settings.ENCRYPTION_KEY.encode())
+                # MultiFernet keyring, not a bare Fernet (CASA 6.7.1 / ASVS 6.2.4 —
+                # crypto agility). ENCRYPTION_KEY is the PRIMARY: MultiFernet always
+                # ENCRYPTS with keys[0] and DECRYPTS by trying each key in order.
+                #
+                # Why this matters: with a single static Fernet, rotating ENCRYPTION_KEY
+                # made every previously-stored Google token undecryptable, and the failure
+                # was SILENT — get_credentials() swallows the InvalidToken and returns None
+                # (see the `except` below), so every user would have looked "disconnected"
+                # with no error anywhere. CASA expects a documented, non-destructive
+                # rotation path; this is it.
+                #
+                # Rotate: ENCRYPTION_KEYS_OLD="<current key>", ENCRYPTION_KEY="<new key>",
+                # redeploy (old tokens still decrypt), re-encrypt at rest, then clear
+                # ENCRYPTION_KEYS_OLD. Documented in config.py.
+                keyring = [Fernet(settings.ENCRYPTION_KEY.encode())]
+                for old in settings.ENCRYPTION_KEYS_OLD.split(","):
+                    old = old.strip()
+                    if old:
+                        keyring.append(Fernet(old.encode()))
+                self._cipher = MultiFernet(keyring)
+                if len(keyring) > 1:
+                    logger.info(
+                        f"Encryption keyring active: 1 primary + {len(keyring) - 1} "
+                        f"retired key(s) for rotation"
+                    )
             except Exception as e:
+                # Fail closed: leave _cipher as None so _encrypt/_decrypt raise rather
+                # than silently storing plaintext.
                 logger.error(f"Failed to initialize encryption: {e}")
     
     async def close(self):
@@ -663,8 +689,16 @@ class Database:
             return None
 
     async def generate_user_id(self) -> str:
-        """Generate a unique alphanumeric user_id (e.g. 'usr_a1b2c3d4')."""
-        return f"usr_{secrets.token_hex(4)}"
+        """
+        Generate a unique alphanumeric user_id (e.g. 'usr_<32 hex>').
+
+        128-bit, was 32-bit (P3-5). `token_hex(4)` is only ~4.3e9 values: guessable by
+        brute force, and birthday-colliding at ~65k users. user_id is the identifier every
+        route keys off, so a guessable one erodes the whole access-control story.
+        Width: 4 + 32 = 36 chars, inside the VARCHAR(50) column (migration 005). Existing
+        short ids keep working — this only affects newly-minted ones.
+        """
+        return f"usr_{secrets.token_hex(16)}"
 
     async def update_user_timezone(self, user_id: str, timezone: str) -> bool:
         """Update a user's timezone setting."""

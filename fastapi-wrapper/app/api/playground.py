@@ -23,13 +23,43 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/playground", tags=["Playground"])
 
 
+# Characters that make a spreadsheet treat a cell as a FORMULA rather than text.
+# `=` `+` `-` `@` are the documented four; TAB and CR are included because Excel strips
+# leading whitespace and then re-evaluates the first significant character.
+_CSV_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value) -> str:
+    """
+    Neutralize CSV formula injection (CWE-1236) for the token-usage export.
+
+    The export writes the user's own SMS text (`request_summary`) and their chosen name
+    into cells. A message like `=cmd|'/c calc'!A1` or `@SUM(1+1)*cmd|...` is inert as an
+    SMS but becomes an EXECUTABLE FORMULA the moment someone opens the CSV in Excel or
+    Google Sheets — the attack lands on our own staff, on their machine, outside the app's
+    trust boundary entirely. This is why "it's only an internal export" is not a defense.
+
+    Mitigation (OWASP): prefix a single quote, which forces the spreadsheet to treat the
+    cell as literal text. The quote is visible in the cell but harmless, and the CSV
+    remains machine-parseable.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(_CSV_FORMULA_TRIGGERS):
+        return "'" + text
+    return text
+
+
 def create_response(code, message, data=None, error=None, exception=None):
+    """`exception` sanitized — never raw in prod (P2-5)."""
+    from ..core.error_sanitizer import client_safe_exception
     return {
         "code": code,
         "message": message,
         "data": data,
         "error": error,
-        "exception": exception,
+        "exception": client_safe_exception(exception),
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -497,6 +527,10 @@ async def download_token_usage_csv(
             "Cache Write 5m", "Cache Write 1h", "Cache Write Legacy",
             "Total Input", "Est. Cost ($)",
         ])
+        # Every cell below that can contain user-authored text goes through _csv_safe()
+        # (CWE-1236 formula injection). `request_summary` IS the user's raw SMS, and the
+        # user name is user-chosen — an SMS of `=cmd|'/c calc'!A1` becomes a live formula
+        # the moment a PM opens this export in Excel/Sheets. See _csv_safe() above.
 
         total_tokens = 0
         total_cost = 0.0
@@ -514,14 +548,14 @@ async def download_token_usage_csv(
             cost = _row_cost(row) if (inp or out or cr or cw_total) else _estimate_cost(tokens)
             total_cost += cost
             writer.writerow([
-                row.get("id", ""),
-                row.get("created_at", ""),
-                row.get("user_id", ""),
-                user_map.get(row.get("user_id"), "Unknown"),
-                row.get("action_type", ""),
-                (row.get("request_summary") or "")[:200],
-                (row.get("response_summary") or "")[:200],
-                row.get("status", ""),
+                _csv_safe(row.get("id", "")),
+                _csv_safe(row.get("created_at", "")),
+                _csv_safe(row.get("user_id", "")),
+                _csv_safe(user_map.get(row.get("user_id"), "Unknown")),
+                _csv_safe(row.get("action_type", "")),
+                _csv_safe((row.get("request_summary") or "")[:200]),
+                _csv_safe((row.get("response_summary") or "")[:200]),
+                _csv_safe(row.get("status", "")),
                 tokens if tokens else "",
                 inp if inp else "",
                 out if out else "",

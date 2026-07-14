@@ -4,7 +4,7 @@ Replaces file-based storage with Upstash Redis for production scalability.
 """
 
 import json
-import uuid
+import secrets
 import logging
 from typing import Optional, Dict, List, Any
 from datetime import datetime, timedelta
@@ -33,8 +33,10 @@ class SessionManager:
             await self.redis.refresh_session_ttl(user_id, existing)
             return existing
         
-        # Create new session
-        session_id = f"sess_{uuid.uuid4().hex[:12]}"
+        # Create new session. 128-bit CSPRNG, was uuid4().hex[:12] = 48 bits (P3-5) —
+        # truncating a uuid4 throws away the entropy that made it unguessable.
+        # Width: 5 + 32 = 37 chars, inside the VARCHAR(100) column (migration 002).
+        session_id = f"sess_{secrets.token_hex(16)}"
         
         session_data = {
             "session_id": session_id,

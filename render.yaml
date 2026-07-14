@@ -7,7 +7,10 @@ services:
     plan: pro
     rootDir: fastapi-wrapper
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # --no-server-header: suppress uvicorn's `Server: uvicorn` version fingerprint
+    # (CASA 6.2.1). uvicorn emits it below the ASGI layer, so it can only be removed here,
+    # not in middleware.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --no-server-header
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION

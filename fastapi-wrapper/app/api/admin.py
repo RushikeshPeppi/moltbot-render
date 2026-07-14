@@ -23,15 +23,19 @@ import json
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 
 from ..config import settings
 from ..core.database import db
+from ..core.rate_limit import limit_admin
 from ..services.qstash_service import qstash_service
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/admin", tags=["Admin"])
+# Router-level rate limit (CASA 1.1.1 — brute-force resistance on an authenticated
+# endpoint). Applied at the ROUTER, not per-route, so a new admin endpoint added later
+# inherits the limit instead of silently shipping without one (P2-4).
+router = APIRouter(prefix="/admin", tags=["Admin"], dependencies=[Depends(limit_admin)])
 
 
 def _require_admin(authorization: Optional[str]) -> None:
