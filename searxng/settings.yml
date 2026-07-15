@@ -14,9 +14,13 @@ use_default_settings: true
 general:
   debug: false
   instance_name: "Peppi Search"
-  # Disabled (CASA Phase 4 §4.9): the /stats endpoint was publicly reachable
-  # (ZAP baseline flagged it 200 + Stats passive rule). We don't consume metrics
-  # over HTTP, so turn it off to remove the endpoint from the attack surface.
+  # Disabled (CASA Phase 4 §4.9). NOTE: this EMPTIES the metrics data — /stats and
+  # /stats/errors stop collecting/showing engine timings and error details, so the
+  # information-disclosure value drops to near-zero. It does NOT unroute /stats:
+  # SearXNG registers that route unconditionally and it still returns 200 (empty).
+  # Fully removing the endpoint from scan scope requires making SearXNG non-public
+  # (inbound IP allow-list / private service — see the §4.9 runbook), which is the
+  # real fix; this is defense-in-depth on top.
   enable_metrics: false
 
 server:
