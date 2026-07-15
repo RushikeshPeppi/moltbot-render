@@ -14,7 +14,10 @@ use_default_settings: true
 general:
   debug: false
   instance_name: "Peppi Search"
-  enable_metrics: true
+  # Disabled (CASA Phase 4 §4.9): the /stats endpoint was publicly reachable
+  # (ZAP baseline flagged it 200 + Stats passive rule). We don't consume metrics
+  # over HTTP, so turn it off to remove the endpoint from the attack surface.
+  enable_metrics: false
 
 server:
   port: 8080
@@ -39,10 +42,20 @@ server:
   # for legacy reasons. Leave at "1.0" unless we change the entrypoint.)
   http_protocol_version: "1.0"
   method: "POST"
+  # Response security headers (CASA Phase 4 §4.2/§4.9). These apply to EVERY
+  # SearXNG response and address the header findings from the Phase-0 ZAP/Fluid
+  # baseline (HSTS 131, X-Content-Type-Options 132, missing framing/CORP). We
+  # deliberately do NOT set Cross-Origin-Embedder-Policy require-corp — it breaks
+  # the SearXNG results UI (blocks cross-origin thumbnails/assets) for no gain,
+  # since the gateway only consumes the JSON API, which is header-agnostic.
   default_http_headers:
     X-Content-Type-Options: nosniff
     X-Robots-Tag: noindex, nofollow
     Referrer-Policy: no-referrer
+    Strict-Transport-Security: "max-age=63072000; includeSubDomains; preload"
+    X-Frame-Options: DENY
+    Cross-Origin-Resource-Policy: same-origin
+    Permissions-Policy: "geolocation=(), camera=(), microphone=(), payment=()"
 
 ui:
   static_use_hash: true

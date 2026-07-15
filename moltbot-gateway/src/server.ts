@@ -200,6 +200,15 @@ app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => 
   }
 });
 
+// 404 for any unmatched route. Without this, Express's built-in `finalhandler` generates
+// the 404 and OVERWRITES the CSP the securityHeaders middleware set with a bare
+// `default-src 'none'` — which omits frame-ancestors/form-action/base-uri (they do NOT
+// fall back to default-src), the exact gap ZAP flags as [10055]. Returning our own JSON
+// 404 keeps the full CSP intact and leaks nothing.
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ success: false, error: "not found" });
+});
+
 // ─── Error handler (must be LAST, and must take 4 args to be an error handler) ──
 //
 // body-parser rejects malformed JSON and >5mb bodies BEFORE any route runs, i.e. before
