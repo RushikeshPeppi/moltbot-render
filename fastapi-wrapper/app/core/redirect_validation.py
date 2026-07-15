@@ -51,6 +51,14 @@ def _build_allowlist() -> frozenset:
     overrides the default set entirely when present. The origin of `PEPPI_WEBSITE_URL`
     is always trusted so an environment-specific website value is never accidentally
     rejected.
+
+    The committed default is PRODUCTION origins ONLY. Any non-prod origin (e.g. a
+    staging host used for pre-prod OAuth testing) is supplied per-environment via
+    `OAUTH_ALLOWED_REDIRECT_ORIGINS` — never hard-coded here — so the repo default can
+    never ship a non-prod / localhost redirect target into a CASA-scanned build
+    (CWE-601). NOTE: because the env var REPLACES this set, an env override must list
+    the full set of origins it wants allowed (all prod origins + any staging host),
+    not just the extra one.
     """
     raw = (settings.OAUTH_ALLOWED_REDIRECT_ORIGINS or "").strip()
     if raw:
@@ -66,12 +74,6 @@ def _build_allowlist() -> frozenset:
             "https://peppi.app",
             "https://www.peppi.app",
             "https://peppi-playground.onrender.com",
-            # Staging environment (Dashtechs) — used for pre-prod OAuth testing.
-            "https://stagingpeppi.dashtechs.com",
-            # TEMP dev-testing origin — local Peppi against prod moltbot OAuth.
-            # REMOVE before the final phase / paid CASA lab scan (re-opens CWE-601
-            # redirect-to-localhost). Tracked in CASA/moltbot/PROGRESS.md §2 Phase 5.
-            "http://127.0.0.1:8000",
         }
 
     site_origin = _origin(settings.PEPPI_WEBSITE_URL or "")
