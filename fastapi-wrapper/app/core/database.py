@@ -347,7 +347,7 @@ class Database:
                 "error_message": error_message
             }
             
-            response = self._client.table("tbl_clawdbot_audit_log").insert(data).execute()
+            response = self._scoped(user_id).table("tbl_clawdbot_audit_log").insert(data).execute()
             
             if response.data and len(response.data) > 0:
                 return response.data[0].get('id')
@@ -418,7 +418,7 @@ class Database:
                 if not self._client:
                     return []
             
-            response = self._client.table("tbl_clawdbot_audit_log").select(
+            response = self._scoped(user_id).table("tbl_clawdbot_audit_log").select(
                 "id, session_id, action_type, request_summary, response_summary, status, tokens_used, input_tokens, output_tokens, cache_read, cache_write, cache_write_5m, cache_write_1h, created_at"
             ).eq("user_id", user_id).order(
                 "created_at", desc=True
@@ -449,7 +449,14 @@ class Database:
                 if not self._client:
                     return []
 
-            query = self._client.table("tbl_clawdbot_audit_log").select(
+            # CONDITIONAL scoping: this method serves BOTH a per-user query and a
+            # cross-user analytics aggregate (user_id=None → "all users", used by the
+            # playground token-usage view). Scope it only when a user_id is supplied;
+            # forcing a scoped JWT with no user would just return zero rows and silently
+            # break analytics. When user_id IS given, RLS enforces it in Postgres — so
+            # the .eq() filter below stops being the only thing preventing cross-user reads.
+            client = self._scoped(user_id) if user_id else self._client
+            query = client.table("tbl_clawdbot_audit_log").select(
                 "id, user_id, session_id, action_type, request_summary, response_summary, status, tokens_used, input_tokens, output_tokens, cache_read, cache_write, cache_write_5m, cache_write_1h, created_at"
             )
 
@@ -510,7 +517,7 @@ class Database:
                 if not self._client:
                     return None
             
-            response = self._client.table("tbl_clawdbot_reminders").insert(data).execute()
+            response = self._scoped(data.get("user_id")).table("tbl_clawdbot_reminders").insert(data).execute()
             
             if response.data and len(response.data) > 0:
                 logger.info(f"Created reminder for user {data.get('user_id')}: {response.data[0].get('id')}")
@@ -583,7 +590,7 @@ class Database:
                 if not self._client:
                     return []
             
-            query = self._client.table("tbl_clawdbot_reminders").select("*").eq(
+            query = self._scoped(user_id).table("tbl_clawdbot_reminders").select("*").eq(
                 "user_id", user_id
             )
             
@@ -694,7 +701,7 @@ class Database:
                 data["city"] = city or None
 
             try:
-                response = self._client.table("tbl_clawdbot_users").upsert(
+                response = self._scoped(user_id).table("tbl_clawdbot_users").upsert(
                     data,
                     on_conflict="user_id"
                 ).execute()
@@ -707,7 +714,7 @@ class Database:
                         "without city. Run migration 007_add_city_column.sql."
                     )
                     data.pop("city", None)
-                    response = self._client.table("tbl_clawdbot_users").upsert(
+                    response = self._scoped(user_id).table("tbl_clawdbot_users").upsert(
                         data,
                         on_conflict="user_id"
                     ).execute()
@@ -760,12 +767,12 @@ class Database:
                     return None
 
             try:
-                response = self._client.table("tbl_clawdbot_users").select(
+                response = self._scoped(user_id).table("tbl_clawdbot_users").select(
                     self._USER_SELECT_WITH_CITY
                 ).eq("user_id", user_id).execute()
             except Exception as e:
                 if self._is_missing_city_column_error(e):
-                    response = self._client.table("tbl_clawdbot_users").select(
+                    response = self._scoped(user_id).table("tbl_clawdbot_users").select(
                         self._USER_SELECT_FALLBACK
                     ).eq("user_id", user_id).execute()
                 else:
@@ -798,7 +805,7 @@ class Database:
                 if not self._client:
                     return False
 
-            self._client.table("tbl_clawdbot_users").update({
+            self._scoped(user_id).table("tbl_clawdbot_users").update({
                 "timezone": timezone,
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("user_id", user_id).execute()
@@ -822,7 +829,7 @@ class Database:
                 "city": city or None,
                 "updated_at": datetime.utcnow().isoformat(),
             }
-            self._client.table("tbl_clawdbot_users").update(payload).eq(
+            self._scoped(user_id).table("tbl_clawdbot_users").update(payload).eq(
                 "user_id", user_id
             ).execute()
 
@@ -847,7 +854,7 @@ class Database:
                 if not self._client:
                     return False
 
-            self._client.table("tbl_clawdbot_users").update({
+            self._scoped(user_id).table("tbl_clawdbot_users").update({
                 "google_connected": connected,
                 "updated_at": datetime.utcnow().isoformat()
             }).eq("user_id", user_id).execute()
@@ -884,7 +891,7 @@ class Database:
             logger.error(f"delete_user: credentials delete failed for {user_id}: {e}")
 
         try:
-            response = self._client.table("tbl_clawdbot_reminders").delete().eq(
+            response = self._scoped(user_id).table("tbl_clawdbot_reminders").delete().eq(
                 "user_id", user_id
             ).execute()
             counts["reminders"] = len(response.data or [])
@@ -893,7 +900,7 @@ class Database:
             logger.warning(f"delete_user: reminders delete skipped for {user_id}: {e}")
 
         try:
-            response = self._client.table("tbl_clawdbot_users").delete().eq(
+            response = self._scoped(user_id).table("tbl_clawdbot_users").delete().eq(
                 "user_id", user_id
             ).execute()
             counts["users"] = len(response.data or [])
