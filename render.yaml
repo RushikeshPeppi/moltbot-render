@@ -128,8 +128,13 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
       # SearXNG URL — note: env var renamed from SEARXNG_BASE_URL to match src/env.ts.
+      # PRIVATE-NETWORK address (CASA: removes SearXNG from public scan scope + closes the
+      # open-search-proxy abuse vector that was rate-limiting our egress IP at Bing/Startpage).
+      # Render private network = <slug>:<port>, same region + workspace (both are `oregon`).
+      # SearXNG stays `type: web` (blueprint `type` is immutable) but its public onrender.com
+      # subdomain is DISABLED in the dashboard, so this internal address is the ONLY way in.
       - key: SEARXNG_URL
-        value: https://searxng-09k9.onrender.com
+        value: http://searxng-09k9:8080
       # FastAPI URL — OAuth token bridge + reminder tool dispatch.
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
