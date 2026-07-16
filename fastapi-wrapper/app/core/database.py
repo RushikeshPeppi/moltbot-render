@@ -35,7 +35,18 @@ def _mint_scoped_jwt(user_id: str) -> str:
     fallback to service_role would present as "RLS enforced" while enforcing nothing —
     exactly the class of fail-open this codebase has been burned by twice.
     """
-    import jwt as pyjwt  # PyJWT (already a transitive dep; pinned in requirements)
+    # HS256 against Supabase's LEGACY JWT secret. Verified on the live project 2026-07-16:
+    # the JWT Keys page shows "Legacy JWT secret (still used) — used only to verify JWTs",
+    # i.e. we sign / Supabase verifies. That is also why the project's anon+service_role
+    # keys (themselves HS256 JWTs signed with this secret) still work.
+    #
+    # ⚠ COUPLING: Supabase is deprecating this secret and nudges you to revoke it. If it is
+    # ever revoked while RLS_SCOPED_JWT=true, EVERY per-user credential op breaks — there is
+    # no fallback, because the new signing keys are ASYMMETRIC and Supabase holds the private
+    # key (they sign Auth-issued user JWTs; we don't use Supabase Auth, our ids are Peppi
+    # uuids, so we must self-mint). Response is RLS_SCOPED_JWT=false, then re-architect.
+    # See evidence/phase6/1.6b-rls-cutover-runbook.md.
+    import jwt as pyjwt  # PyJWT (pinned explicitly in requirements.txt — was only transitive)
 
     if not settings.SUPABASE_JWT_SECRET:
         raise RuntimeError(
