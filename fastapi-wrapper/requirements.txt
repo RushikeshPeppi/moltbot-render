@@ -53,3 +53,9 @@ google-api-python-client==2.198.0
 
 # Rate Limiting
 slowapi==0.1.9
+
+# PyJWT — used by app/core/database.py to mint the short-lived scoped JWT that makes
+# migration 009's RLS policies actually enforce (Phase 6 / 1.6b, CASA 3.1.4).
+# Declared EXPLICITLY: it arrived only transitively (via qstash + supabase-auth), and an
+# import we depend on directly must not rest on someone else's dependency tree.
+PyJWT==2.13.0

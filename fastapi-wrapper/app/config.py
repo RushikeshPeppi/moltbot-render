@@ -31,7 +31,35 @@ class Settings(BaseSettings):
     
     # Supabase Database
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    # service_role key. NOTE: service_role has BYPASSRLS — it ignores every policy in
+    # migrations/009_rls_policies.sql. That is why RLS is currently INERT for the app, and
+    # it is why RLS_SCOPED_JWT below exists. Cross-user operations (get_all_users,
+    # get_token_usage, get_reminder-by-id) legitimately keep using this key.
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
+
+    # ── RLS enforcement (Phase 6 · 1.6b / CASA 3.1.4) ───────────────────────────────
+    # RLS_SCOPED_JWT routes PER-USER database operations through a short-lived JWT that
+    # carries {"role":"authenticated","user_id":"<id>"}, so migration 009's policies
+    # (USING user_id = app_current_user_id()) actually ENFORCE instead of sitting inert.
+    #
+    # DEFAULT OFF, deliberately. Turning it on without ALL of the following breaks prod:
+    #   1. migrations/010_rls_grants.sql applied  — the `authenticated` role must hold
+    #      table GRANTs, or RLS returns "permission denied" rather than filtered rows.
+    #   2. SUPABASE_JWT_SECRET set          — Supabase Dashboard → Settings → API → JWT Secret.
+    #   3. SUPABASE_ANON_KEY set            — sent as the `apikey` header while the minted
+    #      JWT goes in Authorization; using the service_role key as apikey would defeat the
+    #      whole point (Supabase would hand us a BYPASSRLS context again).
+    #   4. The two-user isolation test passes against live Supabase
+    #      (tests/test_rls_isolation.py).
+    # Fail-closed: if the flag is ON but the secret/anon key is missing, the data layer
+    # RAISES at startup instead of silently falling back to service_role — a silent
+    # fallback would look like "RLS enforced" while enforcing nothing.
+    RLS_SCOPED_JWT: bool = os.getenv("RLS_SCOPED_JWT", "false").lower() == "true"
+    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")
+    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
+    # Lifetime of a minted per-request scoped JWT. Short by design: it is minted per
+    # operation and never leaves the process.
+    RLS_JWT_TTL_SECONDS: int = int(os.getenv("RLS_JWT_TTL_SECONDS", "60"))
     
     # Encryption. ENCRYPTION_KEY is the PRIMARY key — everything is encrypted with it.
     # ENCRYPTION_KEYS_OLD is an optional comma-separated list of RETIRED keys kept only

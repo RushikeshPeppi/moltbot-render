@@ -6,6 +6,7 @@ Uses supabase-py for async operations.
 import json
 import logging
 import secrets
+import time
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from cryptography.fernet import Fernet, MultiFernet
@@ -13,6 +14,48 @@ from supabase import create_client, Client
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ── RLS scoped-JWT support (Phase 6 · 1.6b / CASA 3.1.4) ───────────────────────────
+# migrations/009_rls_policies.sql defines: USING (user_id = app_current_user_id()),
+# where app_current_user_id() reads  request.jwt.claims ->> 'user_id'.
+# Those policies are INERT while we connect with the service_role key, because
+# service_role has BYPASSRLS. To make them enforce, PER-USER operations run through a
+# client whose Authorization bearer is a short-lived JWT we mint here carrying
+# {"role": "authenticated", "user_id": <id>} signed with the project's JWT secret.
+#
+# WHY NOT EVERYTHING: several operations are legitimately CROSS-user and cannot carry a
+# single user's claim. Each is called out at its call site below. Forcing them through a
+# scoped JWT would not "improve security" — it would break the feature and tempt someone
+# to widen the policy, which is worse than the status quo.
+def _mint_scoped_jwt(user_id: str) -> str:
+    """Mint a short-lived JWT scoped to one user_id for PostgREST/RLS.
+
+    Fail-CLOSED: raises if the flag is on but the signing secret is absent. A silent
+    fallback to service_role would present as "RLS enforced" while enforcing nothing —
+    exactly the class of fail-open this codebase has been burned by twice.
+    """
+    import jwt as pyjwt  # PyJWT (already a transitive dep; pinned in requirements)
+
+    if not settings.SUPABASE_JWT_SECRET:
+        raise RuntimeError(
+            "RLS_SCOPED_JWT=true but SUPABASE_JWT_SECRET is empty — refusing to fall back "
+            "to service_role (that would silently disable RLS while appearing enforced)."
+        )
+    if not user_id:
+        raise ValueError("scoped JWT requires a user_id")
+
+    now = int(time.time())
+    claims = {
+        # PostgREST derives the Postgres role from this claim. MUST be a non-BYPASSRLS
+        # role or the policies are skipped again.
+        "role": "authenticated",
+        # Read by app_current_user_id() in migration 009.
+        "user_id": user_id,
+        "iat": now,
+        "exp": now + settings.RLS_JWT_TTL_SECONDS,
+    }
+    return pyjwt.encode(claims, settings.SUPABASE_JWT_SECRET, algorithm="HS256")
 
 
 class Database:
@@ -77,6 +120,42 @@ class Database:
                 # than silently storing plaintext.
                 logger.error(f"Failed to initialize encryption: {e}")
     
+    def _scoped(self, user_id: str) -> Client:
+        """Return a client whose DB context is RESTRICTED to `user_id` via RLS.
+
+        When RLS_SCOPED_JWT is off (the default) this returns the ordinary service_role
+        client, so behaviour is byte-identical to before the cutover — the flag is the
+        only thing that changes the data path.
+
+        When on: `apikey` = anon key (NOT service_role — that would restore a BYPASSRLS
+        context and silently defeat the policies), `Authorization` = a per-call JWT
+        carrying {"role":"authenticated","user_id":...}. Migration 009's
+        `USING (user_id = app_current_user_id())` then does the filtering IN POSTGRES, so
+        a bug in our query layer can no longer read another user's row.
+
+        Requires migrations/010_rls_grants.sql (the `authenticated` role needs table
+        GRANTs; RLS filters rows, it does not confer privileges).
+        """
+        if not settings.RLS_SCOPED_JWT:
+            return self._client
+
+        if not settings.SUPABASE_ANON_KEY:
+            # Fail closed rather than silently using service_role (= no RLS).
+            raise RuntimeError(
+                "RLS_SCOPED_JWT=true but SUPABASE_ANON_KEY is empty — refusing to send the "
+                "service_role key as apikey, which would re-enable BYPASSRLS and make RLS "
+                "enforcement a fiction."
+            )
+
+        token = _mint_scoped_jwt(user_id)
+        client = create_client(
+            supabase_url=settings.SUPABASE_URL,
+            supabase_key=settings.SUPABASE_ANON_KEY,
+        )
+        # PostgREST reads the role + custom claims from this bearer.
+        client.postgrest.auth(token)
+        return client
+
     async def close(self):
         """Close Supabase client (no-op for supabase-py)"""
         self._client = None
@@ -121,7 +200,7 @@ class Database:
                 "updated_at": datetime.utcnow().isoformat()
             }
             
-            self._client.table("tbl_clawdbot_credentials").upsert(
+            self._scoped(user_id).table("tbl_clawdbot_credentials").upsert(
                 data,
                 on_conflict="user_id,service"
             ).execute()
@@ -140,7 +219,7 @@ class Database:
                 if not self._client:
                     return None
             
-            response = self._client.table("tbl_clawdbot_credentials").select(
+            response = self._scoped(user_id).table("tbl_clawdbot_credentials").select(
                 "encrypted_credentials, expires_at"
             ).eq("user_id", user_id).eq("service", service).execute()
             
@@ -164,7 +243,7 @@ class Database:
                 if not self._client:
                     return False
             
-            self._client.table("tbl_clawdbot_credentials").delete().eq(
+            self._scoped(user_id).table("tbl_clawdbot_credentials").delete().eq(
                 "user_id", user_id
             ).eq("service", service).execute()
             
@@ -182,7 +261,7 @@ class Database:
                 if not self._client:
                     return {}
             
-            response = self._client.table("tbl_clawdbot_credentials").select(
+            response = self._scoped(user_id).table("tbl_clawdbot_credentials").select(
                 "service, encrypted_credentials, expires_at"
             ).eq("user_id", user_id).execute()
             
@@ -205,7 +284,7 @@ class Database:
                 if not self._client:
                     return False
             
-            response = self._client.table("tbl_clawdbot_credentials").select(
+            response = self._scoped(user_id).table("tbl_clawdbot_credentials").select(
                 "id"
             ).eq("user_id", user_id).eq("service", service).execute()
             
@@ -786,7 +865,7 @@ class Database:
                 return counts
 
         try:
-            response = self._client.table("tbl_clawdbot_credentials").delete().eq(
+            response = self._scoped(user_id).table("tbl_clawdbot_credentials").delete().eq(
                 "user_id", user_id
             ).execute()
             counts["credentials"] = len(response.data or [])
