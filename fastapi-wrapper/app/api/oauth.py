@@ -73,16 +73,25 @@ def create_error_response(
 def build_peppi_redirect(base: str, default_redirect: str, params: dict) -> str:
     """Build the 302 target back to the caller (Peppi website / playground).
 
-    A bare website origin (the safe default) gets the legacy /clawdbot/oauth page
-    appended; an explicit callback URL (Peppi's /auth/google/callback, the
-    playground's /oauth-callback) is used as-is. None-valued params are omitted —
-    in particular `app_state` is only echoed when one was stored for this flow
-    (CASA 3.2.2: Peppi validates it against the session nonce on success AND error).
+    A bare website origin (the safe default) gets Peppi's OAuth landing route appended;
+    an explicit callback URL (Peppi's /auth/google/callback, the playground's
+    /oauth-callback) is used as-is. None-valued params are omitted — in particular
+    `app_state` is only echoed when one was stored for this flow (CASA 3.2.2: Peppi
+    validates it against the session nonce on success AND error).
+
+    The appended path was the legacy `/clawdbot/oauth` until 2026-07-16. That page no
+    longer exists on peppi.ai (verified: following the safe-default redirect returned
+    **404**, and peppi `routes/web.php:175` defines only `auth/google/callback`), so every
+    expired/invalid-`state` callback — the most-hit error path, 600s TTL — dumped the user
+    on a 404. `auth/google/callback` is Peppi's real handler and already reads exactly the
+    params we send (`status`/`error`/`user_id`/`app_state`), degrading to a "Session
+    expired, please log in" redirect when there is no session. Session 8 fixed this same
+    bug for EXPLICIT callback URLs but left it on the default path.
     """
     if base == default_redirect and not any(
         p in base for p in ("/oauth-callback", "/callback")
     ):
-        base = f"{base}/clawdbot/oauth"
+        base = f"{base}/auth/google/callback"
     query = urlencode({k: v for k, v in params.items() if v is not None})
     separator = "&" if "?" in base else "?"
     return f"{base}{separator}{query}"
