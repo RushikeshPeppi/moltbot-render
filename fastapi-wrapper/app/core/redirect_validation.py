@@ -48,9 +48,17 @@ def _build_allowlist() -> frozenset:
 
     `OAUTH_ALLOWED_REDIRECT_ORIGINS` (comma-separated exact origins — scheme://host,
     NO path; a path-bearing entry can never match an origin and is silently inert)
-    overrides the default set entirely when present. The origin of `PEPPI_WEBSITE_URL`
-    is always trusted so an environment-specific website value is never accidentally
-    rejected.
+    overrides the default set entirely when present.
+
+    ⚠ THE ENV VAR IS NOT THE WHOLE ALLOW-LIST. The origin of `PEPPI_WEBSITE_URL` is
+    added **unconditionally**, on both the env-override and default paths, so an
+    environment-specific website value is never accidentally rejected. The effective
+    allow-list is therefore:
+        (OAUTH_ALLOWED_REDIRECT_ORIGINS  OR  the built-in default set)
+        ∪ { origin(PEPPI_WEBSITE_URL) }
+    That union is an implicit trust channel: changing PEPPI_WEBSITE_URL silently adds a
+    redirect origin. Keep it pointed at a live, owned origin, and state the union (not
+    just the env var) whenever this control is described in CASA evidence.
 
     The committed default is PRODUCTION origins ONLY. Any non-prod origin (e.g. a
     staging host used for pre-prod OAuth testing) is supplied per-environment via
@@ -69,11 +77,25 @@ def _build_allowlist() -> frozenset:
         }
     else:
         origins = {
+            # LIVE product origins.
             "https://peppi.ai",
             "https://www.peppi.ai",
+            # Legacy company-owned domain. Currently has NO A record (verified 2026-07-16)
+            # so nothing can actually land here; retained because we own + renew the domain
+            # (no takeover risk) and it may be revived. NOT the safe-default any more —
+            # see config.PEPPI_WEBSITE_URL.
             "https://peppi.app",
             "https://www.peppi.app",
-            "https://peppi-playground.onrender.com",
+            # REMOVED 2026-07-16: "https://peppi-playground.onrender.com".
+            # Two reasons. (1) SECURITY: the playground Render service is SUSPENDED
+            # (`x-render-routing: suspend-by-user`). Suspension reserves the slug, but if the
+            # service is ever DELETED, Render returns `peppi-playground.onrender.com` to a
+            # SHARED namespace — anyone could then claim it and would own an allow-listed
+            # OAuth redirect origin, i.e. a live open-redirect on our callback. A *.onrender.com
+            # slug is not a domain we own; it cannot be trusted like peppi.ai/peppi.app.
+            # (2) It is a TEST UI — it does not belong in a production redirect allow-list.
+            # If the playground is ever revived, supply its origin via
+            # OAUTH_ALLOWED_REDIRECT_ORIGINS for that environment instead of hard-coding it.
         }
 
     site_origin = _origin(settings.PEPPI_WEBSITE_URL or "")

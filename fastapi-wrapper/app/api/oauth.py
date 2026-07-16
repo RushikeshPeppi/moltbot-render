@@ -218,7 +218,9 @@ async def google_oauth_callback(
     It exchanges the code for tokens and stores them in the database.
     """
     # Default redirect for errors
-    default_redirect = settings.PEPPI_WEBSITE_URL or "https://peppi.app"
+    # peppi.ai, not peppi.app — peppi.app has no A record (2026-07-16), and this is the
+    # last-resort target for expired/invalid `state`, i.e. the most-hit error path.
+    default_redirect = settings.PEPPI_WEBSITE_URL or "https://peppi.ai"
     # Resolved as soon as the state blob is loaded; the except handler below uses
     # whatever was resolved by the time of the failure.
     redirect_uri = default_redirect

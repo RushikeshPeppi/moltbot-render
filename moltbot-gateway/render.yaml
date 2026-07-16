@@ -28,6 +28,15 @@ services:
         value: https://moltbot-fastapi.onrender.com
       # SEARXNG_URL removed 2026-07-16 — SearXNG retired, Tavily is the only search backend
       # (see moltbot-gateway/src/tools/web_search.ts header + CLAUDE.md invariant #1).
+      # Tavily API key(s), comma-separated for rotation. The ONLY search credential —
+      # unset it and web_search is dead. Declared so a blueprint recreate can't ship a
+      # gateway with no search backend.
+      - key: TAVILY_API_KEYS
+        sync: false
+      # Shared service key — gates POST /execute. Without it the gateway 503s its own
+      # health check by design (see server.ts /health).
+      - key: INTERNAL_SERVICE_KEY
+        sync: false
       # Optional Helicone observability — set HELICONE_PROXY=true + HELICONE_KEY to enable.
       - key: HELICONE_PROXY
         value: "false"

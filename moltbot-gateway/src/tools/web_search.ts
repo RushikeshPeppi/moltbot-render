@@ -20,7 +20,11 @@
  * Tavily is now the ONLY backend => single point of failure. Mitigations:
  *   - search_depth "basic" = 1 API credit/query (advanced = 2). ~75x headroom.
  *   - Key rotation retained (works with 1..N keys), so adding capacity is config-only.
- *   - Auth is sent BOTH ways (Bearer header + legacy body api_key) — see below.
+ *   - Auth = `Authorization: Bearer` header ONLY (Tavily's documented method). We do NOT
+ *     also send the legacy body `api_key`: see fetchTavilyResults() — sending a
+ *     deprecated field only helps if the vendor IGNORES it; if it ever REJECTS it, the
+ *     "redundancy" causes the very outage header-only would have survived.
+ *   - A backend failure is reported as an OUTAGE, never as "no results" — see execute().
  *   - If Tavily ever dies, SearXNG is restorable from git history (pre-retirement).
  */
 
@@ -73,7 +77,7 @@ export async function execute(
   // would read as "the web has nothing on this".
   if (ctx.tavilyApiKeys.length === 0) {
     console.error("[web_search] no Tavily API key configured — search unavailable");
-    return "Search is temporarily unavailable. Tell the user you couldn't search right now.";
+    return SEARCH_UNAVAILABLE;
   }
 
   // Log the query LENGTH, never the text (CASA 6.5.1 — a search query is user content
@@ -83,12 +87,31 @@ export async function execute(
       (input.time_range ? ` time_range=${input.time_range}` : ""),
   );
 
-  const results = await fetchTavilyWithRotation(input.query, ctx.tavilyApiKeys, input.time_range);
-  if (!results || results.length === 0) {
+  const outcome = await fetchTavilyWithRotation(input.query, ctx.tavilyApiKeys, input.time_range);
+
+  // CRITICAL DISTINCTION (do not collapse these two branches):
+  //   "the backend failed"  !=  "the web has nothing on this".
+  // Before SearXNG was retired, a Tavily failure fell through to SearXNG, so conflating
+  // them was survivable. Tavily is now the ONLY backend: if a revoked key (401), a 5xx,
+  // a timeout, or exhausted quota returned "No results", the model would confidently tell
+  // every user their topic doesn't exist on the internet — a silent, product-wide lie
+  // during a vendor outage. `failed` is set ONLY when we never got a valid answer.
+  if (outcome.failed) {
+    console.error(`[web_search] Tavily UNAVAILABLE (${outcome.reason}) — reporting failure, not emptiness`);
+    return SEARCH_UNAVAILABLE;
+  }
+  if (outcome.results.length === 0) {
+    // A genuine, successful "zero hits" answer from Tavily.
     return "No results — try rephrasing or being more specific.";
   }
-  return formatResults(results);
+  return formatResults(outcome.results);
 }
+
+/** Told to the model when the search BACKEND is down — never when the web merely has no hits. */
+const SEARCH_UNAVAILABLE =
+  "Search is temporarily unavailable (the search service could not be reached). " +
+  "Tell the user you couldn't search right now and suggest they try again shortly. " +
+  "Do NOT claim there are no results for their query — this is an outage, not an empty result.";
 
 function formatResults(results: TavilyResult[]): string {
   const seenDomains = new Set<string>();
@@ -113,17 +136,31 @@ function formatResults(results: TavilyResult[]): string {
 let tavilyKeyIndex = 0;
 
 /**
+ * Outcome of a search attempt. `failed` distinguishes "we never got an answer from the
+ * backend" (outage → tell the user) from "the backend answered, with zero hits" (a real
+ * answer). Collapsing these is the D6 silent-failure bug — see execute().
+ */
+type SearchOutcome =
+  | { failed: false; results: TavilyResult[] }
+  | { failed: true; reason: string; results: never[] };
+
+/**
  * Try Tavily with key rotation. Starts from current round-robin position.
  * If a key returns 429/402 (quota exceeded), tries the next key.
- * Returns results from first successful key, or null if all keys fail.
  * Works with a single key (the normal case) — the loop simply runs once.
+ *
+ * Returns `{failed:true}` ONLY if no key produced a valid response (all errored or all
+ * out of quota). A successful response with zero hits is `{failed:false, results:[]}`.
  */
 async function fetchTavilyWithRotation(
   query: string,
   keys: string[],
   timeRange?: string,
-): Promise<TavilyResult[] | null> {
+): Promise<SearchOutcome> {
   const startIdx = tavilyKeyIndex;
+  let quotaExhausted = 0;
+  let errored = 0;
+
   for (let i = 0; i < keys.length; i++) {
     const idx = (startIdx + i) % keys.length;
     const key = keys[idx];
@@ -132,20 +169,32 @@ async function fetchTavilyWithRotation(
     const result = await fetchTavilyResults(query, key, keyLabel, timeRange);
 
     if (result === "quota") {
-      // This key is exhausted — try the next one.
+      // This key is exhausted — try the next one. Advance the round-robin PAST it so the
+      // next request doesn't re-probe a key we already know is dry (it stays dry until the
+      // quota window resets), which would burn a round-trip on every subsequent search.
       console.warn(`[web_search] Tavily ${keyLabel} quota exceeded, rotating`);
+      tavilyKeyIndex = (idx + 1) % keys.length;
+      quotaExhausted++;
       continue;
     }
 
-    // Advance round-robin for next call (even on success).
-    tavilyKeyIndex = (idx + 1) % keys.length;
-
-    if (result && result.length > 0) {
-      return result;
+    if (result === null) {
+      // Transport/HTTP error (401 revoked key, 5xx, timeout) — try the next key.
+      errored++;
+      continue;
     }
-    // Empty results from this key — still try next.
+
+    // Valid response from this key. Advance round-robin for the next call.
+    tavilyKeyIndex = (idx + 1) % keys.length;
+    // NOTE: an empty array here is a genuine "no hits", NOT a failure — return it as such.
+    return { failed: false, results: result };
   }
-  return null;
+
+  return {
+    failed: true,
+    reason: `${keys.length} key(s): ${quotaExhausted} out-of-quota, ${errored} errored`,
+    results: [],
+  };
 }
 
 async function fetchTavilyResults(
@@ -156,12 +205,15 @@ async function fetchTavilyResults(
 ): Promise<TavilyResult[] | null | "quota"> {
   try {
     const body: Record<string, unknown> = {
-      // Tavily's CURRENT docs authenticate via the `Authorization: Bearer` header and
-      // say the key is "not in the request body" — but the legacy body `api_key` is
-      // still accepted and is what this integration has always used (verified live
-      // 2026-07-16). We send BOTH: Tavily is now our ONLY search backend, so a
-      // deprecation of either auth method must not be able to take search out.
-      api_key: apiKey,
+      // AUTH: `Authorization: Bearer` header ONLY (Tavily's current documented method —
+      // the docs state the key is "not in the request body").
+      // We briefly sent BOTH the header and the legacy body `api_key` as "belt and
+      // suspenders". That reasoning was WRONG and is deliberately reverted: sending a
+      // deprecated field only survives a deprecation if the vendor IGNORES it. If Tavily
+      // ever validates strictly and REJECTS the unknown body field, the request 400s —
+      // which is not a quota code, so it surfaces as a hard failure — meaning the
+      // "redundancy" would CAUSE the outage that header-only would have survived. With
+      // Tavily as our only backend, we stay on the documented, forward-compatible path.
       query,
       search_depth: "basic", // 1 API credit ("advanced" costs 2)
       max_results: 5,

@@ -44,15 +44,24 @@ app.get("/health", (_req: Request, res: Response) => {
   // a deploy that silently rejects all real traffic to look healthy. Mirrors the
   // FastAPI wrapper's agent_md_ready gate.
   const serviceKeyReady = !!env.INTERNAL_SERVICE_KEY;
+  const searchReady = env.TAVILY_API_KEYS.length > 0;
+  // Why only the service key 503s, while a missing search key merely degrades:
+  // no INTERNAL_SERVICE_KEY => requireServiceAuth 503s EVERY /execute => the service is
+  // wholly useless, so failing the health check (and letting Render roll the deploy back)
+  // is right. No Tavily key => only web_search is dead; reminders/calendar/gmail still
+  // work — 503'ing there would escalate a partial degradation into a full outage AND roll
+  // back an otherwise-good deploy. So: report it loudly, don't take the service down.
   res.status(serviceKeyReady ? 200 : 503).json({
-    status: serviceKeyReady ? "online" : "degraded",
+    status: !serviceKeyReady ? "degraded" : searchReady ? "online" : "degraded_search",
     service: "moltbot-gateway",
     version: "2.0.0",
     sessions: sessionCount(),
     env: {
       anthropic: !!env.ANTHROPIC_API_KEY,
       fastapi: !!env.FASTAPI_URL,
-      tavily: env.TAVILY_API_KEYS.length > 0,
+      // Tavily is the ONLY search backend since SearXNG was retired — false here means
+      // web_search is dead even though the service reports 200.
+      tavily: searchReady,
       helicone: env.HELICONE_PROXY,
       internal_key: serviceKeyReady,
     },
@@ -190,10 +199,14 @@ app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => 
     });
   } catch (err) {
     logError(requestId, "agent_loop_failed", err);
-    const msg = err instanceof Error ? err.message : "agent error";
+    // Do NOT echo err.message to the client (CASA 6.2.1). This route is service-key
+    // gated so it is not DAST-reachable, but an upstream exception can still carry
+    // driver/URL/key fragments, and the wrapper already sanitizes its equivalent path
+    // (app/core/error_sanitizer.py) — the gateway should not be the weaker half.
+    // The full error is in the server log above, keyed by request_id.
     res.status(500).json({
       success: false,
-      error: msg,
+      error: "agent error",
       request_id: requestId,
     });
   }

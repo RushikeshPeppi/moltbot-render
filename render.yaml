@@ -115,6 +115,14 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
       # SEARXNG_URL removed 2026-07-16 — SearXNG retired, Tavily is the only search backend.
+      # Tavily API key(s) — comma-separated for rotation; a single key is the norm
+      # (~39 searches/month vs 1,000 credits/key/month). This is now the ONLY search
+      # credential: unset it and web_search is dead (/health reports
+      # status=degraded_search, tavily:false — it does NOT 503, because the rest of the
+      # agent still works). Declared here so a blueprint-driven recreate cannot silently
+      # provision a gateway with no search backend.
+      - key: TAVILY_API_KEYS
+        sync: false
       # FastAPI URL — OAuth token bridge + reminder tool dispatch.
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com

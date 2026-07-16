@@ -90,8 +90,14 @@ class Settings(BaseSettings):
     # origin is always trusted regardless.
     OAUTH_ALLOWED_REDIRECT_ORIGINS: str = os.getenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "")
 
-    # Peppi Website
-    PEPPI_WEBSITE_URL: str = os.getenv("PEPPI_WEBSITE_URL", "https://peppi.app")
+    # Peppi Website. Default is peppi.ai — the LIVE product origin.
+    # Was `https://peppi.app` until 2026-07-16: peppi.app has **no A record** (verified
+    # `dig +short peppi.app A` → empty), so every OAuth error/expired-state callback was
+    # 307'ing users to a browser DNS error instead of an error page. This value is also
+    # the callback's safe-default target (api/oauth.py) AND is auto-trusted into the
+    # redirect allow-list (core/redirect_validation.py), so a dead value here breaks the
+    # fallback the whole allow-list design rests on. Keep it pointed at a LIVE origin.
+    PEPPI_WEBSITE_URL: str = os.getenv("PEPPI_WEBSITE_URL", "https://peppi.ai")
     
     # Upstash QStash (Reminder Scheduling)
     QSTASH_URL: str = os.getenv("QSTASH_URL", "")
