@@ -26,9 +26,8 @@ services:
       # FastAPI base URL — used for OAuth token bridge + reminder/gmail/calendar tool dispatch.
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com
-      # SearXNG base URL for web_search tool.
-      - key: SEARXNG_URL
-        value: https://searxng-09k9.onrender.com
+      # SEARXNG_URL removed 2026-07-16 — SearXNG retired, Tavily is the only search backend
+      # (see moltbot-gateway/src/tools/web_search.ts header + CLAUDE.md invariant #1).
       # Optional Helicone observability — set HELICONE_PROXY=true + HELICONE_KEY to enable.
       - key: HELICONE_PROXY
         value: "false"

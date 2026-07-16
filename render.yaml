@@ -81,26 +81,13 @@ services:
       - key: VITE_API_URL
         value: https://moltbot-fastapi.onrender.com
 
-  # SearXNG - Privacy-preserving meta-search backend for the gateway's web-search skill.
-  # Hardened per searxng_research.md (settings.yml + limiter.toml + entrypoint-shim.sh).
-  - type: web
-    name: searxng
-    runtime: docker
-    region: oregon
-    plan: starter
-    dockerfilePath: ./searxng/Dockerfile
-    dockerContext: ./searxng
-    healthCheckPath: /healthz
-    envVars:
-      # Flask SECRET_KEY. The entrypoint-shim substitutes this into
-      # settings.yml's `secret_key: "ultrasecretkey"` placeholder on every
-      # container start. If unset, the shim auto-generates a random value.
-      - key: SEARXNG_SECRET
-        generateValue: true
-      # Belt-and-suspenders: explicitly tell Render which port the container
-      # listens on, in case auto-detection of EXPOSE 8080 fails on cold starts.
-      - key: PORT
-        value: "8080"
+  # SearXNG service REMOVED 2026-07-16 (owner decision) — Tavily is now the only search
+  # backend. Rationale: ~39 searches/month measured vs a 1,000/key/month Tavily quota
+  # (~75x headroom), against which SearXNG cost a Docker service, a CASA scan target with
+  # unfixable scanner false-positives, an open search-proxy abuse vector (its limiter had
+  # to stay off or it blocked our own gateway), and ongoing engine-blocking fragility.
+  # See moltbot-gateway/src/tools/web_search.ts header, CASA/moltbot/FINDINGS.md F-P5-8,
+  # and CLAUDE.md invariant #1 (updated). Restore from git history if ever needed.
 
   # Moltbot Gateway — direct Anthropic SDK (replaces OpenClaw subprocess pattern).
   # Service name kept as `openclaw-gateway` so the deployed URL
@@ -127,14 +114,7 @@ services:
       # Anthropic API key (required) — the SDK migration replaces Gemini.
       - key: ANTHROPIC_API_KEY
         sync: false
-      # SearXNG URL — note: env var renamed from SEARXNG_BASE_URL to match src/env.ts.
-      # PRIVATE-NETWORK address (CASA: removes SearXNG from public scan scope + closes the
-      # open-search-proxy abuse vector that was rate-limiting our egress IP at Bing/Startpage).
-      # Render private network = <slug>:<port>, same region + workspace (both are `oregon`).
-      # SearXNG stays `type: web` (blueprint `type` is immutable) but its public onrender.com
-      # subdomain is DISABLED in the dashboard, so this internal address is the ONLY way in.
-      - key: SEARXNG_URL
-        value: http://searxng-09k9:8080
+      # SEARXNG_URL removed 2026-07-16 — SearXNG retired, Tavily is the only search backend.
       # FastAPI URL — OAuth token bridge + reminder tool dispatch.
       - key: FASTAPI_URL
         value: https://moltbot-fastapi.onrender.com

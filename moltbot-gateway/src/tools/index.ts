@@ -40,8 +40,8 @@ export interface ToolContext {
    */
   imageUrls?: string[];
   fastApiUrl: string;
-  searxngUrl: string;
-  /** Tavily API keys for fallback search — rotated on quota errors. */
+  /** Tavily API keys — the ONLY search backend since SearXNG was retired 2026-07-16.
+   *  Rotated on quota errors; works with a single key (the normal case). */
   tavilyApiKeys: string[];
   /**
    * Per-/execute UUID. Used to seed deterministic idempotency keys across

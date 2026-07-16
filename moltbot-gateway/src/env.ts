@@ -4,12 +4,16 @@
 
 import "dotenv/config";
 
-const REQUIRED = ["ANTHROPIC_API_KEY", "FASTAPI_URL", "SEARXNG_URL"] as const;
+// SEARXNG_URL was removed 2026-07-16 when SearXNG was retired (Tavily is now the only
+// search backend — see tools/web_search.ts header + CLAUDE.md invariant #1).
+// TAVILY_API_KEYS is deliberately NOT required: a missing key must degrade search to
+// "unavailable", not refuse to boot — the gateway still serves reminders/calendar/email.
+// validateEnv() warns loudly instead.
+const REQUIRED = ["ANTHROPIC_API_KEY", "FASTAPI_URL"] as const;
 
 export const env = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "",
   FASTAPI_URL: (process.env.FASTAPI_URL ?? "").replace(/\/$/, ""),
-  SEARXNG_URL: (process.env.SEARXNG_URL ?? "").replace(/\/$/, ""),
   PORT: parseInt(process.env.PORT ?? "10000", 10),
   HELICONE_PROXY: process.env.HELICONE_PROXY === "true",
   HELICONE_KEY: process.env.HELICONE_KEY ?? "",
@@ -34,9 +38,14 @@ export function validateEnv(): void {
     console.error("[env] HELICONE_PROXY=true but HELICONE_KEY is empty");
     process.exit(1);
   }
+  // Tavily is the ONLY search backend since SearXNG was retired — no key means the
+  // web_search tool is dead. Not fatal (other tools still work), but must be loud.
+  if (env.TAVILY_API_KEYS.length === 0) {
+    console.error("[env] TAVILY_API_KEYS/TAVILY_API_KEY is empty — web_search is DISABLED");
+  }
   console.log(
     `[env] ANTHROPIC_API_KEY=${env.ANTHROPIC_API_KEY ? "set" : "MISSING"}, ` +
-      `FASTAPI_URL=${env.FASTAPI_URL}, SEARXNG_URL=${env.SEARXNG_URL}, PORT=${env.PORT}, ` +
+      `FASTAPI_URL=${env.FASTAPI_URL}, PORT=${env.PORT}, ` +
       `HELICONE=${env.HELICONE_PROXY ? "on" : "off"}, TAVILY_KEYS=${env.TAVILY_API_KEYS.length}`,
   );
 }

@@ -52,7 +52,7 @@ app.get("/health", (_req: Request, res: Response) => {
     env: {
       anthropic: !!env.ANTHROPIC_API_KEY,
       fastapi: !!env.FASTAPI_URL,
-      searxng: !!env.SEARXNG_URL,
+      tavily: env.TAVILY_API_KEYS.length > 0,
       helicone: env.HELICONE_PROXY,
       internal_key: serviceKeyReady,
     },
@@ -149,7 +149,6 @@ app.post("/execute", requireServiceAuth, async (req: Request, res: Response) => 
     botName: sanitizeName(body.user_context?.bot_name),
     userName: sanitizeName(body.user_context?.user_name),
     fastApiUrl: env.FASTAPI_URL,
-    searxngUrl: env.SEARXNG_URL,
     tavilyApiKeys: env.TAVILY_API_KEYS,
     requestId,
   };
